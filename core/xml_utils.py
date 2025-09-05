@@ -111,10 +111,143 @@ class FCPXMLUtils:
         return gap
     
     @staticmethod
+    def create_effect_element(effect_id: str, name: str, uid: str) -> ET.Element:
+        """Create an effect element for the resources section."""
+        effect = ET.Element('effect')
+        effect.set('id', effect_id)
+        effect.set('name', name)
+        effect.set('uid', uid)
+        return effect
+    
+    @staticmethod
+    def create_compressor_filter(effect_ref: str, ratio: str, aux_value: str) -> ET.Element:
+        """Create a compressor filter-audio element with exact template data."""
+        filter_audio = ET.Element('filter-audio')
+        filter_audio.set('ref', effect_ref)
+        filter_audio.set('name', 'Compressor')
+        
+        # Use exact effect state data from template
+        data = ET.SubElement(filter_audio, 'data')
+        data.set('key', 'effectState')
+        data.text = 'YnBsaXN0MDDUAQIDBAUGBwpYJHZlcnNpb25ZJGFyY2hpdmVyVCR0b3BYJG9iamVjdHMSAAGGoF8QD05TS2V5ZWRBcmNoaXZlctEICVtlZmZlY3RTdGF0ZYABrxAPCwwfICEiIyQlJicoKSorVSRudWxs0w0ODxAXHldOUy5rZXlzWk5TLm9iamVjdHNWJGNsYXNzphESExQVFoACgAOABIAFgAaAB6YYGRobHB2ACIAJgAqAC4AMgA2ADlRuYW1lXG1hbnVmYWN0dXJlclRkYXRhVHR5cGVXc3VidHlwZVd2ZXJzaW9uWFVudGl0bGVkEkVNQUdPEJSUAAAAAQAAAB8AAABHQU1FVFNQUJoAAAAAAAAAAACgwQAAAEAAAAAAAAB6RAAAAAAAAIA/AAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAANxFAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAADIQgAAAAAAAAAAAAAAAAAAAAAAAAAAEmF1ZngQmhAA0iwtLi9aJGNsYXNzbmFtZVgkY2xhc3Nlc1xOU0RpY3Rpb25hcnmiLjBYTlNPYmplY3QACAARABoAJAApADIANwBJAEwAWABaAGwAcgB5AIEAjACTAJoAnACeAKAAogCkAKYArQCvALEAswC1ALcAuQC7AMAAzQDSANcA3wDnAPAA9QGMAZEBkwGVAZoBpQGuAbsBvgAAAAAAAAIBAAAAAAAAADEAAAAAAAAAAAAAAAAAAAHH'
+        
+        # Add parameter
+        param = ET.SubElement(filter_audio, 'param')
+        param.set('name', 'Ratio')
+        param.set('key', '2')
+        param.set('value', ratio)
+        param.set('auxValue', aux_value)
+        
+        return filter_audio
+    
+    @staticmethod
+    def create_noise_gate_filter(effect_ref: str, threshold: str = '-50') -> ET.Element:
+        """Create a noise gate filter-audio element with exact template data."""
+        filter_audio = ET.Element('filter-audio')
+        filter_audio.set('ref', effect_ref)
+        filter_audio.set('name', 'Noise Gate')
+        
+        # Use exact effect state data from template
+        data = ET.SubElement(filter_audio, 'data')
+        data.set('key', 'effectState')
+        data.text = 'YnBsaXN0MDDUAQIDBAUGBwpYJHZlcnNpb25ZJGFyY2hpdmVyVCR0b3BYJG9iamVjdHMSAAGGoF8QD05TS2V5ZWRBcmNoaXZlctEICVtlZmZlY3RTdGF0ZYABrxAPCwwfICEiIyQlJicoKSorVSRudWxs0w0ODxAXHldOUy5rZXlzWk5TLm9iamVjdHNWJGNsYXNzphESExQVFoACgAOABIAFgAaAB6YYGRobHB2ACIAJgAqAC4AMgA2ADldzdWJ0eXBlXG1hbnVmYWN0dXJlclRkYXRhVHR5cGVUbmFtZVd2ZXJzaW9uELMSRU1BR08QWFgAAAACAAAAEAAAAEdBTUVUU1BQswAAAAAAAAAAAKDBAABAwAAAyMIAAIA/AAAAAP//P0AAQJxGAACgQQAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAoMESYXVmeFhVbnRpdGxlZBAA0iwtLi9aJGNsYXNzbmFtZVgkY2xhc3Nlc1xOU0RpY3Rpb25hcnmiLjBYTlNPYmplY3QACAARABoAJAApADIANwBJAEwAWABaAGwAcgB5AIEAjACTAJoAnACeAKAAogCkAKYArQCvALEAswC1ALcAuQC7AMMA0ADVANoA3wDnAOkA7gFJAU4BVwFZAV4BaQFyAX8BggAAAAAAAAIBAAAAAAAAADEAAAAAAAAAAAAAAAAAAAGL'
+        
+        # Add parameter
+        param = ET.SubElement(filter_audio, 'param')
+        param.set('name', 'Threshold [dB]')
+        param.set('key', '1')
+        param.set('value', threshold)
+        param.set('auxValue', str(abs(int(threshold))))
+        
+        return filter_audio
+    
+    @staticmethod
+    def create_voice_isolation_element(amount: str) -> ET.Element:
+        """Create an audio-channel-source element with voice isolation."""
+        audio_channel = ET.Element('audio-channel-source')
+        audio_channel.set('srcCh', '1, 2')
+        audio_channel.set('role', 'dialogue.dialogue-1')
+        
+        voice_isolation = ET.SubElement(audio_channel, 'adjust-voiceIsolation')
+        voice_isolation.set('amount', amount)
+        
+        return audio_channel
+    
+    @staticmethod
+    def create_volume_adjustment(amount: str) -> ET.Element:
+        """Create an adjust-volume element."""
+        volume_adjust = ET.Element('adjust-volume')
+        volume_adjust.set('amount', amount)
+        return volume_adjust
+    
+    @staticmethod
+    def add_audio_effects_to_clip(clip: ET.Element, audio_type: str, resources: ET.Element) -> None:
+        """Add audio effects to a clip based on audio source type."""
+        # Create effect elements in resources if they don't exist
+        compressor_effect_id = 'r_compressor_effect'
+        noise_gate_effect_id = 'r_noise_gate_effect'
+        
+        # Check if effects already exist in resources
+        if resources.find(f'.//effect[@id="{compressor_effect_id}"]') is None:
+            compressor_effect = FCPXMLUtils.create_effect_element(
+                compressor_effect_id,
+                'Compressor',
+                'AudioUnit: 0x617566780000009a454d4147'
+            )
+            resources.append(compressor_effect)
+        
+        if resources.find(f'.//effect[@id="{noise_gate_effect_id}"]') is None:
+            noise_gate_effect = FCPXMLUtils.create_effect_element(
+                noise_gate_effect_id,
+                'Noise Gate',
+                'AudioUnit: 0x61756678000000b3454d4147'
+            )
+            resources.append(noise_gate_effect)
+        
+        # Apply effects based on audio source type
+        if audio_type in ['mic1', 'mic2', 'mic3', 'mic4']:
+            # Mic audio effects (from "dc" compound)
+            # Voice isolation: 75%
+            voice_isolation = FCPXMLUtils.create_voice_isolation_element('75')
+            clip.append(voice_isolation)
+            
+            # Compressor: 3.5:1 ratio
+            compressor = FCPXMLUtils.create_compressor_filter(compressor_effect_id, '3.5:1', '31')
+            clip.append(compressor)
+            
+            # Noise gate: -50dB threshold
+            noise_gate = FCPXMLUtils.create_noise_gate_filter(noise_gate_effect_id, '-50')
+            clip.append(noise_gate)
+            
+            # Volume: 0.0471005dB
+            volume = FCPXMLUtils.create_volume_adjustment('0.0471005dB')
+            clip.append(volume)
+            
+        elif audio_type in ['screen', 'game', 'bluetooth']:
+            # System audio effects (from "gs dc" compound)
+            # Voice isolation: 50%
+            voice_isolation = FCPXMLUtils.create_voice_isolation_element('50')
+            clip.append(voice_isolation)
+            
+            # Compressor: 30.0:1 ratio
+            compressor = FCPXMLUtils.create_compressor_filter(compressor_effect_id, '30.0:1', '85')
+            clip.append(compressor)
+            
+            # Volume: -6dB
+            volume = FCPXMLUtils.create_volume_adjustment('-6dB')
+            clip.append(volume)
+            
+        elif audio_type == 'sound_effects':
+            # Sound effects: -10dB volume reduction
+            volume = FCPXMLUtils.create_volume_adjustment('-10dB')
+            clip.append(volume)
+    
+    @staticmethod
     def create_asset_clip(name: str, ref: str, lane: str, offset: str, 
                          duration: str, format_id: Optional[str] = None,
-                         audio_role: Optional[str] = None) -> ET.Element:
-        """Create an asset-clip element for audio clips."""
+                         audio_role: Optional[str] = None, audio_type: Optional[str] = None,
+                         resources: Optional[ET.Element] = None) -> ET.Element:
+        """Create an asset-clip element for audio clips with optional effects."""
         clip = ET.Element('asset-clip')
         clip.set('ref', ref)
         clip.set('lane', lane)
@@ -126,6 +259,10 @@ class FCPXMLUtils:
             clip.set('format', format_id)
         if audio_role:
             clip.set('audioRole', audio_role)
+        
+        # Add audio effects if audio_type and resources are provided
+        if audio_type and resources is not None:
+            FCPXMLUtils.add_audio_effects_to_clip(clip, audio_type, resources)
         
         return clip
     

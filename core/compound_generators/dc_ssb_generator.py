@@ -177,11 +177,13 @@ class DCSSBGenerator:
                 "0s",  # Start at beginning of gap
                 screen_audio_info['duration'],
                 'r_audio_format',
-                'dialogue'
+                'dialogue',
+                'screen',    # Pass audio type for effects
+                resources    # Pass resources for effect creation
             )
             gap.append(screen_audio_clip)
             print("Added screen audio to lane -2")
-        
+                    
         # Add master audio clip (disabled, for reference)
         master_audio_clip = self.xml_utils.create_audio_only_clip(
             original_name,

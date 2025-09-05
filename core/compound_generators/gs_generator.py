@@ -168,6 +168,7 @@ class GSGenerator:
         current_audio_lane = -2  # Start at lane -2 for first audio track
         
         # Add mic audio tracks in order (mic1, mic2, mic3, mic4)
+        # Add mic audio tracks in order (mic1, mic2, mic3, mic4)
         for mic_num in range(1, 5):
             mic_key = f'mic{mic_num}'
             if mic_key in audio_assets:
@@ -179,7 +180,9 @@ class GSGenerator:
                     "0s",
                     audio_info['duration'],
                     'r_audio_format',
-                    'dialogue'
+                    'dialogue',
+                    mic_key,     # Pass audio type for effects
+                    resources    # Pass resources for effect creation
                 )
                 gap.append(mic_clip)
                 print(f"Added {mic_key} to lane {current_audio_lane}")
@@ -195,7 +198,9 @@ class GSGenerator:
                 "0s",
                 audio_info['duration'],
                 'r_audio_format',
-                'dialogue'
+                'dialogue',
+                'screen',    # Pass audio type for effects
+                resources    # Pass resources for effect creation
             )
             gap.append(screen_clip)
             print(f"Added screen audio to lane {current_audio_lane}")
@@ -211,7 +216,9 @@ class GSGenerator:
                 "0s",
                 audio_info['duration'],
                 'r_audio_format',
-                'dialogue'
+                'dialogue',
+                'game',      # Pass audio type for effects
+                resources    # Pass resources for effect creation
             )
             gap.append(game_clip)
             print(f"Added game audio to lane {current_audio_lane}")
@@ -227,7 +234,9 @@ class GSGenerator:
                 "0s",
                 audio_info['duration'],
                 'r_audio_format',
-                'effects'
+                'effects',
+                'sound_effects',  # Pass audio type for effects
+                resources         # Pass resources for effect creation
             )
             gap.append(sfx_clip)
             print(f"Added sound_effects to lane {current_audio_lane}")

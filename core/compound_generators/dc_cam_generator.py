@@ -181,7 +181,9 @@ class DCCamGenerator:
                     "0s",
                     audio_info['duration'],
                     'r_audio_format',
-                    'dialogue'
+                    'dialogue',
+                    mic_key,     # Pass audio type for effects
+                    resources    # Pass resources for effect creation
                 )
                 gap.append(mic_clip)
                 print(f"Added {mic_key} to lane {current_audio_lane}")
@@ -197,7 +199,9 @@ class DCCamGenerator:
                 "0s",
                 audio_info['duration'],
                 'r_audio_format',
-                'effects'
+                'effects',
+                'sound_effects',  # Pass audio type for effects
+                resources         # Pass resources for effect creation
             )
             gap.append(sfx_clip)
             print(f"Added sound_effects to lane {current_audio_lane}")
