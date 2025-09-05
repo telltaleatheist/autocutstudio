@@ -174,14 +174,12 @@ class DCCamGenerator:
             mic_key = f'mic{mic_num}'
             if mic_key in audio_assets:
                 audio_info = processed_audio_sources[mic_key]
-                mic_clip = self.xml_utils.create_asset_clip(
+                mic_clip = self.xml_utils.create_audio_clip(
                     Path(audio_info['path']).stem,
                     audio_assets[mic_key],
                     str(current_audio_lane),
                     "0s",
                     audio_info['duration'],
-                    'r_audio_format',
-                    'dialogue',
                     mic_key,     # Pass audio type for effects
                     resources    # Pass resources for effect creation
                 )
@@ -192,14 +190,12 @@ class DCCamGenerator:
         # Add sound effects if present
         if 'sound_effects' in audio_assets:
             audio_info = processed_audio_sources['sound_effects']
-            sfx_clip = self.xml_utils.create_asset_clip(
+            sfx_clip = self.xml_utils.create_audio_clip(
                 Path(audio_info['path']).stem,
                 audio_assets['sound_effects'],
                 str(current_audio_lane),
                 "0s",
                 audio_info['duration'],
-                'r_audio_format',
-                'effects',
                 'sound_effects',  # Pass audio type for effects
                 resources         # Pass resources for effect creation
             )

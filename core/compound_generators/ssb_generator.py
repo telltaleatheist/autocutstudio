@@ -175,16 +175,14 @@ class SSBGenerator:
             for audio_type in audio_sources_config:
                 if audio_type in audio_assets:
                     audio_info = processed_audio_sources[audio_type]
-                    audio_clip = self.xml_utils.create_asset_clip(
+                    audio_clip = self.xml_utils.create_audio_clip(
                         Path(audio_info['path']).stem,
                         audio_assets[audio_type],
                         str(current_audio_lane),
                         "0s",
                         audio_info['duration'],
-                        'r_audio_format',
-                        'dialogue',
-                        audio_type,  # Pass audio type for effects
-                        resources    # Pass resources for effect creation
+                        audio_type,  # Pass audio type for volume adjustment
+                        resources    # Pass resources
                     )
                     gap.append(audio_clip)
                     print(f"Added {audio_type} audio to lane {current_audio_lane}")

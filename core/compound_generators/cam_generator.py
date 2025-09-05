@@ -178,16 +178,14 @@ class CamGenerator:
         for audio_type in audio_sources_config:
             if audio_type in audio_assets:
                 audio_info = processed_audio_sources[audio_type]
-                audio_clip = self.xml_utils.create_asset_clip(
+                audio_clip = self.xml_utils.create_audio_clip(
                     Path(audio_info['path']).stem,
                     audio_assets[audio_type],
                     str(audio_lane),
-                    "0s",  # Start at beginning of gap
+                    "0s",
                     audio_info['duration'],
-                    'r_audio_format',
-                    'dialogue',
-                    audio_type,  # Pass audio type for effects
-                    resources    # Pass resources for effect creation
+                    audio_type,
+                    resources
                 )
                 gap.append(audio_clip)
                 print(f"Added {audio_type} audio to lane {audio_lane}")

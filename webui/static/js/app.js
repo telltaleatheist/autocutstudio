@@ -573,50 +573,90 @@ function showResults(job) {
     const resultsContainer = document.getElementById('resultsContainer');
     
     if (job.results && job.results.length > 0) {
-        let resultsHTML = '<div class="grid grid-3">';
+        // Separate master projects from individual compounds
+        const masterProjects = job.results.filter(r => r.type === 'master');
+        const compounds = job.results.filter(r => r.type !== 'master');
         
-        job.results.forEach(result => {
-            resultsHTML += `
-                <div class="result-card">
-                    <h4>${result.name}</h4>
-                    <p class="result-description">${result.description}</p>
-                    <div class="result-meta">
-                        <span class="result-type">${result.type.toUpperCase()}</span>
+        let resultsHTML = '';
+        
+        // Master Projects section
+        if (masterProjects.length > 0) {
+            resultsHTML += '<div class="results-section master-section">';
+            resultsHTML += '<h3 class="results-header">Master Projects</h3>';
+            resultsHTML += '<div class="grid grid-2">';
+            
+            masterProjects.forEach(result => {
+                resultsHTML += `
+                    <div class="result-card master-card">
+                        <h4>${result.name}</h4>
+                        <p class="result-description">${result.description}</p>
+                        <div class="result-meta">
+                            <span class="result-type master-type">${result.type.toUpperCase()}</span>
+                        </div>
+                        <button class="btn btn-primary master-download" onclick="downloadFile('${result.path}')">
+                            Download Master Project
+                        </button>
                     </div>
-                    <button class="btn btn-primary" onclick="downloadFile('${result.path}')">
-                        💾 Download XML
-                    </button>
-                </div>
-            `;
-        });
+                `;
+            });
+            
+            resultsHTML += '</div></div>';
+        }
         
-        resultsHTML += '</div>';
+        // Individual compounds section
+        if (compounds.length > 0) {
+            resultsHTML += '<div class="results-section compounds-section">';
+            resultsHTML += '<h3 class="results-header">Individual Compound Clips</h3>';
+            resultsHTML += '<div class="grid grid-3">';
+            
+            compounds.forEach(result => {
+                resultsHTML += `
+                    <div class="result-card">
+                        <h4>${result.name}</h4>
+                        <p class="result-description">${result.description}</p>
+                        <div class="result-meta">
+                            <span class="result-type">${result.type.toUpperCase()}</span>
+                        </div>
+                        <button class="btn btn-primary" onclick="downloadFile('${result.path}')">
+                            Download XML
+                        </button>
+                    </div>
+                `;
+            });
+            
+            resultsHTML += '</div></div>';
+        }
         
         // Add usage instructions
         resultsHTML += `
             <div class="usage-instructions">
-                <h3>How to Use Your Compound Clips</h3>
+                <h3>How to Use Your Projects</h3>
                 <div class="instruction-grid">
-                    <div class="instruction-item">
-                        <h4>📹 CAM Compounds</h4>
-                        <p>Camera-focused layouts with microphone audio only. Perfect for talking head content, interviews, or vlogs.</p>
+                    <div class="instruction-item master-instruction">
+                        <h4>Master Projects</h4>
+                        <p>Complete projects with all three compound types on separate timeline lanes. Import these for the full multi-layout experience with easy switching between CAM, GS, and SSB views.</p>
                     </div>
                     <div class="instruction-item">
-                        <h4>🎮 GS (Game Share) Compounds</h4>
-                        <p>Multi-view layouts showing camera, game, and screen with full audio mix. Ideal for gaming content with commentary.</p>
+                        <h4>CAM Compounds</h4>
+                        <p>Camera-focused layouts with microphone audio and audio effects. Perfect for talking head content, interviews, or vlogs.</p>
                     </div>
                     <div class="instruction-item">
-                        <h4>🖥️ SSB (Screen Share Big) Compounds</h4>
-                        <p>Large screen view with small camera overlay and screen audio only. Best for tutorials, presentations, or software demos.</p>
+                        <h4>GS (Game Share) Compounds</h4>
+                        <p>Multi-view layouts with full audio mix and audio effects. Ideal for gaming content with commentary.</p>
+                    </div>
+                    <div class="instruction-item">
+                        <h4>SSB (Screen Share Big) Compounds</h4>
+                        <p>Large screen view with small camera overlay and audio effects. Best for tutorials, presentations, or software demos.</p>
                     </div>
                 </div>
                 <div class="next-steps">
                     <h4>Next Steps:</h4>
                     <ol>
-                        <li>Import the XML files you want into Final Cut Pro X</li>
-                        <li>Each compound clip contains all your cuts ready to use</li>
-                        <li>Switch between different layouts by using different compound clips</li>
-                        <li>Double-click any compound to customize the internal layout</li>
+                        <li><strong>Start with Master Projects:</strong> Import the SOLO or DC master project for the complete experience</li>
+                        <li><strong>Multi-lane Timeline:</strong> Use the lane buttons in FCPX to switch between CAM, GS, and SSB views</li>
+                        <li><strong>Audio Separation:</strong> Audio tracks are on separate lanes for independent control</li>
+                        <li><strong>Individual Compounds:</strong> Use these for specific layouts or custom projects</li>
+                        <li><strong>Audio Effects:</strong> All mic audio includes voice isolation, compression, and noise gate</li>
                     </ol>
                 </div>
             </div>
@@ -638,7 +678,11 @@ function showResults(job) {
         block: 'start'
     });
     
-    showAlert('success', `Processing completed! Generated ${job.results.length} compound clips.`);
+    const totalFiles = job.results.length;
+    const masterCount = job.results.filter(r => r.type === 'master').length;
+    const compoundCount = job.results.filter(r => r.type !== 'master').length;
+    
+    showAlert('success', `Processing completed! Generated ${masterCount} master projects and ${compoundCount} compound clips.`);
 }
 
 // Show error

@@ -170,16 +170,14 @@ class DCSSBGenerator:
         # Add screen audio to gap structure (lane -2)
         if 'screen' in audio_assets:
             screen_audio_info = processed_audio_sources['screen']
-            screen_audio_clip = self.xml_utils.create_asset_clip(
+            screen_audio_clip = self.xml_utils.create_audio_clip(
                 Path(screen_audio_info['path']).stem,
                 audio_assets['screen'],
                 "-2",  # Lane -2 for screen audio
                 "0s",  # Start at beginning of gap
                 screen_audio_info['duration'],
-                'r_audio_format',
-                'dialogue',
-                'screen',    # Pass audio type for effects
-                resources    # Pass resources for effect creation
+                'screen',    # Pass audio type for volume adjustment
+                resources    # Pass resources (though not used in simplified version)
             )
             gap.append(screen_audio_clip)
             print("Added screen audio to lane -2")

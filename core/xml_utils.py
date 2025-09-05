@@ -244,10 +244,12 @@ class FCPXMLUtils:
     
     @staticmethod
     def create_asset_clip(name: str, ref: str, lane: str, offset: str, 
-                         duration: str, format_id: Optional[str] = None,
-                         audio_role: Optional[str] = None, audio_type: Optional[str] = None,
-                         resources: Optional[ET.Element] = None) -> ET.Element:
-        """Create an asset-clip element for audio clips with optional effects."""
+                        duration: str, format_id: Optional[str] = None,
+                        audio_role: Optional[str] = None, audio_type: Optional[str] = None,
+                        resources: Optional[ET.Element] = None,
+                        crop_settings: Optional[Dict] = None,
+                        transform_settings: Optional[Dict] = None) -> ET.Element:
+        """Create an asset-clip element for audio clips with proper DTD element order."""
         clip = ET.Element('asset-clip')
         clip.set('ref', ref)
         clip.set('lane', lane)
@@ -257,60 +259,166 @@ class FCPXMLUtils:
         
         if format_id:
             clip.set('format', format_id)
+            clip.set('tcFormat', 'NDF')
         if audio_role:
             clip.set('audioRole', audio_role)
         
-        # Add audio effects if audio_type and resources are provided
-        if audio_type and resources is not None:
-            FCPXMLUtils.add_audio_effects_to_clip(clip, audio_type, resources)
+        # CORRECT DTD ORDER per error message:
+        # 1. note? - not used
+        # 2. (conform-rate? , timeMap?) - not used
+        # 3. All the adjust- elements in specific order
+        # 4. Content elements (audio | video | clip...)
+        
+        # Step 3a: Add crop settings if provided
+        if crop_settings:
+            crop = ET.SubElement(clip, 'adjust-crop')
+            crop.set('mode', 'trim')
+            trim_rect = ET.SubElement(crop, 'trim-rect')
+            trim_rect.set('left', str(crop_settings.get('left', 0)))
+            trim_rect.set('top', str(crop_settings.get('top', 0)))
+            trim_rect.set('right', str(crop_settings.get('right', 0)))
+            trim_rect.set('bottom', str(crop_settings.get('bottom', 0)))
+        
+        # Step 3b: Add transform settings if provided
+        if transform_settings:
+            transform = ET.SubElement(clip, 'adjust-transform')
+            position = transform_settings.get('position', [0, 0])
+            scale = transform_settings.get('scale', 1.0)
+            transform.set('position', f"{position[0]} {position[1]}")
+            transform.set('scale', f"{scale} {scale}")
+        
+        # Step 3c: Add volume adjustment - this must come before adjust-panner
+        if audio_type:
+            if audio_type in ['mic1', 'mic2', 'mic3', 'mic4']:
+                volume = ET.SubElement(clip, 'adjust-volume')
+                volume.set('amount', '0.0471005dB')
+            elif audio_type in ['screen', 'game', 'bluetooth']:
+                volume = ET.SubElement(clip, 'adjust-volume')
+                volume.set('amount', '-6dB')
+            elif audio_type == 'sound_effects':
+                volume = ET.SubElement(clip, 'adjust-volume')
+                volume.set('amount', '-10dB')
+        else:
+            # Mute if no audio type specified
+            volume = ET.SubElement(clip, 'adjust-volume')
+            volume.set('amount', '-96dB')
+        
+        # Step 3d: Add adjust-panner if needed (DTD expects this after adjust-volume)
+        # We don't currently use panning, but the DTD order requires this position
+        
+        # Step 4: Content elements - gap with audio
+        gap = ET.SubElement(clip, 'gap')
+        gap.set('name', 'Gap')
+        gap.set('offset', '0s')
+        gap.set('duration', duration)
+        
+        audio = ET.SubElement(gap, 'audio')
+        audio.set('ref', ref)
+        audio.set('lane', '-1')
+        audio.set('offset', '0s')
+        audio.set('duration', duration)
+        audio.set('role', 'dialogue.dialogue-1')
+        audio.set('srcCh', '1, 2')
         
         return clip
     
     @staticmethod
     def create_video_clip(name: str, ref: str, lane: str, offset: str, 
-                         duration: str, transforms: Optional[Dict] = None,
-                         enabled: bool = True) -> ET.Element:
-        """Create a clip element for video with optional transforms."""
-        clip = ET.Element('clip')
-        clip.set('lane', lane)
-        clip.set('offset', offset)
-        clip.set('name', name)
-        clip.set('duration', duration)
-        clip.set('tcFormat', 'NDF')
+                        duration: str, transforms: Optional[Dict] = None,
+                        keywords: Optional[List[Dict]] = None) -> ET.Element:
+        """Create a video element with proper transform handling."""
+        video = ET.Element('video')
+        video.set('ref', ref)
+        video.set('lane', lane)
+        video.set('offset', offset)
+        video.set('name', name)
+        video.set('duration', duration)
         
-        if not enabled:
-            clip.set('enabled', '0')
-        
-        # Add transforms if provided
+        # Add transform elements if provided
         if transforms:
+            # Add crop adjustment if specified
             if 'crop' in transforms:
-                crop = ET.SubElement(clip, 'adjust-crop')
+                crop_values = transforms['crop']  # [left, top, right, bottom]
+                crop = ET.SubElement(video, 'adjust-crop')
                 crop.set('mode', transforms.get('crop_mode', 'trim'))
                 trim_rect = ET.SubElement(crop, 'trim-rect')
-                crop_values = transforms['crop']
                 trim_rect.set('left', str(crop_values[0]))
                 trim_rect.set('top', str(crop_values[1]))
                 trim_rect.set('right', str(crop_values[2]))
                 trim_rect.set('bottom', str(crop_values[3]))
             
+            # Add transform adjustment if specified
             if 'transform' in transforms:
-                transform = ET.SubElement(clip, 'adjust-transform')
-                trans_values = transforms['transform']
-                transform.set('position', f"{trans_values['position'][0]} {trans_values['position'][1]}")
-                transform.set('scale', f"{trans_values['scale']} {trans_values['scale']}")
+                transform_data = transforms['transform']
+                transform = ET.SubElement(video, 'adjust-transform')
+                
+                if 'position' in transform_data:
+                    pos = transform_data['position']
+                    transform.set('position', f"{pos[0]} {pos[1]}")
+                
+                if 'scale' in transform_data:
+                    scale = transform_data['scale']
+                    transform.set('scale', f"{scale} {scale}")
         
-        # Add video reference
-        video = ET.SubElement(clip, 'video')
-        video.set('ref', ref)
-        video.set('offset', '0s')
-        video.set('duration', duration)
+        # Add keywords if provided
+        if keywords:
+            for keyword in keywords:
+                kw = ET.SubElement(video, 'keyword')
+                kw.set('start', keyword.get('start', offset))
+                kw.set('duration', keyword.get('duration', '10s'))
+                kw.set('value', keyword.get('value', 'white boxes'))
         
-        return clip
+        return video
     
     @staticmethod
+    def create_audio_clip(name: str, ref: str, lane: str, offset: str, 
+                        duration: str, audio_type: Optional[str] = None,
+                        resources: Optional[ET.Element] = None) -> ET.Element:
+        """Create an audio element for audio clips with proper DTD compliance."""
+        audio = ET.Element('audio')
+        audio.set('ref', ref)
+        audio.set('lane', lane)
+        audio.set('offset', offset)
+        audio.set('name', name)
+        audio.set('duration', duration)
+        audio.set('role', 'dialogue.dialogue-1')
+        audio.set('srcCh', '1, 2')
+        
+        # Add volume adjustment based on audio type (DTD allows adjust-volume as direct child)
+        if audio_type:
+            if audio_type in ['mic1', 'mic2', 'mic3', 'mic4']:
+                volume = ET.SubElement(audio, 'adjust-volume')
+                volume.set('amount', '0.0471005dB')
+            elif audio_type in ['screen', 'game', 'bluetooth']:
+                volume = ET.SubElement(audio, 'adjust-volume')
+                volume.set('amount', '-6dB')
+            elif audio_type == 'sound_effects':
+                volume = ET.SubElement(audio, 'adjust-volume')
+                volume.set('amount', '-10dB')
+        
+        return audio
+
+    @staticmethod
+    def get_compound_timeline_cuts(tree: ET.ElementTree) -> List[Dict]:
+        """Extract cut information from compound clip XML."""
+        cuts = []
+        spine = tree.find('.//project/sequence/spine')
+        
+        if spine is not None:
+            for ref_clip in spine.findall('ref-clip'):
+                cut_info = {
+                    'offset': ref_clip.get('offset', '0s'),
+                    'duration': ref_clip.get('duration', '0s'),
+                    'start': ref_clip.get('start', '0s')
+                }
+                cuts.append(cut_info)
+        
+        return cuts
+
+    @staticmethod
     def create_audio_only_clip(name: str, ref: str, lane: str, offset: str, 
-                              duration: str, role: str = "dialogue.dialogue-1",
-                              channels: str = "1, 2", enabled: bool = True) -> ET.Element:
+                            duration: str, role: str = "dialogue.dialogue-1",
+                            channels: str = "1, 2", enabled: bool = True) -> ET.Element:
         """Create a clip element with audio only."""
         clip = ET.Element('clip')
         clip.set('lane', lane)
@@ -337,20 +445,65 @@ class FCPXMLUtils:
         audio.set('srcCh', channels)
         
         return clip
-    
+
     @staticmethod
-    def get_compound_timeline_cuts(tree: ET.ElementTree) -> List[Dict]:
-        """Extract cut information from compound clip XML."""
-        cuts = []
-        spine = tree.find('.//project/sequence/spine')
+    def add_audio_effects_to_asset_clip(clip: ET.Element, audio_type: str, 
+                                    audio_lane: str, resources: ET.Element) -> None:
+        """Add audio effects to an already-created asset-clip element."""
+        if not audio_type or audio_type not in ['mic1', 'mic2', 'mic3', 'mic4', 'screen', 'game', 'bluetooth']:
+            return
         
-        if spine is not None:
-            for ref_clip in spine.findall('ref-clip'):
-                cut_info = {
-                    'offset': ref_clip.get('offset', '0s'),
-                    'duration': ref_clip.get('duration', '0s'),
-                    'start': ref_clip.get('start', '0s')
-                }
-                cuts.append(cut_info)
+        # Create unique effect IDs based on audio type and lane to avoid duplicates
+        compressor_id = f'r_{audio_type}_{audio_lane.replace("-", "neg")}_compressor'
+        noise_gate_id = f'r_{audio_type}_{audio_lane.replace("-", "neg")}_noise_gate'
         
-        return cuts
+        # Ensure effects exist in resources with unique IDs
+        if not resources.find(f'.//effect[@id="{compressor_id}"]'):
+            resources.append(FCPXMLUtils.create_effect_element(
+                compressor_id, 'Compressor', 
+                'AudioUnit: 0x617566780000009a454d4147'
+            ))
+        
+        if not resources.find(f'.//effect[@id="{noise_gate_id}"]'):
+            resources.append(FCPXMLUtils.create_effect_element(
+                noise_gate_id, 'Noise Gate',
+                'AudioUnit: 0x61756678000000b3454d4147'
+            ))
+        
+        # Find the gap element (should be the last child)
+        gap = clip.find('gap')
+        gap_index = list(clip).index(gap)
+        
+        # Add audio-channel-source with voice isolation BEFORE the gap
+        if audio_type in ['mic1', 'mic2', 'mic3', 'mic4']:
+            audio_channel = ET.Element('audio-channel-source')
+            audio_channel.set('srcCh', '1, 2')
+            audio_channel.set('role', 'dialogue.dialogue-1')
+            voice_isolation = ET.SubElement(audio_channel, 'adjust-voiceIsolation')
+            voice_isolation.set('amount', '75')
+            clip.insert(gap_index, audio_channel)
+            gap_index += 1
+        elif audio_type in ['screen', 'game', 'bluetooth']:
+            audio_channel = ET.Element('audio-channel-source')
+            audio_channel.set('srcCh', '1, 2')
+            audio_channel.set('role', 'dialogue.dialogue-1')
+            voice_isolation = ET.SubElement(audio_channel, 'adjust-voiceIsolation')
+            voice_isolation.set('amount', '50')
+            clip.insert(gap_index, audio_channel)
+            gap_index += 1
+        
+        # Add filter effects BEFORE the gap
+        if audio_type in ['mic1', 'mic2', 'mic3', 'mic4']:
+            # Mic: Compressor 3.5:1 + Noise Gate
+            compressor = FCPXMLUtils.create_compressor_filter(compressor_id, '3.5:1', '31')
+            clip.insert(gap_index, compressor)
+            gap_index += 1
+            
+            noise_gate = FCPXMLUtils.create_noise_gate_filter(noise_gate_id, '-50')
+            clip.insert(gap_index, noise_gate)
+            gap_index += 1
+        elif audio_type in ['screen', 'game', 'bluetooth']:
+            # System: Compressor 30.0:1
+            compressor = FCPXMLUtils.create_compressor_filter(compressor_id, '30.0:1', '85')
+            clip.insert(gap_index, compressor)
+            gap_index += 1
