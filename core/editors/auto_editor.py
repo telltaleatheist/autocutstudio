@@ -1,0 +1,294 @@
+# core/editors/auto_editor.py
+
+import subprocess
+import xml.etree.ElementTree as ET
+from pathlib import Path
+import json
+import datetime
+from typing import Tuple, Optional
+
+from .base_editor import BaseEditor
+from ..xml_utils import FCPXMLUtils
+
+class AutoEditor(BaseEditor):
+    """Auto-editor implementation for cutting silence/pauses."""
+    
+    def __init__(self, config):
+        self.config = config
+        self.xml_utils = FCPXMLUtils()
+    
+    def cut_silence(self, input_file: str, threshold: str = None, 
+                   output_format: str = "final-cut-pro") -> str:
+        """Run auto-editor on input file and return path to XML output."""
+        input_path = Path(input_file)
+        
+        if threshold is None:
+            threshold = self.config.default_threshold
+        
+        print(f"Running auto-editor on: {input_path}")
+        
+        try:
+            result = subprocess.run([
+                'auto-editor',
+                str(input_path),
+                '--edit', f'audio:{threshold}',
+                '--export', output_format
+            ], capture_output=True, text=True, check=True)
+            
+            # Auto-editor creates XML with _ALTERED suffix
+            xml_output = input_path.with_name(f"{input_path.stem}_ALTERED.fcpxml")
+            
+            if not xml_output.exists():
+                raise FileNotFoundError(f"Expected auto-editor output not found: {xml_output}")
+            
+            print(f"Auto-editor completed: {xml_output}")
+            return str(xml_output)
+            
+        except subprocess.CalledProcessError as e:
+            print(f"Error running auto-editor on {input_file}: {e}")
+            print(f"stderr: {e.stderr}")
+            raise
+        except FileNotFoundError:
+            print("Error: auto-editor not found. Please install auto-editor first.")
+            raise
+    
+    def get_video_info(self, file_path: str) -> Tuple[str, str, int, int]:
+        """Get video duration, frame duration, width, height using ffprobe."""
+        try:
+            result = subprocess.run([
+                'ffprobe', '-v', 'quiet', '-print_format', 'json',
+                '-show_format', '-show_streams', str(file_path)
+            ], capture_output=True, text=True, check=True)
+            
+            data = json.loads(result.stdout)
+            duration_seconds = float(data['format']['duration'])
+            
+            # Get the video stream to determine actual framerate and dimensions
+            video_stream = None
+            for stream in data['streams']:
+                if stream['codec_type'] == 'video':
+                    video_stream = stream
+                    break
+            
+            if not video_stream:
+                raise ValueError(f"No video stream found in {file_path}")
+            
+            # Parse framerate (could be "24/1" or "23.976")
+            fps_str = video_stream.get('r_frame_rate', '24/1')
+            if '/' in fps_str:
+                num, den = fps_str.split('/')
+                fps = float(num) / float(den)
+            else:
+                fps = float(fps_str)
+            
+            # Get dimensions
+            width = int(video_stream.get('width', 1920))
+            height = int(video_stream.get('height', 1080))
+            
+            # Calculate total frames and create FCPX duration format
+            total_frames = int(duration_seconds * fps)
+            
+            # Convert to FCPX format based on actual framerate
+            if abs(fps - 23.976) < 0.1:  # 23.976 fps (24000/1001)
+                frame_duration = "1001/24000s"
+                duration = f"{total_frames * 1001}/24000s"
+            elif abs(fps - 29.97) < 0.1:  # 29.97 fps (30000/1001)
+                frame_duration = "1001/30000s"
+                duration = f"{total_frames * 1001}/30000s"
+            elif abs(fps - 24.0) < 0.1:  # 24 fps
+                frame_duration = "1/24s"
+                duration = f"{total_frames}/24s"
+            elif abs(fps - 30.0) < 0.1:  # 30 fps
+                frame_duration = "1/30s"
+                duration = f"{total_frames}/30s"
+            else:
+                # Fallback - use the 479 denominator from your example
+                frame_duration = "20/479s"
+                duration = f"{int(total_frames * 20)}/479s"
+            
+            return duration, frame_duration, width, height
+            
+        except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as e:
+            print(f"Error getting video info: {e}")
+            raise
+    
+    def convert_to_compound(self, xml_path: str, original_file_path: str) -> str:
+        """Convert auto-editor XML to compound clip structure."""
+        print(f"Converting XML to compound clip: {xml_path}")
+        
+        # Get original video info
+        duration, frame_duration, width, height = self.get_video_info(original_file_path)
+        
+        try:
+            tree = ET.parse(xml_path)
+            root = tree.getroot()
+            
+            # Find the required elements
+            project = root.find('.//project')
+            sequence = root.find('.//sequence')
+            spine = root.find('.//spine')
+            resources = root.find('resources')
+            
+            if project is None or sequence is None or spine is None or resources is None:
+                print(f"Error: Could not find required XML elements in {xml_path}")
+                return None
+            
+            # Get all the clips
+            clips = spine.findall('asset-clip')
+            if not clips:
+                print(f"No clips found in {xml_path}")
+                return None
+            
+            print(f"Converting {len(clips)} individual clips to compound clip structure")
+            
+            # Get project and sequence attributes
+            project_name = project.get('name', 'Auto-Edit')
+            compound_name = f"{project_name} - Compound"
+            
+            seq_format = sequence.get('format')
+            seq_tcStart = sequence.get('tcStart', '0s')
+            seq_tcFormat = sequence.get('tcFormat', 'NDF')
+            seq_audioLayout = sequence.get('audioLayout', 'stereo')
+            seq_audioRate = sequence.get('audioRate', '48k')
+            
+            # Calculate total timeline duration from last clip
+            last_clip = clips[-1]
+            last_offset = last_clip.get('offset', '0s')
+            last_duration = last_clip.get('duration', '0s')
+            
+            def parse_time(time_str):
+                if time_str.endswith('s'):
+                    time_str = time_str[:-1]
+                if '/' in time_str:
+                    num, den = time_str.split('/')
+                    return int(num), int(den)
+                return int(time_str), 1
+            
+            last_offset_num, last_offset_den = parse_time(last_offset)
+            last_duration_num, last_duration_den = parse_time(last_duration)
+            total_duration = f"{last_offset_num + last_duration_num}/{last_offset_den}s"
+            
+            # Get the original asset info
+            first_clip = clips[0]
+            original_asset_ref = first_clip.get('ref')
+            original_asset_name = first_clip.get('name')
+            
+            # Find the existing format
+            original_format = resources.find(f".//*[@id='{seq_format}']")
+            if original_format is None:
+                print(f"Error: Could not find format {seq_format}")
+                return None
+            
+            # Remove the old auto-editor modified asset
+            old_asset = resources.find(f".//*[@id='{original_asset_ref}']")
+            if old_asset is not None:
+                resources.remove(old_asset)
+            
+            # Create new format
+            new_format_id = f"r1_original"
+            new_format = ET.SubElement(resources, 'format')
+            new_format.set('id', new_format_id)
+            new_format.set('name', 'FFVideoFormatRateUndefined')
+            new_format.set('frameDuration', frame_duration)
+            new_format.set('width', str(width))
+            new_format.set('height', str(height))
+            new_format.set('colorSpace', '1-1-1 (Rec. 709)')
+            
+            # Create new asset that references the original file with full duration
+            new_asset_id = "r_original"
+            new_asset = ET.SubElement(resources, 'asset')
+            new_asset.set('id', new_asset_id)
+            new_asset.set('name', original_asset_name)
+            new_asset.set('start', '0s')
+            new_asset.set('hasVideo', '1')
+            new_asset.set('format', new_format_id)
+            new_asset.set('hasAudio', '1')
+            new_asset.set('audioSources', '1')
+            new_asset.set('audioChannels', '2')
+            new_asset.set('duration', duration)  # Full original duration
+            
+            # Create media-rep pointing to the original file
+            media_rep = ET.SubElement(new_asset, 'media-rep')
+            media_rep.set('kind', 'original-media')
+            media_rep.set('src', f"file://{Path(original_file_path).resolve()}")
+            
+            print(f"Created new asset with full duration: {duration}")
+            
+            # Create compound clip as media element
+            compound_media = ET.SubElement(resources, 'media')
+            compound_media.set('id', 'compound1')
+            compound_media.set('name', compound_name)
+            compound_media.set('uid', 'AUTOEDITOR-COMPOUND-UID')
+            
+            # Add current timestamp
+            now = datetime.datetime.now()
+            mod_date = now.strftime("%Y-%m-%d %H:%M:%S -0400")
+            compound_media.set('modDate', mod_date)
+            
+            # Create sequence within the media element
+            compound_sequence = ET.SubElement(compound_media, 'sequence')
+            compound_sequence.set('format', new_format_id)
+            compound_sequence.set('duration', duration)  # Full original duration
+            compound_sequence.set('tcStart', seq_tcStart)
+            compound_sequence.set('tcFormat', seq_tcFormat)
+            compound_sequence.set('audioLayout', seq_audioLayout)
+            compound_sequence.set('audioRate', seq_audioRate)
+            
+            # Create spine with ONE full-length clip (no cuts)
+            compound_spine = ET.SubElement(compound_sequence, 'spine')
+            full_clip = ET.SubElement(compound_spine, 'asset-clip')
+            full_clip.set('name', original_asset_name)
+            full_clip.set('ref', new_asset_id)
+            full_clip.set('offset', '0s')
+            full_clip.set('duration', duration)  # Full original duration
+            full_clip.set('start', '0s')
+            full_clip.set('tcFormat', seq_tcFormat)
+            
+            # Replace main timeline with ref-clips that reference the compound
+            spine.clear()
+            
+            # Convert each original cut to a ref-clip
+            cumulative_offset = 0
+            
+            for i, clip in enumerate(clips):
+                ref_clip = ET.SubElement(spine, 'ref-clip')
+                ref_clip.set('ref', 'compound1')
+                ref_clip.set('name', compound_name)
+                
+                # Get duration and start
+                clip_duration = clip.get('duration')
+                start = clip.get('start', '0s')
+                
+                # Parse duration
+                dur_num, dur_den = parse_time(clip_duration)
+                offset = f"{cumulative_offset}/{dur_den}s"
+                
+                ref_clip.set('offset', offset)  # Timeline position
+                ref_clip.set('duration', clip_duration)  # Duration of this segment
+                ref_clip.set('start', start)  # Which part of the compound to show
+                
+                # Update cumulative offset for next clip
+                cumulative_offset += dur_num
+            
+            # Update project name and format
+            project.set('name', f"{project_name} - Compound Edit")
+            sequence.set('format', new_format_id)
+            
+            # Write the modified XML
+            output_path = str(Path(xml_path).with_name(f"{Path(xml_path).stem}_COMPOUND.fcpxml"))
+            ET.indent(tree, space="    ", level=0)
+            tree.write(output_path, encoding='utf-8', xml_declaration=True)
+            
+            print(f"Compound clip XML created: {output_path}")
+            return output_path
+            
+        except ET.ParseError as e:
+            print(f"XML parsing error in {xml_path}: {e}")
+            return None
+        except Exception as e:
+            print(f"Error converting {xml_path}: {e}")
+            return None
+    
+    def get_supported_formats(self):
+        """Return list of supported formats."""
+        return self.config.get_auto_editor_config().get('supported_formats', ['.mp4', '.mov'])

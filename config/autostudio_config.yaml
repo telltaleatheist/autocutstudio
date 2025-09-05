@@ -1,0 +1,241 @@
+# config/autostudio_config.yaml
+
+# Core application settings
+app:
+  editor: "auto_editor"
+  default_threshold: "-40dB"
+  
+# Web server settings (for future)
+server:
+  host: "localhost"
+  port: 8080
+  debug: false
+
+# File paths and assets
+paths:
+  templates_dir: "./templates"
+  output_dir: "./output"
+  temp_dir: "./temp"
+  
+  # Asset paths - organized by compound clip type
+  assets:
+    backgrounds:
+      space_background: "/Volumes/Callisto/Movies/FCPX/assets/earth background.png"
+    
+    borders:
+      # CAM compound - no borders needed for solo
+      cam:
+        # cam solo has no borders
+      
+      # CAM dual compound 
+      cam_dc:
+        top_left: "/Volumes/Callisto/Movies/FCPX/assets/white boxes/cam dc top left.png"      # cam 1
+        bottom_right: "/Volumes/Callisto/Movies/FCPX/assets/white boxes/cam dc bottom right.png"  # cam 2
+      
+      # GS (Game Share) compound
+      gs:
+        bottom_left: "/Volumes/Callisto/Movies/FCPX/assets/white boxes/gs bottom left.png"    # cam 1
+        bottom_right: "/Volumes/Callisto/Movies/FCPX/assets/white boxes/gs bottom right.png"  # game
+        top_left: "/Volumes/Callisto/Movies/FCPX/assets/white boxes/gs top left.png"         # screen
+      
+      # GS dual compound  
+      gs_dc:
+        bottom_left: "/Volumes/Callisto/Movies/FCPX/assets/white boxes/gs dc bottom left.png"  # cam 1
+        bottom_right: "/Volumes/Callisto/Movies/FCPX/assets/white boxes/gs dc bottom right.png" # game
+        top_left: "/Volumes/Callisto/Movies/FCPX/assets/white boxes/gs dc top left.png"       # screen
+        top_right: "/Volumes/Callisto/Movies/FCPX/assets/white boxes/gs dc top right.png"     # cam 2
+      
+      # SSB (Screen Share Big) compound
+      ssb:
+        top_left: "/Volumes/Callisto/Movies/FCPX/assets/white boxes/ssb top left.png"        # cam
+        bottom_right: "/Volumes/Callisto/Movies/FCPX/assets/white boxes/ssb bottom right.png" # screen
+      
+      # SSB dual compound
+      ssb_dc:
+        bottom_left: "/Volumes/Callisto/Movies/FCPX/assets/white boxes/ssb dc bottom left.png"  # cam 2
+        bottom_right: "/Volumes/Callisto/Movies/FCPX/assets/white boxes/ssb dc bottom right.png" # screen
+        top_left: "/Volumes/Callisto/Movies/FCPX/assets/white boxes/ssb dc top left.png"       # cam 1
+
+# Source layout definitions
+source_layouts:
+  master_current:
+    type: "master_multi"
+    camera1:
+      crop: [2.08966, 51.343, 90.9273, 1.61006]  # left, top, right, bottom percentages
+      scale: 1.0
+    camera2:  
+      crop: [0, 0, 50, 50]  # placeholder coordinates
+      scale: 1.0
+    screen:
+      crop: [0, 0, 100, 100]  # placeholder coordinates
+      scale: 1.0
+    game:
+      crop: [50, 50, 100, 100]  # placeholder coordinates
+      scale: 1.0
+      
+  # Future layout if master file changes
+  individual_files:
+    type: "individual"
+    # No cropping needed - each file is already isolated
+
+# Current layout selection
+current_layout: "master_current"
+
+# Compound clip layouts
+layouts:
+  cam:
+    solo:
+      camera:
+        lane: 1
+        scale: 2.13
+        position: [94.5832, 53.0757]
+        crop: [2.08966, 51.343, 90.9273, 1.61006]
+        transform_mode: "trim"
+        # No border for cam solo
+      audio_sources: ["mic1", "mic2", "mic3", "mic4", "sound_effects"]
+      gap:
+        name: "Gap"
+        # offset and duration calculated dynamically from compound clip
+    
+    dual:
+      cam1:
+        lane: 1
+        scale: 1.0
+        position: [25, 25]  # top left
+        crop: [0, 0, 50, 50]
+        border: "cam_dc.top_left"
+      cam2:
+        lane: 2
+        scale: 1.0
+        position: [75, 75]  # bottom right
+        crop: [50, 50, 100, 100]
+        border: "cam_dc.bottom_right"
+      background: "space_background"
+      audio_sources: ["mic1", "mic2", "mic3", "mic4", "sound_effects"]
+      gap:
+        name: "Gap"
+
+  gs:  # Game Share layout
+    solo:
+      camera:
+        lane: 1
+        position: [25, 75]  # bottom left
+        scale: 1.0
+        border: "gs.bottom_left"
+      game:
+        lane: 2
+        position: [75, 75]  # bottom right
+        scale: 1.0
+        border: "gs.bottom_right"
+      screen:
+        lane: 3
+        position: [25, 25]  # top left
+        scale: 1.0
+        border: "gs.top_left"
+      background: "space_background"
+      audio_sources: ["mic1", "mic2", "mic3", "mic4", "screen", "game", "sound_effects", "bluetooth"]
+    
+    dual:
+      camera:
+        lane: 1
+        position: [25, 75]  # bottom left
+        scale: 1.0
+        border: "gs_dc.bottom_left"
+      cam2:
+        lane: 2
+        position: [75, 25]  # top right
+        scale: 1.0
+        border: "gs_dc.top_right"
+      game:
+        lane: 3
+        position: [75, 75]  # bottom right
+        scale: 1.0
+        border: "gs_dc.bottom_right"
+      screen:
+        lane: 4
+        position: [25, 25]  # top left
+        scale: 1.0
+        border: "gs_dc.top_left"
+      background: "space_background"
+      audio_sources: ["mic1", "mic2", "mic3", "mic4", "screen", "game", "sound_effects", "bluetooth"]
+
+  ssb:  # Screen Share Big layout
+    solo:
+      camera:
+        lane: 1
+        position: [25, 25]  # top left
+        scale: 1.0
+        border: "ssb.top_left"
+      screen:
+        lane: 2
+        position: [75, 75]  # bottom right (large)
+        scale: 1.5
+        border: "ssb.bottom_right"
+      background: "space_background"
+      audio_sources: ["screen", "game", "bluetooth"]
+    
+    dual:
+      cam1:
+        lane: 1
+        position: [25, 25]  # top left
+        scale: 1.0
+        border: "ssb_dc.top_left"
+      cam2:
+        lane: 2
+        position: [25, 75]  # bottom left
+        scale: 1.0
+        border: "ssb_dc.bottom_left"
+      screen:
+        lane: 3
+        position: [75, 75]  # bottom right (large)
+        scale: 1.5
+        border: "ssb_dc.bottom_right"
+      background: "space_background"
+      audio_sources: ["screen", "game", "bluetooth"]
+
+# File naming patterns
+file_patterns:
+  master: "{date} master"
+  cam: "{date} cam"
+  mic1: "{date} mic1"
+  mic2: "{date} mic2"
+  mic3: "{date} mic3"
+  mic4: "{date} mic4"
+  screen: "{date} screen"
+  game: "{date} game"
+  sound_effects: "{date} sound effects"
+  bluetooth: "{date} bluetooth"
+
+# Editor-specific settings
+editors:
+  auto_editor:
+    command: "auto-editor"
+    export_format: "final-cut-pro"
+    supported_formats: [".mp4", ".mov", ".avi", ".mkv", ".flv", ".wmv", ".mpg", ".mpeg", ".m4v", ".webm"]
+
+# Audio processing settings
+audio:
+  sync_correction: 1.001  # for 29.97fps
+  sample_rate: 48000
+  supported_formats: [".wav", ".mp3", ".aac", ".flac", ".ogg"]
+  
+  # Audio source slots
+  sources:
+    mic1: null  # user specifies at runtime
+    mic2: null
+    mic3: null
+    mic4: null
+    screen: null
+    game: null
+    sound_effects: null
+    bluetooth: null
+
+# Video settings
+video:
+  frame_duration: "1001/30000s"
+  width: 1920
+  height: 1080
+  color_space: "1-1-1 (Rec. 709)"
+  tcFormat: "NDF"
+  audioLayout: "stereo"
+  audioRate: "48k"

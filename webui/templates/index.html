@@ -1,0 +1,193 @@
+<!-- webui/templates/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoCutStudio - Video Processing</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body data-theme="light">
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-content">
+                <a href="#" class="logo">AutoCutStudio</a>
+                <div class="flex gap-2">
+                    <button class="theme-toggle" onclick="toggleTheme()">🌙</button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="container">
+            <h1 class="hero-title">Video Processing</h1>
+            <p class="hero-subtitle">Automated multi-camera video editing workflow for YouTube content creators</p>
+        </div>
+    </section>
+
+    <!-- Main Content -->
+    <section class="section">
+        <div class="container">
+            <div class="grid grid-2">
+                
+                <!-- Configuration Panel -->
+                <div class="panel">
+                    <div class="panel-header">
+                        <h4 class="panel-title">🎬 Video Configuration</h4>
+                    </div>
+                    <div class="panel-content">
+                        <form id="videoForm">
+                            <!-- Master Video File -->
+                            <div class="form-group">
+                                <label for="masterVideo">Master Video File *</label>
+                                <div class="file-selector">
+                                    <input type="text" id="masterVideoPath" name="masterVideoPath" readonly 
+                                           placeholder="Click 'Browse Files' to select a video file" required>
+                                    <button type="button" class="btn btn-secondary" onclick="openFileBrowser()">
+                                        📁 Browse Files
+                                    </button>
+                                </div>
+                                <small class="form-help">Main recording file containing all camera angles</small>
+                            </div>
+
+                            <!-- Project Audio Sources -->
+                            <div class="form-group">
+                                <label>Project Audio Sources</label>
+                                <div class="project-audio-list" id="projectAudioList">
+                                    <p class="form-help">No audio sources added yet. Use the file browser or auto-detect to add sources.</p>
+                                </div>
+                                <div class="audio-source-actions">
+                                    <button type="button" class="btn btn-secondary" onclick="autoDetectAudioFiles()" id="autoDetectBtn">
+                                        🔍 Auto-Detect Audio Files
+                                    </button>
+                                    <button type="button" class="btn btn-secondary" onclick="openAudioFileBrowser()" id="browseAudioBtn">
+                                        📁 Browse for Audio Files
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="threshold">Audio Threshold</label>
+                                <input type="text" id="threshold" name="threshold" value="-40dB" placeholder="-40dB">
+                                <small class="form-help">Silence detection threshold for auto-editor (e.g., -40dB, -30dB, -20dB)</small>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Audio File Browser Panel -->
+                <div class="panel">
+                    <div class="panel-header">
+                        <h4 class="panel-title">📁 Audio File Browser</h4>
+                    </div>
+                    <div class="panel-content">
+                        <p class="form-help mb-2">Browse and add individual audio files to your project. Click "Browse for Audio Files" in the left panel to activate this browser.</p>
+                        
+                        <div id="audioBrowserPanel" style="display: none;">
+                            <div class="breadcrumb" id="audioBreadcrumb">
+                                <span>/Volumes/Callisto/Movies</span>
+                            </div>
+                            <div class="file-list" id="audioFileList">
+                                <div class="loading">Loading files...</div>
+                            </div>
+                            <div class="audio-browser-actions">
+                                <button type="button" class="btn btn-secondary" onclick="closeAudioBrowser()">Cancel</button>
+                                <button type="button" class="btn btn-primary" onclick="addSelectedAudioFile()" id="addAudioFileBtn" disabled>
+                                    ➕ Add to Project
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div id="audioBrowserInactive">
+                            <p class="form-help text-center">Audio file browser is not active. Use the "Browse for Audio Files" button in the left panel to start browsing.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="text-center mt-2">
+                <button type="button" class="btn btn-primary" onclick="startProcessing()" id="processBtn">
+                    🚀 Start Processing
+                </button>
+                <button type="button" class="btn btn-secondary" onclick="testConfig()" id="testBtn">
+                    🧪 Test Configuration
+                </button>
+            </div>
+        </div>
+    </section>
+
+    <!-- Progress Section (Hidden initially) -->
+    <section class="section secondary hidden" id="progressSection">
+        <div class="container">
+            <div class="panel">
+                <div class="panel-header">
+                    <h4 class="panel-title">📊 Processing Progress</h4>
+                    <span class="badge badge-info" id="statusBadge">Processing</span>
+                </div>
+                <div class="panel-content">
+                    <div class="progress mb-2">
+                        <div class="progress-fill" id="progressBar" style="width: 0%"></div>
+                    </div>
+                    <p id="progressMessage">Initializing...</p>
+                    <div id="progressDetails" class="mt-2"></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Results Section (Hidden initially) -->
+    <section class="section hidden" id="resultsSection">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">✅ Generated Compound Clips</h2>
+                <p class="section-subtitle">Your video processing is complete</p>
+            </div>
+            
+            <div id="resultsContainer">
+                <!-- Results will be populated by JavaScript -->
+            </div>
+
+            <div class="text-center mt-2">
+                <button type="button" class="btn btn-secondary" onclick="resetForm()">
+                    🔄 Process Another Video
+                </button>
+            </div>
+        </div>
+    </section>
+
+    <!-- Alerts Container -->
+    <div id="alertsContainer" class="container">
+        <!-- Alerts will be inserted here by JavaScript -->
+    </div>
+
+    <!-- File Browser Modal -->
+    <div class="modal-overlay hidden" id="fileBrowserModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 class="modal-title" id="modalTitle">📁 File Browser</h3>
+                <button class="modal-close" onclick="closeFileBrowser()">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="breadcrumb" id="breadcrumb">
+                    <span>/Volumes/Callisto/Movies</span>
+                </div>
+                <div class="file-list" id="fileList">
+                    <div class="loading">Loading files...</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeFileBrowser()">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="selectCurrentFile()" id="selectFileBtn" disabled>
+                    Select File
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

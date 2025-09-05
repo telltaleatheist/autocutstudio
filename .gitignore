@@ -1,0 +1,8 @@
+core/__pycache__/*
+cli/__pycache__/*
+core/compound_generators/__pycache__/*
+core/editors/__pycache__/*
+._*
+script.sh
+.vscode/*
+.DS_Store
