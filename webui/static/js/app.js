@@ -5,9 +5,9 @@ let currentJobId = null;
 let progressTimer = null;
 let currentFileBrowserPath = '/Volumes/Callisto/Movies';
 let selectedFilePath = null;
-let fileBrowserTarget = null; // Which input field we're browsing for
-let projectAudioSources = {}; // Store project audio sources: {type: {path: string, syncFix: boolean}}
-let browserMode = 'master'; // 'master' or 'audio'
+let fileBrowserTarget = null;
+let projectAudioSources = {};
+let browserMode = 'master';
 
 // Theme management
 function toggleTheme() {
@@ -22,322 +22,110 @@ function toggleTheme() {
     localStorage.setItem('theme', newTheme);
 }
 
-// Load saved theme and set up all event listeners
+// Load saved theme on page load
 document.addEventListener('DOMContentLoaded', function() {
-    // Theme setup
     const savedTheme = localStorage.getItem('theme') || 'light';
     document.body.setAttribute('data-theme', savedTheme);
     document.querySelector('.theme-toggle').textContent = savedTheme === 'dark' ? '☀️' : '🌙';
-    
-    // Add file change listeners
-    const fileInputs = document.querySelectorAll('input[type="file"]');
-    fileInputs.forEach(input => {
-        input.addEventListener('change', function() {
-            const label = this.previousElementSibling;
-            if (this.files.length > 0) {
-                label.style.color = 'var(--primary-orange)';
-            } else {
-                label.style.color = '';
-            }
-        });
-    });
-    
-    // Add click event listeners to replace onclick attributes
-    
-    // Theme toggle
-    const themeToggle = document.querySelector('.theme-toggle');
-    if (themeToggle) {
-        themeToggle.addEventListener('click', toggleTheme);
-    }
-    
-    // Main browse files button
-    const mainBrowseBtn = document.querySelector('button[onclick*="openFileBrowser()"]');
-    if (mainBrowseBtn) {
-        mainBrowseBtn.addEventListener('click', function() {
-            openFileBrowser();
-        });
-    }
-    
-    // Process and test buttons
-    const processBtn = document.getElementById('processBtn');
-    if (processBtn) {
-        processBtn.addEventListener('click', startProcessing);
-    }
-    
-    const testBtn = document.getElementById('testBtn');
-    if (testBtn) {
-        testBtn.addEventListener('click', testConfig);
-    }
-    
-    // Modal buttons
-    const modalClose = document.querySelector('.modal-close');
-    if (modalClose) {
-        modalClose.addEventListener('click', closeFileBrowser);
-    }
-    
-    const selectFileBtn = document.getElementById('selectFileBtn');
-    if (selectFileBtn) {
-        selectFileBtn.addEventListener('click', selectCurrentFile);
-    }
-    
-    // Reset form button (event delegation)
-    document.addEventListener('click', function(e) {
-        if (e.target.onclick && e.target.onclick.toString().includes('resetForm')) {
-            resetForm();
-        }
-    });
 });
 
-// File path helpers
-function getFilePathFromInput(input) {
-    if (!input.files || input.files.length === 0) {
-        return null;
-    }
-    return input.files[0].name; // In a real app, you'd need to handle file upload properly
+// XML Generation Options
+function selectAllXmlOptions() {
+    const checkboxes = document.querySelectorAll('input[name="xmlOptions"]');
+    checkboxes.forEach(checkbox => checkbox.checked = true);
 }
 
-function getFormData() {
-    const form = document.getElementById('videoForm');
-    const formData = new FormData(form);
-    
-    // Build audio sources and sync settings from project audio sources
-    const audioSources = {};
-    const audioSyncSettings = {};
-    
-    for (const [type, source] of Object.entries(projectAudioSources)) {
-        audioSources[`${type}Audio`] = source.path;
-        audioSyncSettings[type] = source.syncFix || false;
-    }
-    
-    const data = {
-        masterVideo: document.getElementById('masterVideoPath').value,
-        threshold: formData.get('threshold'),
-        audioSyncSettings: audioSyncSettings,
-        ...audioSources
-    };
-    
-    return data;
+function deselectAllXmlOptions() {
+    const checkboxes = document.querySelectorAll('input[name="xmlOptions"]');
+    checkboxes.forEach(checkbox => checkbox.checked = false);
 }
 
-// Audio source management functions
+function getSelectedXmlOptions() {
+    const checkboxes = document.querySelectorAll('input[name="xmlOptions"]:checked');
+    const selected = Array.from(checkboxes).map(cb => cb.value);
+    return selected.length > 0 ? selected : null;
+}
+
+// Audio source management
 function openAudioFileBrowser() {
-    // Show the audio browser panel
-    document.getElementById('audioBrowserPanel').style.display = 'block';
-    document.getElementById('audioBrowserInactive').style.display = 'none';
-    
-    // Set browser mode and initialize
     browserMode = 'audio';
     fileBrowserTarget = 'audio';
     selectedFilePath = null;
-    
-    // Load the file browser in the audio panel
-    loadAudioFileBrowserPath(currentFileBrowserPath);
+    document.getElementById('modalTitle').textContent = '📁 Select Audio/Video File';
+    document.getElementById('fileBrowserModal').classList.remove('hidden');
+    document.getElementById('selectFileBtn').classList.remove('hidden');
+    document.getElementById('selectFileBtn').disabled = true;
+    document.getElementById('selectFileBtn').textContent = 'Add to Project';
+    loadFileBrowserPath(currentFileBrowserPath);
 }
 
-function closeAudioBrowser() {
-    document.getElementById('audioBrowserPanel').style.display = 'none';
-    document.getElementById('audioBrowserInactive').style.display = 'block';
-    selectedFilePath = null;
-    browserMode = 'master';
-}
-
-async function loadAudioFileBrowserPath(path) {
-    const fileList = document.getElementById('audioFileList');
-    const breadcrumb = document.getElementById('audioBreadcrumb');
-    
-    fileList.innerHTML = '<div class="loading">Loading files...</div>';
-    breadcrumb.textContent = path;
-    
-    const url = `/api/browse?path=${encodeURIComponent(path)}`;
-    
-    try {
-        const response = await fetch(url);
-        const result = await response.json();
-        
-        if (result.success) {
-            currentFileBrowserPath = result.currentPath;
-            renderAudioFileList(result.items);
-        } else {
-            fileList.innerHTML = `<div class="loading">Error: ${result.error}</div>`;
-        }
-    } catch (error) {
-        fileList.innerHTML = `<div class="loading">Error loading files: ${error.message}</div>`;
-    }
-}
-
-function renderAudioFileList(items) {
-    const fileList = document.getElementById('audioFileList');
-    
-    if (items.length === 0) {
-        fileList.innerHTML = '<div class="loading">No files found</div>';
-        return;
-    }
-    
-    let html = '';
-    items.forEach(item => {
-        const icon = getFileIcon(item.type);
-        const isSelectable = item.type === 'audio' || item.type === 'video';
-        
-        html += `
-            <div class="file-item ${isSelectable ? 'selectable' : ''}" 
-                 data-path="${item.path}" 
-                 data-type="${item.type}"
-                 onclick="handleAudioFileClick('${item.path}', '${item.type}')">
-                <div class="file-icon">${icon}</div>
-                <div class="file-info">
-                    <div class="file-name">${item.name}</div>
-                    <div class="file-details">
-                        ${item.type === 'directory' ? 'Folder' : 
-                          item.type === 'audio' ? `Audio • ${item.sizeFormatted}` : 
-                          item.type === 'video' ? `Video • ${item.sizeFormatted}` : ''}
-                    </div>
-                </div>
-            </div>
-        `;
-    });
-    
-    fileList.innerHTML = html;
-}
-
-function handleAudioFileClick(path, type) {
-    // Clear previous selections in audio browser
-    document.querySelectorAll('#audioFileList .file-item').forEach(item => {
-        item.classList.remove('selected');
-    });
-    
-    if (type === 'directory') {
-        // Navigate to directory
-        loadAudioFileBrowserPath(path);
-    } else if (type === 'audio' || type === 'video') {
-        // Select audio or video file
-        selectedFilePath = path;
-        event.target.closest('.file-item').classList.add('selected');
-        document.getElementById('addAudioFileBtn').disabled = false;
-    }
-}
-
-function addSelectedAudioFile() {
-    if (!selectedFilePath) return;
-    
-    // Show audio type selection modal or auto-detect type
-    const fileName = selectedFilePath.split('/').pop().toLowerCase();
-    let audioType = detectAudioType(fileName);
-    
-    if (!audioType) {
-        // Show type selection dialog
-        audioType = promptForAudioType();
-        if (!audioType) return;
-    }
-    
-    // Add to project
-    projectAudioSources[audioType] = {
-        path: selectedFilePath,
-        syncFix: false
-    };
-    
-    updateProjectAudioList();
-    closeAudioBrowser();
-    selectedFilePath = null;
-    
-    showAlert('success', `Added ${audioType} audio to project`);
-}
-
-function addSelectedAudioToProject() {
-    if (!selectedFilePath) return;
-    
-    // Show audio type selection modal or auto-detect type
-    const fileName = selectedFilePath.split('/').pop().toLowerCase();
-    let audioType = detectAudioType(fileName);
-    
-    if (!audioType) {
-        // Show type selection dialog
-        audioType = promptForAudioType();
-        if (!audioType) return;
-    }
-    
-    // Add to project
-    projectAudioSources[audioType] = {
-        path: selectedFilePath,
-        syncFix: false
-    };
-    
-    updateProjectAudioList();
-    closeFileBrowser();
-    selectedFilePath = null;
-}
-
-function detectAudioType(fileName) {
-    if (fileName.includes('mic 1') || fileName.includes('mic1') || fileName.includes('mic audio 1')) return 'mic1';
-    if (fileName.includes('mic 2') || fileName.includes('mic2') || fileName.includes('mic audio 2')) return 'mic2';
-    if (fileName.includes('mic 3') || fileName.includes('mic3') || fileName.includes('mic audio 3')) return 'mic3';
-    if (fileName.includes('mic 4') || fileName.includes('mic4') || fileName.includes('mic audio 4')) return 'mic4';
-    if (fileName.includes('screen')) return 'screen';
-    if (fileName.includes('game')) return 'game';
-    if (fileName.includes('sound effects') || fileName.includes('sfx')) return 'soundEffects';
-    if (fileName.includes('bluetooth')) return 'bluetooth';
-    if (fileName.includes('mic audio') && !fileName.match(/[1-4]/)) return 'mic1'; // Default mic
-    return null;
-}
-
-function promptForAudioType() {
-    const audioTypes = [
-        {value: 'mic1', label: 'Mic Audio 1'},
-        {value: 'mic2', label: 'Mic Audio 2'},
-        {value: 'mic3', label: 'Mic Audio 3'},
-        {value: 'mic4', label: 'Mic Audio 4'},
-        {value: 'screen', label: 'Screen Audio'},
-        {value: 'game', label: 'Game Audio'},
-        {value: 'soundEffects', label: 'Sound Effects'},
-        {value: 'bluetooth', label: 'Bluetooth Audio'}
-    ];
-    
-    const typeList = audioTypes.map(t => `${t.value}: ${t.label}`).join('\n');
-    const selected = prompt(`Select audio type for this file:\n\n${typeList}\n\nEnter the type (e.g., mic1, screen, game):`);
-    
-    if (selected && audioTypes.find(t => t.value === selected)) {
-        return selected;
-    }
-    return null;
-}
-
-function updateProjectAudioList() {
-    const container = document.getElementById('projectAudioList');
-    
-    if (Object.keys(projectAudioSources).length === 0) {
-        container.innerHTML = '<p class="form-help">No audio sources added yet. Use the file browser or auto-detect to add sources.</p>';
-        return;
-    }
-    
-    const audioTypeLabels = {
+function getAudioTypeLabel(audioType) {
+    const labels = {
         'mic1': 'Mic Audio 1',
         'mic2': 'Mic Audio 2',
         'mic3': 'Mic Audio 3',
         'mic4': 'Mic Audio 4',
         'screen': 'Screen Audio',
         'game': 'Game Audio',
+        'sound_effects': 'Sound Effects',
         'soundEffects': 'Sound Effects',
         'bluetooth': 'Bluetooth Audio'
     };
+    return labels[audioType] || audioType;
+}
+
+function updateProjectAudioList() {
+    const container = document.getElementById('projectAudioList');
+    
+    if (Object.keys(projectAudioSources).length === 0) {
+        container.innerHTML = '<p class="form-help">No audio sources added yet. Use auto-detect or add manually.</p>';
+        return;
+    }
     
     let html = '';
-    for (const [type, source] of Object.entries(projectAudioSources)) {
+    for (const [id, source] of Object.entries(projectAudioSources)) {
         const fileName = source.path.split('/').pop();
-        const syncCheckboxId = `sync${type}`;
+        const syncCheckboxId = `sync${id}`;
+        
+        // Create dropdown options
+        const audioTypes = [
+            {value: '', label: 'Select Type...'},
+            {value: 'mic1', label: 'Mic Audio 1'},
+            {value: 'mic2', label: 'Mic Audio 2'},
+            {value: 'mic3', label: 'Mic Audio 3'},
+            {value: 'mic4', label: 'Mic Audio 4'},
+            {value: 'screen', label: 'Screen Audio'},
+            {value: 'game', label: 'Game Audio'},
+            {value: 'sound_effects', label: 'Sound Effects'},
+            {value: 'bluetooth', label: 'Bluetooth Audio'}
+        ];
+        
+        // Check if type is already in use by another file
+        const usedTypes = Object.values(projectAudioSources)
+            .filter(s => s !== source && s.type)
+            .map(s => s.type);
         
         html += `
-            <div class="project-audio-item" data-type="${type}">
+            <div class="project-audio-item ${!source.type ? 'unassigned' : ''}" data-id="${id}">
                 <div class="audio-item-info">
-                    <div class="audio-item-type">${audioTypeLabels[type]}:</div>
                     <div class="audio-item-path" title="${source.path}">${fileName}</div>
                 </div>
                 <div class="audio-item-controls">
+                    <select class="audio-type-select" onchange="assignAudioType('${id}', this.value)">
+                        ${audioTypes.map(opt => {
+                            const disabled = (opt.value && usedTypes.includes(opt.value)) ? 'disabled' : '';
+                            const selected = source.type === opt.value ? 'selected' : '';
+                            return `<option value="${opt.value}" ${disabled} ${selected}>${opt.label}${disabled ? ' (in use)' : ''}</option>`;
+                        }).join('')}
+                    </select>
                     <label class="checkbox-label">
                         <input type="checkbox" id="${syncCheckboxId}" ${source.syncFix ? 'checked' : ''} 
-                               onchange="updateAudioSyncSetting('${type}', this.checked)">
+                               onchange="updateAudioSyncSetting('${id}', this.checked)"
+                               ${!source.type ? 'disabled' : ''}>
                         <span class="checkbox-custom"></span>
-                        29.97fps sync fix
+                        29.97fps
                     </label>
-                    <button type="button" class="btn btn-small btn-danger" onclick="removeAudioSource('${type}')">
+                    <button type="button" class="btn btn-small btn-danger" onclick="removeAudioSource('${id}')">
                         Remove
                     </button>
                 </div>
@@ -348,14 +136,40 @@ function updateProjectAudioList() {
     container.innerHTML = html;
 }
 
-function updateAudioSyncSetting(audioType, syncEnabled) {
-    if (projectAudioSources[audioType]) {
-        projectAudioSources[audioType].syncFix = syncEnabled;
+function assignAudioType(fileId, audioType) {
+    if (!projectAudioSources[fileId]) return;
+    
+    // Clear the type if empty string
+    if (!audioType) {
+        projectAudioSources[fileId].type = null;
+        updateProjectAudioList();
+        return;
+    }
+    
+    // Check if this type is already assigned to another file
+    for (const [id, source] of Object.entries(projectAudioSources)) {
+        if (id !== fileId && source.type === audioType) {
+            showAlert('warning', `${getAudioTypeLabel(audioType)} is already assigned to another file`);
+            // Reset the dropdown
+            updateProjectAudioList();
+            return;
+        }
+    }
+    
+    // Assign the type
+    projectAudioSources[fileId].type = audioType;
+    updateProjectAudioList();
+    showAlert('success', `Assigned as ${getAudioTypeLabel(audioType)}`);
+}
+
+function updateAudioSyncSetting(fileId, syncEnabled) {
+    if (projectAudioSources[fileId]) {
+        projectAudioSources[fileId].syncFix = syncEnabled;
     }
 }
 
-function removeAudioSource(audioType) {
-    delete projectAudioSources[audioType];
+function removeAudioSource(fileId) {
+    delete projectAudioSources[fileId];
     updateProjectAudioList();
 }
 
@@ -371,10 +185,12 @@ async function autoDetectAudioFiles() {
         const result = await response.json();
         
         if (result.success) {
-            // Add detected files to project sources
+            // Add detected files with proper types
             for (const [type, path] of Object.entries(result.audioFiles)) {
-                projectAudioSources[type] = {
+                const fileId = 'file_' + Date.now() + '_' + type;
+                projectAudioSources[fileId] = {
                     path: path,
+                    type: type === 'soundEffects' ? 'sound_effects' : type,
                     syncFix: false
                 };
             }
@@ -387,6 +203,36 @@ async function autoDetectAudioFiles() {
     } catch (error) {
         showAlert('warning', `Error detecting audio files: ${error.message}`);
     }
+}
+
+// Form data collection
+function getFormData() {
+    const form = document.getElementById('videoForm');
+    const formData = new FormData(form);
+    
+    const audioSources = {};
+    const audioSyncSettings = {};
+    
+    // Convert from file IDs to audio types
+    for (const [id, source] of Object.entries(projectAudioSources)) {
+        if (source.type) {  // Only include files with assigned types
+            const audioKey = source.type === 'sound_effects' ? 'soundEffectsAudio' : `${source.type}Audio`;
+            audioSources[audioKey] = source.path;
+            audioSyncSettings[source.type] = source.syncFix || false;
+        }
+    }
+    
+    const xmlOptions = getSelectedXmlOptions();
+    
+    const data = {
+        masterVideo: document.getElementById('masterVideoPath').value,
+        threshold: formData.get('threshold'),
+        audioSyncSettings: audioSyncSettings,
+        xmlOptions: xmlOptions,
+        ...audioSources
+    };
+    
+    return data;
 }
 
 // Alert system
@@ -427,6 +273,12 @@ function validateForm() {
     if (!masterVideo) {
         showAlert('danger', 'Master video file is required');
         return false;
+    }
+    
+    // Check for unassigned audio files
+    const unassignedFiles = Object.values(projectAudioSources).filter(s => !s.type);
+    if (unassignedFiles.length > 0) {
+        showAlert('warning', `${unassignedFiles.length} audio file(s) have no type assigned. They will not be included in processing.`);
     }
     
     if (Object.keys(projectAudioSources).length === 0) {
@@ -499,29 +351,26 @@ async function startProcessing() {
     }
 }
 
-// Show progress section
+// Progress management
 function showProgressSection() {
     document.getElementById('progressSection').classList.remove('hidden');
     document.getElementById('resultsSection').classList.add('hidden');
     
-    // Scroll to progress section
     document.getElementById('progressSection').scrollIntoView({ 
         behavior: 'smooth',
         block: 'start'
     });
 }
 
-// Start progress polling
 function startProgressPolling() {
     if (progressTimer) {
         clearInterval(progressTimer);
     }
     
     progressTimer = setInterval(checkProgress, 1000);
-    checkProgress(); // Check immediately
+    checkProgress();
 }
 
-// Check progress
 async function checkProgress() {
     if (!currentJobId) return;
     
@@ -544,7 +393,6 @@ async function checkProgress() {
     }
 }
 
-// Update progress display
 function updateProgress(job) {
     const progressBar = document.getElementById('progressBar');
     const progressMessage = document.getElementById('progressMessage');
@@ -553,7 +401,6 @@ function updateProgress(job) {
     progressBar.style.width = `${job.progress}%`;
     progressMessage.textContent = job.message;
     
-    // Update status badge
     if (job.status === 'processing') {
         statusBadge.className = 'badge badge-info';
         statusBadge.textContent = 'Processing';
@@ -566,50 +413,38 @@ function updateProgress(job) {
     }
 }
 
-// Show results
+// Results display
 function showResults(job) {
     document.getElementById('resultsSection').classList.remove('hidden');
     
     const resultsContainer = document.getElementById('resultsContainer');
     
     if (job.results && job.results.length > 0) {
-        // Separate master projects from individual compounds
-        const masterProjects = job.results.filter(r => r.type === 'master');
-        const compounds = job.results.filter(r => r.type !== 'master');
+        const zipFile = job.results.find(r => r.type === 'zip');
+        const otherFiles = job.results.filter(r => r.type !== 'zip');
         
         let resultsHTML = '';
         
-        // Master Projects section
-        if (masterProjects.length > 0) {
-            resultsHTML += '<div class="results-section master-section">';
-            resultsHTML += '<h3 class="results-header">Master Projects</h3>';
-            resultsHTML += '<div class="grid grid-2">';
-            
-            masterProjects.forEach(result => {
-                resultsHTML += `
-                    <div class="result-card master-card">
-                        <h4>${result.name}</h4>
-                        <p class="result-description">${result.description}</p>
-                        <div class="result-meta">
-                            <span class="result-type master-type">${result.type.toUpperCase()}</span>
-                        </div>
-                        <button class="btn btn-primary master-download" onclick="downloadFile('${result.path}')">
-                            Download Master Project
-                        </button>
+        if (zipFile) {
+            resultsHTML += `
+                <div class="result-card zip-card mb-3">
+                    <h4>📦 ${zipFile.name}</h4>
+                    <p class="result-description">${zipFile.description}</p>
+                    <div class="result-meta mb-2">
+                        <span class="result-type zip-type">ZIP ARCHIVE</span>
                     </div>
-                `;
-            });
-            
-            resultsHTML += '</div></div>';
+                    <button class="btn btn-primary zip-download" onclick="downloadFile('${zipFile.path}')">
+                        Download All XML Files
+                    </button>
+                </div>
+            `;
         }
         
-        // Individual compounds section
-        if (compounds.length > 0) {
-            resultsHTML += '<div class="results-section compounds-section">';
-            resultsHTML += '<h3 class="results-header">Individual Compound Clips</h3>';
+        if (otherFiles.length > 0) {
+            resultsHTML += '<h3 class="mb-2">Individual Files (also included in zip)</h3>';
             resultsHTML += '<div class="grid grid-3">';
             
-            compounds.forEach(result => {
+            otherFiles.forEach(result => {
                 resultsHTML += `
                     <div class="result-card">
                         <h4>${result.name}</h4>
@@ -617,75 +452,39 @@ function showResults(job) {
                         <div class="result-meta">
                             <span class="result-type">${result.type.toUpperCase()}</span>
                         </div>
-                        <button class="btn btn-primary" onclick="downloadFile('${result.path}')">
+                        <button class="btn btn-secondary" onclick="downloadFile('${result.path}')">
                             Download XML
                         </button>
                     </div>
                 `;
             });
             
-            resultsHTML += '</div></div>';
+            resultsHTML += '</div>';
         }
-        
-        // Add usage instructions
-        resultsHTML += `
-            <div class="usage-instructions">
-                <h3>How to Use Your Projects</h3>
-                <div class="instruction-grid">
-                    <div class="instruction-item master-instruction">
-                        <h4>Master Projects</h4>
-                        <p>Complete projects with all three compound types on separate timeline lanes. Import these for the full multi-layout experience with easy switching between CAM, GS, and SSB views.</p>
-                    </div>
-                    <div class="instruction-item">
-                        <h4>CAM Compounds</h4>
-                        <p>Camera-focused layouts with microphone audio and audio effects. Perfect for talking head content, interviews, or vlogs.</p>
-                    </div>
-                    <div class="instruction-item">
-                        <h4>GS (Game Share) Compounds</h4>
-                        <p>Multi-view layouts with full audio mix and audio effects. Ideal for gaming content with commentary.</p>
-                    </div>
-                    <div class="instruction-item">
-                        <h4>SSB (Screen Share Big) Compounds</h4>
-                        <p>Large screen view with small camera overlay and audio effects. Best for tutorials, presentations, or software demos.</p>
-                    </div>
-                </div>
-                <div class="next-steps">
-                    <h4>Next Steps:</h4>
-                    <ol>
-                        <li><strong>Start with Master Projects:</strong> Import the SOLO or DC master project for the complete experience</li>
-                        <li><strong>Multi-lane Timeline:</strong> Use the lane buttons in FCPX to switch between CAM, GS, and SSB views</li>
-                        <li><strong>Audio Separation:</strong> Audio tracks are on separate lanes for independent control</li>
-                        <li><strong>Individual Compounds:</strong> Use these for specific layouts or custom projects</li>
-                        <li><strong>Audio Effects:</strong> All mic audio includes voice isolation, compression, and noise gate</li>
-                    </ol>
-                </div>
-            </div>
-        `;
         
         resultsContainer.innerHTML = resultsHTML;
     } else {
         resultsContainer.innerHTML = `
             <div class="alert alert-warning">
                 <div>⚠️</div>
-                <div>No compound clips were generated. Check your audio source files and threshold settings.</div>
+                <div>No files were generated. Check your settings and try again.</div>
             </div>
         `;
     }
     
-    // Scroll to results
     document.getElementById('resultsSection').scrollIntoView({ 
         behavior: 'smooth',
         block: 'start'
     });
     
-    const totalFiles = job.results.length;
-    const masterCount = job.results.filter(r => r.type === 'master').length;
-    const compoundCount = job.results.filter(r => r.type !== 'master').length;
+    showAlert('success', `Processing completed! Generated ${job.results.length} files.`);
     
-    showAlert('success', `Processing completed! Generated ${masterCount} master projects and ${compoundCount} compound clips.`);
+    // Re-enable the process button for new jobs
+    const processBtn = document.getElementById('processBtn');
+    processBtn.disabled = false;
+    processBtn.textContent = '🚀 Start Processing';
 }
 
-// Show error
 function showError(job) {
     const resultsContainer = document.getElementById('resultsContainer');
     resultsContainer.innerHTML = `
@@ -712,12 +511,12 @@ function showError(job) {
     processBtn.textContent = '🚀 Start Processing';
 }
 
-// Download file
+// File download
 function downloadFile(filePath) {
     const encodedPath = encodeURIComponent(filePath);
     const link = document.createElement('a');
     link.href = `/api/download/${encodedPath}`;
-    link.download = filePath.split('/').pop(); // Get filename
+    link.download = filePath.split('/').pop();
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -725,15 +524,16 @@ function downloadFile(filePath) {
     showAlert('info', 'Download started!');
 }
 
-// Reset form
+// Form reset
 function resetForm() {
     document.getElementById('videoForm').reset();
     document.getElementById('progressSection').classList.add('hidden');
     document.getElementById('resultsSection').classList.add('hidden');
     
-    // Clear project audio sources
     projectAudioSources = {};
     updateProjectAudioList();
+    
+    deselectAllXmlOptions();
     
     const processBtn = document.getElementById('processBtn');
     processBtn.disabled = false;
@@ -746,10 +546,8 @@ function resetForm() {
         progressTimer = null;
     }
     
-    // Clear alerts
     document.getElementById('alertsContainer').innerHTML = '';
     
-    // Scroll to top
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -762,6 +560,7 @@ function openFileBrowser(targetInput = 'masterVideo') {
     document.getElementById('fileBrowserModal').classList.remove('hidden');
     document.getElementById('selectFileBtn').classList.remove('hidden');
     document.getElementById('selectFileBtn').disabled = true;
+    document.getElementById('selectFileBtn').textContent = 'Select File';
     loadFileBrowserPath(currentFileBrowserPath);
 }
 
@@ -776,30 +575,22 @@ async function loadFileBrowserPath(path) {
     const fileList = document.getElementById('fileList');
     const breadcrumb = document.getElementById('breadcrumb');
     
-    console.log('loadFileBrowserPath called with:', path);
     fileList.innerHTML = '<div class="loading">Loading files...</div>';
     breadcrumb.textContent = path;
     
     const url = `/api/browse?path=${encodeURIComponent(path)}`;
-    console.log('Making request to:', url);
     
     try {
-        console.log('Fetching...');
         const response = await fetch(url);
-        console.log('Response received:', response.status, response.statusText);
-        
         const result = await response.json();
-        console.log('JSON parsed:', result);
         
         if (result.success) {
             currentFileBrowserPath = result.currentPath;
             renderFileList(result.items);
         } else {
-            console.error('API returned error:', result.error);
             fileList.innerHTML = `<div class="loading">Error: ${result.error}</div>`;
         }
     } catch (error) {
-        console.error('Fetch error:', error);
         fileList.innerHTML = `<div class="loading">Error loading files: ${error.message}</div>`;
     }
 }
@@ -815,7 +606,8 @@ function renderFileList(items) {
     let html = '';
     items.forEach(item => {
         const icon = getFileIcon(item.type);
-        const isSelectable = item.type === 'video' || item.type === 'audio';
+        const isSelectable = (browserMode === 'master' && item.type === 'video') || 
+                           (browserMode === 'audio' && (item.type === 'audio' || item.type === 'video'));
         
         html += `
             <div class="file-item ${isSelectable ? 'selectable' : ''}" 
@@ -848,16 +640,14 @@ function getFileIcon(type) {
 }
 
 function handleFileClick(path, type) {
-    // Clear previous selections
     document.querySelectorAll('.file-item').forEach(item => {
         item.classList.remove('selected');
     });
     
     if (type === 'directory') {
-        // Navigate to directory
         loadFileBrowserPath(path);
-    } else if (type === 'video') {
-        // Select video file (master video browser only selects videos)
+    } else if ((browserMode === 'master' && type === 'video') || 
+               (browserMode === 'audio' && (type === 'audio' || type === 'video'))) {
         selectedFilePath = path;
         event.target.closest('.file-item').classList.add('selected');
         document.getElementById('selectFileBtn').disabled = false;
@@ -869,11 +659,30 @@ function selectCurrentFile() {
     
     if (fileBrowserTarget === 'masterVideo') {
         document.getElementById('masterVideoPath').value = selectedFilePath;
+        closeFileBrowser();
+    } else if (fileBrowserTarget === 'audio') {
+        // Add file to project as unassigned
+        const fileId = 'file_' + Date.now();
+        const fileName = selectedFilePath.split('/').pop();
+        
+        // Check if file already exists
+        for (const [id, source] of Object.entries(projectAudioSources)) {
+            if (source.path === selectedFilePath) {
+                showAlert('warning', 'This file is already in the project');
+                closeFileBrowser();
+                return;
+            }
+        }
+        
+        // Add as unassigned
+        projectAudioSources[fileId] = {
+            path: selectedFilePath,
+            type: null,  // No type assigned yet
+            syncFix: false
+        };
+        
+        updateProjectAudioList();
+        closeFileBrowser();
+        showAlert('info', `Added ${fileName} to project. Please select its audio type.`);
     }
-    
-    closeFileBrowser();
-}
-
-function refreshAudioFiles() {
-    autoDetectAudioFiles();
 }

@@ -35,8 +35,8 @@ class MasterProjectGenerator:
         )
     
     def _generate_master_project(self, cam_xml_path: str, gs_xml_path: str, 
-                               ssb_xml_path: str, original_name: str, 
-                               project_type: str, output_path: Optional[str] = None) -> str:
+                            ssb_xml_path: str, original_name: str, 
+                            project_type: str, output_path: Optional[str] = None) -> str:
         """Generate master project by copying timeline structure from CAM and referencing all compounds."""
         
         print(f"Loading XML files...")
@@ -150,6 +150,11 @@ class MasterProjectGenerator:
         ref_clips = cam_spine.findall('ref-clip')
         
         for ref_clip in ref_clips:
+            # Get the timing values from the original ref-clip
+            parent_offset = ref_clip.get('offset')
+            parent_duration = ref_clip.get('duration')
+            parent_start = ref_clip.get('start')
+            
             # Create main ref-clip for CAM compound (video only)
             cam_ref_clip = ET.SubElement(main_spine, 'ref-clip')
             cam_ref_clip.set('ref', cam_media_id)
@@ -157,20 +162,20 @@ class MasterProjectGenerator:
             cam_ref_clip.set('srcEnable', 'video')  # Video only for main spine
             
             # Copy timing attributes from original ref-clip
-            for attr in ['offset', 'duration', 'start']:
-                if ref_clip.get(attr):
-                    cam_ref_clip.set(attr, ref_clip.get(attr))
+            cam_ref_clip.set('offset', parent_offset)
+            cam_ref_clip.set('duration', parent_duration)
+            cam_ref_clip.set('start', parent_start)
             
             # Add nested ref-clip for SSB audio (lane -2)
+            # KEY FIX: Nested ref-clips need the SAME timing as parent to align properly
             ssb_audio_ref = ET.SubElement(cam_ref_clip, 'ref-clip')
             ssb_audio_ref.set('ref', ssb_media_id)
             ssb_audio_ref.set('lane', '-2')
             ssb_audio_ref.set('name', f"{original_name} - SSB" if project_type == "SOLO" else f"{original_name} - DC SSB")
             ssb_audio_ref.set('srcEnable', 'audio')  # Audio only
-            # Copy timing from main ref-clip
-            for attr in ['offset', 'start', 'duration']:
-                if ref_clip.get(attr):
-                    ssb_audio_ref.set(attr, ref_clip.get(attr))
+            ssb_audio_ref.set('offset', parent_offset)  # Same as parent
+            ssb_audio_ref.set('duration', parent_duration)  # Same as parent
+            ssb_audio_ref.set('start', parent_start)  # Same as parent
             
             # Add nested ref-clip for CAM audio (lane -1)
             cam_audio_ref = ET.SubElement(cam_ref_clip, 'ref-clip')
@@ -178,20 +183,18 @@ class MasterProjectGenerator:
             cam_audio_ref.set('lane', '-1')
             cam_audio_ref.set('name', f"{original_name} - CAM" if project_type == "SOLO" else f"{original_name} - DC CAM")
             cam_audio_ref.set('srcEnable', 'audio')  # Audio only
-            # Copy timing from main ref-clip
-            for attr in ['offset', 'start', 'duration']:
-                if ref_clip.get(attr):
-                    cam_audio_ref.set(attr, ref_clip.get(attr))
+            cam_audio_ref.set('offset', parent_offset)  # Same as parent
+            cam_audio_ref.set('duration', parent_duration)  # Same as parent
+            cam_audio_ref.set('start', parent_start)  # Same as parent
             
             # Add nested ref-clip for GS compound (lane 1, muted)
             gs_ref_clip = ET.SubElement(cam_ref_clip, 'ref-clip')
             gs_ref_clip.set('ref', gs_media_id)
             gs_ref_clip.set('lane', '1')
             gs_ref_clip.set('name', f"{original_name} - GS" if project_type == "SOLO" else f"{original_name} - DC GS")
-            # Copy timing from main ref-clip
-            for attr in ['offset', 'start', 'duration']:
-                if ref_clip.get(attr):
-                    gs_ref_clip.set(attr, ref_clip.get(attr))
+            gs_ref_clip.set('offset', parent_offset)  # Same as parent
+            gs_ref_clip.set('duration', parent_duration)  # Same as parent
+            gs_ref_clip.set('start', parent_start)  # Same as parent
             
             # Mute GS audio
             gs_volume = ET.SubElement(gs_ref_clip, 'adjust-volume')
@@ -203,11 +206,10 @@ class MasterProjectGenerator:
             ssb_video_ref.set('lane', '2')
             ssb_video_ref.set('name', f"{original_name} - SSB" if project_type == "SOLO" else f"{original_name} - DC SSB")
             ssb_video_ref.set('srcEnable', 'video')  # Video only
-            # Copy timing from main ref-clip
-            for attr in ['offset', 'start', 'duration']:
-                if ref_clip.get(attr):
-                    ssb_video_ref.set(attr, ref_clip.get(attr))
-        
+            ssb_video_ref.set('offset', parent_offset)  # Same as parent
+            ssb_video_ref.set('duration', parent_duration)  # Same as parent
+            ssb_video_ref.set('start', parent_start)  # Same as parent
+                    
         print(f"Added {len(ref_clips)} cuts to master timeline")
         
         # Add smart collections (same as original)

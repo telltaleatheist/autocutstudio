@@ -172,7 +172,7 @@ class GSGenerator:
             mic_key = f'mic{mic_num}'
             if mic_key in audio_assets:
                 audio_info = processed_audio_sources[mic_key]
-                mic_clip = self.xml_utils.create_audio_clip(
+                mic_clip = self.xml_utils.create_clip_with_audio_effects(
                     Path(audio_info['path']).stem,
                     audio_assets[mic_key],
                     str(current_audio_lane),
@@ -187,7 +187,7 @@ class GSGenerator:
         
         if 'screen' in audio_assets:
             audio_info = processed_audio_sources['screen']
-            screen_clip = self.xml_utils.create_audio_clip(
+            screen_clip = self.xml_utils.create_clip_with_audio_effects(
                 Path(audio_info['path']).stem,
                 audio_assets['screen'],
                 str(current_audio_lane),
@@ -203,7 +203,7 @@ class GSGenerator:
         # Add game audio if present
         if 'game' in audio_assets:
             audio_info = processed_audio_sources['game']
-            game_clip = self.xml_utils.create_audio_clip(
+            game_clip = self.xml_utils.create_clip_with_audio_effects(
                 Path(audio_info['path']).stem,
                 audio_assets['game'],
                 str(current_audio_lane),
@@ -219,7 +219,7 @@ class GSGenerator:
         # Add sound effects if present
         if 'sound_effects' in audio_assets:
             audio_info = processed_audio_sources['sound_effects']
-            sfx_clip = self.xml_utils.create_audio_clip(
+            sfx_clip = self.xml_utils.create_clip_with_audio_effects(
                 Path(audio_info['path']).stem,
                 audio_assets['sound_effects'],
                 str(current_audio_lane),

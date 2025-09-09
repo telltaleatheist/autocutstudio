@@ -31,80 +31,157 @@
     <!-- Main Content -->
     <section class="section">
         <div class="container">
-            <div class="grid grid-2">
-                
-                <!-- Configuration Panel -->
-                <div class="panel">
-                    <div class="panel-header">
-                        <h4 class="panel-title">🎬 Video Configuration</h4>
-                    </div>
-                    <div class="panel-content">
-                        <form id="videoForm">
-                            <!-- Master Video File -->
-                            <div class="form-group">
-                                <label for="masterVideo">Master Video File *</label>
-                                <div class="file-selector">
-                                    <input type="text" id="masterVideoPath" name="masterVideoPath" readonly 
-                                           placeholder="Click 'Browse Files' to select a video file" required>
-                                    <button type="button" class="btn btn-secondary" onclick="openFileBrowser()">
-                                        📁 Browse Files
-                                    </button>
-                                </div>
-                                <small class="form-help">Main recording file containing all camera angles</small>
-                            </div>
-
-                            <!-- Project Audio Sources -->
-                            <div class="form-group">
-                                <label>Project Audio Sources</label>
-                                <div class="project-audio-list" id="projectAudioList">
-                                    <p class="form-help">No audio sources added yet. Use the file browser or auto-detect to add sources.</p>
-                                </div>
-                                <div class="audio-source-actions">
-                                    <button type="button" class="btn btn-secondary" onclick="autoDetectAudioFiles()" id="autoDetectBtn">
-                                        🔍 Auto-Detect Audio Files
-                                    </button>
-                                    <button type="button" class="btn btn-secondary" onclick="openAudioFileBrowser()" id="browseAudioBtn">
-                                        📁 Browse for Audio Files
-                                    </button>
-                                </div>
-                            </div>
-
-                            <div class="form-group">
-                                <label for="threshold">Audio Threshold</label>
-                                <input type="text" id="threshold" name="threshold" value="-40dB" placeholder="-40dB">
-                                <small class="form-help">Silence detection threshold for auto-editor (e.g., -40dB, -30dB, -20dB)</small>
-                            </div>
-                        </form>
-                    </div>
+            <!-- Configuration Panel -->
+            <div class="panel">
+                <div class="panel-header">
+                    <h4 class="panel-title">🎬 Video Configuration</h4>
                 </div>
+                <div class="panel-content">
+                    <form id="videoForm">
+                        <!-- Master Video File -->
+                        <div class="form-group">
+                            <label for="masterVideo">Master Video File *</label>
+                            <div class="file-selector">
+                                <input type="text" id="masterVideoPath" name="masterVideoPath" readonly 
+                                       placeholder="Click 'Browse Files' to select a video file" required>
+                                <button type="button" class="btn btn-secondary" onclick="openFileBrowser()">
+                                    📁 Browse Files
+                                </button>
+                            </div>
+                            <small class="form-help">Main recording file containing all camera angles</small>
+                        </div>
 
-                <!-- Audio File Browser Panel -->
-                <div class="panel">
-                    <div class="panel-header">
-                        <h4 class="panel-title">📁 Audio File Browser</h4>
-                    </div>
-                    <div class="panel-content">
-                        <p class="form-help mb-2">Browse and add individual audio files to your project. Click "Browse for Audio Files" in the left panel to activate this browser.</p>
-                        
-                        <div id="audioBrowserPanel" style="display: none;">
-                            <div class="breadcrumb" id="audioBreadcrumb">
-                                <span>/Volumes/Callisto/Movies</span>
+                        <!-- Project Audio Sources -->
+                        <div class="form-group">
+                            <label>Project Audio Sources</label>
+                            <div class="project-audio-list" id="projectAudioList">
+                                <p class="form-help">No audio sources added yet. Use auto-detect or add manually.</p>
                             </div>
-                            <div class="file-list" id="audioFileList">
-                                <div class="loading">Loading files...</div>
-                            </div>
-                            <div class="audio-browser-actions">
-                                <button type="button" class="btn btn-secondary" onclick="closeAudioBrowser()">Cancel</button>
-                                <button type="button" class="btn btn-primary" onclick="addSelectedAudioFile()" id="addAudioFileBtn" disabled>
-                                    ➕ Add to Project
+                            <div class="audio-source-actions">
+                                <button type="button" class="btn btn-secondary" onclick="autoDetectAudioFiles()" id="autoDetectBtn">
+                                    🔍 Auto-Detect Audio Files
+                                </button>
+                                <button type="button" class="btn btn-secondary" onclick="openAudioFileBrowser()" id="browseAudioBtn">
+                                    ➕ Add Audio/Video File
                                 </button>
                             </div>
                         </div>
-                        
-                        <div id="audioBrowserInactive">
-                            <p class="form-help text-center">Audio file browser is not active. Use the "Browse for Audio Files" button in the left panel to start browsing.</p>
+
+                        <!-- XML Generation Options -->
+                        <div class="form-group">
+                            <label>XML Generation Options</label>
+                            <small class="form-help">Select which compound clips to generate. Base files are always created.</small>
+                            
+                            <div class="xml-options-container">
+                                <div class="xml-option-section">
+                                    <h5 class="xml-section-title">Single Camera Compounds</h5>
+                                    <div class="xml-option-item">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="xmlOptions" value="camSolo" checked>
+                                            <span class="checkbox-custom"></span>
+                                            <div class="xml-option-info">
+                                                <span class="xml-option-name">CAM Solo</span>
+                                                <span class="xml-option-desc">Single camera with mic audio</span>
+                                            </div>
+                                        </label>
+                                    </div>
+                                    <div class="xml-option-item">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="xmlOptions" value="gsSolo" checked>
+                                            <span class="checkbox-custom"></span>
+                                            <div class="xml-option-info">
+                                                <span class="xml-option-name">GS Solo</span>
+                                                <span class="xml-option-desc">Game share with single camera</span>
+                                            </div>
+                                        </label>
+                                    </div>
+                                    <div class="xml-option-item">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="xmlOptions" value="ssbSolo" checked>
+                                            <span class="checkbox-custom"></span>
+                                            <div class="xml-option-info">
+                                                <span class="xml-option-name">SSB Solo</span>
+                                                <span class="xml-option-desc">Screen share with small camera</span>
+                                            </div>
+                                        </label>
+                                    </div>
+                                </div>
+                                
+                                <div class="xml-option-section">
+                                    <h5 class="xml-section-title">Dual Camera Compounds</h5>
+                                    <div class="xml-option-item">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="xmlOptions" value="camDual" checked>
+                                            <span class="checkbox-custom"></span>
+                                            <div class="xml-option-info">
+                                                <span class="xml-option-name">CAM Dual</span>
+                                                <span class="xml-option-desc">Dual camera layout</span>
+                                            </div>
+                                        </label>
+                                    </div>
+                                    <div class="xml-option-item">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="xmlOptions" value="gsDual" checked>
+                                            <span class="checkbox-custom"></span>
+                                            <div class="xml-option-info">
+                                                <span class="xml-option-name">GS Dual</span>
+                                                <span class="xml-option-desc">Game share with dual cameras</span>
+                                            </div>
+                                        </label>
+                                    </div>
+                                    <div class="xml-option-item">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="xmlOptions" value="ssbDual" checked>
+                                            <span class="checkbox-custom"></span>
+                                            <div class="xml-option-info">
+                                                <span class="xml-option-name">SSB Dual</span>
+                                                <span class="xml-option-desc">Screen share with dual cameras</span>
+                                            </div>
+                                        </label>
+                                    </div>
+                                </div>
+                                
+                                <div class="xml-option-section">
+                                    <h5 class="xml-section-title">Master Projects</h5>
+                                    <div class="xml-option-item">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="xmlOptions" value="masterSolo" checked>
+                                            <span class="checkbox-custom"></span>
+                                            <div class="xml-option-info">
+                                                <span class="xml-option-name">SOLO Master</span>
+                                                <span class="xml-option-desc">Complete single camera project</span>
+                                            </div>
+                                        </label>
+                                    </div>
+                                    <div class="xml-option-item">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="xmlOptions" value="masterDC" checked>
+                                            <span class="checkbox-custom"></span>
+                                            <div class="xml-option-info">
+                                                <span class="xml-option-name">DC Master</span>
+                                                <span class="xml-option-desc">Complete dual camera project</span>
+                                            </div>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="xml-options-actions">
+                                <button type="button" class="btn btn-small btn-secondary" onclick="selectAllXmlOptions()">
+                                    Select All
+                                </button>
+                                <button type="button" class="btn btn-small btn-secondary" onclick="deselectAllXmlOptions()">
+                                    Deselect All
+                                </button>
+                            </div>
                         </div>
-                    </div>
+
+                        <div class="form-group">
+                            <label for="threshold">Audio Threshold</label>
+                            <input type="text" id="threshold" name="threshold" value="-40dB" placeholder="-40dB">
+                            <small class="form-help">Silence detection threshold for auto-editor (e.g., -40dB, -30dB, -20dB)</small>
+                        </div>
+                    </form>
                 </div>
             </div>
 
@@ -143,7 +220,7 @@
     <section class="section hidden" id="resultsSection">
         <div class="container">
             <div class="section-header">
-                <h2 class="section-title">✅ Generated Compound Clips</h2>
+                <h2 class="section-title">✅ Generated Files</h2>
                 <p class="section-subtitle">Your video processing is complete</p>
             </div>
             

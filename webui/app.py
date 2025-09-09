@@ -13,6 +13,8 @@ import math
 import logging
 import re
 import traceback
+import zipfile
+import shutil
 
 # Add parent directory to path to import core modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -232,6 +234,45 @@ def format_file_size(size_bytes):
     s = round(size_bytes / p, 2)
     return f"{s} {size_names[i]}"
 
+def create_xml_zip(xml_files, output_dir, session_name, cleanup=True):
+    """Create a zip file containing all XML files in a folder named after the session.
+    
+    Args:
+        xml_files: List of paths to XML files
+        output_dir: Directory to save the zip file
+        session_name: Base name for the zip file and internal folder
+        cleanup: If True, delete the XML files after zipping
+    
+    Returns:
+        Path to the created zip file
+    """
+    # Clean up session name for filename (replace spaces with underscores)
+    clean_name = session_name.replace(' ', '_')
+    zip_path = Path(output_dir) / f"{clean_name}_compounds.zip"
+    
+    # Create the zip file
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for xml_path in xml_files:
+            if xml_path and Path(xml_path).exists():
+                # Add file to zip inside folder named after the session
+                arcname = f"{clean_name}/{Path(xml_path).name}"
+                zipf.write(xml_path, arcname)
+                print(f"Added to zip: {arcname}")
+    
+    print(f"Created zip file: {zip_path}")
+    
+    # Clean up XML files if requested
+    if cleanup:
+        for xml_path in xml_files:
+            if xml_path and Path(xml_path).exists():
+                try:
+                    Path(xml_path).unlink()
+                    print(f"Deleted XML file: {xml_path}")
+                except Exception as e:
+                    print(f"Failed to delete {xml_path}: {e}")
+    
+    return str(zip_path)
+
 def process_video_background(job, data):
     """Background processing function."""
     try:
@@ -242,10 +283,10 @@ def process_video_background(job, data):
         master_video = data['masterVideo']
         audio_sync_settings = data.get('audioSyncSettings', {})  # Individual sync settings
         threshold = data.get('threshold', config.default_threshold)
+        xml_options = data.get('xmlOptions', None)  # Get XML generation options
         
         # Audio sources - map to generator expected keys
         audio_sources = {}
-        # The frontend now sends mic1Audio, mic2Audio, etc. directly
         for key in ['mic1Audio', 'mic2Audio', 'mic3Audio', 'mic4Audio', 'screenAudio', 'gameAudio', 'soundEffectsAudio', 'bluetoothAudio']:
             value = data.get(key)
             if value:
@@ -256,24 +297,38 @@ def process_video_background(job, data):
         # Filter out empty audio sources
         audio_sources = {k: v for k, v in audio_sources.items() if v}
         
+        # Helper function to check if we should generate a specific XML
+        def should_generate(xml_type):
+            # If xml_options is None or empty, generate everything
+            if not xml_options:
+                return True
+            return xml_type in xml_options
+        
+        # List to collect all XML file paths
+        all_xml_files = []
+        
         job.status = 'processing'
         job.progress = 10
         job.message = 'Running auto-editor to identify cuts...'
         
-        # Step 1: Run auto-editor
+        # Step 1: Run auto-editor (always needed as base)
         editor = AutoEditor(config)
         altered_xml = editor.cut_silence(
             str(master_video), 
             threshold or config.default_threshold
         )
+
+        all_xml_files.append(altered_xml)
         
         job.progress = 20
         job.message = 'Converting to compound clip structure...'
         
-        # Step 2: Convert to compound clip
+        # Step 2: Convert to compound clip (always needed as base for other compounds)
         compound_xml = editor.convert_to_compound(altered_xml, str(master_video))
         if not compound_xml:
             raise Exception("Failed to create compound clip")
+        
+        all_xml_files.append(compound_xml)
         
         job.progress = 30
         job.message = 'Processing audio sources...'
@@ -302,7 +357,7 @@ def process_video_background(job, data):
                     
                 except Exception as e:
                     job.message = f"Warning: Failed to process {audio_type} audio: {e}"
-                    print(f"Error processing {audio_type}: {e}")  # Add console logging
+                    print(f"Error processing {audio_type}: {e}")
         
         # Step 4: Generate all compound clips
         generated_clips = []
@@ -327,7 +382,7 @@ def process_video_background(job, data):
         job.progress = current_progress
         job.message = 'Generating CAM Solo compound clip...'
         
-        if cam_audio_sources:
+        if should_generate('camSolo') and cam_audio_sources:
             try:
                 cam_generator = CamGenerator(config)
                 cam_solo_path = cam_generator.generate_cam_compound(
@@ -337,16 +392,25 @@ def process_video_background(job, data):
                     None,
                     False  # Audio already processed with individual sync settings
                 )
+                all_xml_files.append(cam_solo_path)  # Add to XML collection
                 generated_clips.append({
                     'type': 'cam_solo',
                     'name': 'CAM - Solo Camera',
                     'path': cam_solo_path,
                     'description': 'Single camera with mic audio and effects'
                 })
-                print(f"Generated CAM Solo: {cam_solo_path}")  # Add console logging
+                print(f"Generated CAM Solo: {cam_solo_path}")
             except Exception as e:
                 job.message = f"Warning: Failed to generate CAM Solo: {e}"
-                print(f"Error generating CAM Solo: {e}")  # Add console logging
+                print(f"Error generating CAM Solo: {e}")
+        elif cam_audio_sources:  # Still need to generate for master project dependencies
+            try:
+                cam_generator = CamGenerator(config)
+                cam_solo_path = cam_generator.generate_cam_compound(
+                    compound_xml, cam_audio_sources, 'solo', None, False
+                )
+            except Exception as e:
+                print(f"Error generating CAM Solo (for master): {e}")
         
         current_progress += progress_per_clip
         
@@ -354,7 +418,7 @@ def process_video_background(job, data):
         job.progress = current_progress
         job.message = 'Generating CAM Dual Camera compound clip...'
 
-        if cam_audio_sources:
+        if should_generate('camDual') and cam_audio_sources:
             try:
                 dc_cam_generator = DCCamGenerator(config)
                 cam_dual_path = dc_cam_generator.generate_dc_cam_compound(
@@ -363,16 +427,25 @@ def process_video_background(job, data):
                     None,
                     False  # Audio already processed
                 )
+                all_xml_files.append(cam_dual_path)  # Add to XML collection
                 generated_clips.append({
                     'type': 'cam_dual',
                     'name': 'CAM - Dual Camera',
                     'path': cam_dual_path,
                     'description': 'Dual camera layout with mic audio and effects'
                 })
-                print(f"Generated CAM Dual: {cam_dual_path}")  # Add console logging
+                print(f"Generated CAM Dual: {cam_dual_path}")
             except Exception as e:
                 job.message = f"Warning: Failed to generate CAM Dual: {e}"
-                print(f"Error generating CAM Dual: {e}")  # Add console logging
+                print(f"Error generating CAM Dual: {e}")
+        elif cam_audio_sources:  # Still need to generate for master project dependencies
+            try:
+                dc_cam_generator = DCCamGenerator(config)
+                cam_dual_path = dc_cam_generator.generate_dc_cam_compound(
+                    compound_xml, cam_audio_sources, None, False
+                )
+            except Exception as e:
+                print(f"Error generating CAM Dual (for master): {e}")
         
         current_progress += progress_per_clip
         
@@ -386,7 +459,7 @@ def process_video_background(job, data):
         job.progress = current_progress
         job.message = 'Generating GS Solo compound clip...'
         
-        if gs_audio_sources:
+        if should_generate('gsSolo') and gs_audio_sources:
             try:
                 gs_generator = GSGenerator(config)
                 gs_solo_path = gs_generator.generate_gs_compound(
@@ -395,16 +468,25 @@ def process_video_background(job, data):
                     None,  # output_path (use default)
                     False  # apply_audio_sync (already processed)
                 )
+                all_xml_files.append(gs_solo_path)  # Add to XML collection
                 generated_clips.append({
                     'type': 'gs_solo',
                     'name': 'GS - Solo Game Share',
                     'path': gs_solo_path,
                     'description': 'Camera, game, screen with full audio mix and effects'
                 })
-                print(f"Generated GS Solo: {gs_solo_path}")  # Add console logging
+                print(f"Generated GS Solo: {gs_solo_path}")
             except Exception as e:
                 job.message = f"Warning: Failed to generate GS Solo: {e}"
-                print(f"Error generating GS Solo: {e}")  # Add console logging
+                print(f"Error generating GS Solo: {e}")
+        elif gs_audio_sources:  # Still need to generate for master project dependencies
+            try:
+                gs_generator = GSGenerator(config)
+                gs_solo_path = gs_generator.generate_gs_compound(
+                    compound_xml, gs_audio_sources, None, False
+                )
+            except Exception as e:
+                print(f"Error generating GS Solo (for master): {e}")
         
         current_progress += progress_per_clip
         
@@ -412,7 +494,7 @@ def process_video_background(job, data):
         job.progress = current_progress
         job.message = 'Generating GS Dual Camera compound clip...'
         
-        if gs_audio_sources:
+        if should_generate('gsDual') and gs_audio_sources:
             try:
                 dc_gs_generator = DCGSGenerator(config)
                 gs_dual_path = dc_gs_generator.generate_dc_gs_compound(
@@ -421,16 +503,25 @@ def process_video_background(job, data):
                     None,  # output_path (use default)
                     False  # apply_audio_sync (already processed)
                 )
+                all_xml_files.append(gs_dual_path)  # Add to XML collection
                 generated_clips.append({
                     'type': 'gs_dual',
                     'name': 'GS - Dual Camera Game Share',
                     'path': gs_dual_path,
                     'description': 'Dual camera, game, screen with full audio mix and effects'
                 })
-                print(f"Generated GS Dual: {gs_dual_path}")  # Add console logging
+                print(f"Generated GS Dual: {gs_dual_path}")
             except Exception as e:
                 job.message = f"Warning: Failed to generate GS Dual: {e}"
-                print(f"Error generating GS Dual: {e}")  # Add console logging
+                print(f"Error generating GS Dual: {e}")
+        elif gs_audio_sources:  # Still need to generate for master project dependencies
+            try:
+                dc_gs_generator = DCGSGenerator(config)
+                gs_dual_path = dc_gs_generator.generate_dc_gs_compound(
+                    compound_xml, gs_audio_sources, None, False
+                )
+            except Exception as e:
+                print(f"Error generating GS Dual (for master): {e}")
                         
         current_progress += progress_per_clip
         
@@ -439,58 +530,80 @@ def process_video_background(job, data):
         for audio_type in ['screen', 'game', 'bluetooth']:
             if audio_type in processed_audio:
                 ssb_audio_sources[audio_type] = processed_audio[audio_type]['path']
-        
+
         # Generate SSB Solo compound
         job.progress = current_progress
         job.message = 'Generating SSB Solo compound clip...'
-        
-        if ssb_audio_sources:
+
+        if should_generate('ssbSolo'):
             try:
                 ssb_generator = SSBGenerator(config)
                 ssb_solo_path = ssb_generator.generate_ssb_compound(
                     compound_xml,
-                    ssb_audio_sources,
+                    ssb_audio_sources if ssb_audio_sources else {},
                     'solo',
                     None,
                     False
                 )
+                all_xml_files.append(ssb_solo_path)
                 generated_clips.append({
                     'type': 'ssb_solo',
                     'name': 'SSB - Solo Screen Share Big',
                     'path': ssb_solo_path,
                     'description': 'Large screen with small camera, screen audio and effects'
                 })
-                print(f"Generated SSB Solo: {ssb_solo_path}")  # Add console logging
+                print(f"Generated SSB Solo: {ssb_solo_path}")
             except Exception as e:
                 job.message = f"Warning: Failed to generate SSB Solo: {e}"
-                print(f"Error generating SSB Solo: {e}")  # Add console logging
-        
+                print(f"Error generating SSB Solo: {e}")
+                import traceback
+                print(traceback.format_exc())
+        else:  # Still need to generate for master project dependencies
+            try:
+                ssb_generator = SSBGenerator(config)
+                ssb_solo_path = ssb_generator.generate_ssb_compound(
+                    compound_xml, ssb_audio_sources if ssb_audio_sources else {}, 'solo', None, False
+                )
+            except Exception as e:
+                print(f"Error generating SSB Solo (for master): {e}")
+
         current_progress += progress_per_clip
-        
+
         # Generate SSB Dual Camera compound
         job.progress = current_progress
         job.message = 'Generating SSB Dual Camera compound clip...'
-        
-        if ssb_audio_sources:
+
+        if should_generate('ssbDual'):
             try:
                 dc_ssb_generator = DCSSBGenerator(config)
                 ssb_dual_path = dc_ssb_generator.generate_dc_ssb_compound(
                     compound_xml,
-                    ssb_audio_sources,
+                    ssb_audio_sources if ssb_audio_sources else {},
                     None,
                     False
                 )
+                all_xml_files.append(ssb_dual_path)
                 generated_clips.append({
                     'type': 'ssb_dual',
                     'name': 'SSB - Dual Camera Screen Share Big',
                     'path': ssb_dual_path,
                     'description': 'Large screen with dual cameras, screen audio and effects'
                 })
-                print(f"Generated SSB Dual: {ssb_dual_path}")  # Add console logging
+                print(f"Generated SSB Dual: {ssb_dual_path}")
             except Exception as e:
                 job.message = f"Warning: Failed to generate SSB Dual: {e}"
-                print(f"Error generating SSB Dual: {e}")  # Add console logging
-        
+                print(f"Error generating SSB Dual: {e}")
+                import traceback
+                print(traceback.format_exc())
+        else:  # Still need to generate for master project dependencies
+            try:
+                dc_ssb_generator = DCSSBGenerator(config)
+                ssb_dual_path = dc_ssb_generator.generate_dc_ssb_compound(
+                    compound_xml, ssb_audio_sources if ssb_audio_sources else {}, None, False
+                )
+            except Exception as e:
+                print(f"Error generating SSB Dual (for master): {e}")
+            
         # Step 5: Generate Master Projects
         job.progress = 90
         job.message = 'Generating master projects...'
@@ -507,13 +620,14 @@ def process_video_background(job, data):
         from core.compound_generators.master_project_generator import MasterProjectGenerator
         master_generator = MasterProjectGenerator(config)
         
-        # Generate SOLO master project (if we have the required compounds)
-        if cam_solo_path and gs_solo_path and ssb_solo_path:
+        # Generate SOLO master project (if we have the required compounds and it's requested)
+        if should_generate('masterSolo') and cam_solo_path and gs_solo_path and ssb_solo_path:
             try:
                 print(f"Generating SOLO master project...")
                 solo_master_path = master_generator.generate_solo_master_project(
                     cam_solo_path, gs_solo_path, ssb_solo_path, original_name
                 )
+                all_xml_files.append(solo_master_path)
                 generated_clips.append({
                     'type': 'master',
                     'name': f'{original_name} - SOLO Master Project',
@@ -526,17 +640,19 @@ def process_video_background(job, data):
                 job.message = f"Warning: {error_msg}"
                 print(f"Error: {error_msg}")
                 import traceback
-                print(traceback.format_exc())  # Print full traceback for debugging
+                print(traceback.format_exc())
         else:
-            print(f"Skipping SOLO master - missing required compounds")
+            if should_generate('masterSolo'):
+                print(f"Skipping SOLO master - missing required compounds")
         
-        # Generate DC master project (if we have the required compounds)
-        if cam_dual_path and gs_dual_path and ssb_dual_path:
+        # Generate DC master project (if we have the required compounds and it's requested)
+        if should_generate('masterDC') and cam_dual_path and gs_dual_path and ssb_dual_path:
             try:
                 print(f"Generating DC master project...")
                 dc_master_path = master_generator.generate_dc_master_project(
                     cam_dual_path, gs_dual_path, ssb_dual_path, original_name
                 )
+                all_xml_files.append(dc_master_path)
                 generated_clips.append({
                     'type': 'master',
                     'name': f'{original_name} - DC Master Project',
@@ -549,14 +665,39 @@ def process_video_background(job, data):
                 job.message = f"Warning: {error_msg}"
                 print(f"Error: {error_msg}")
                 import traceback
-                print(traceback.format_exc())  # Print full traceback for debugging
+                print(traceback.format_exc())
         else:
-            print(f"Skipping DC master - missing required compounds")
+            if should_generate('masterDC'):
+                print(f"Skipping DC master - missing required compounds")
+        
+        # Step 6: Create ZIP file with all XMLs
+        job.progress = 95
+        job.message = 'Creating zip archive of all XML files...'
+        
+        # Get output directory from one of the XML files
+        if all_xml_files and all_xml_files[0]:
+            output_dir = Path(all_xml_files[0]).parent
+            
+            # Extract session name for zip file naming
+            session_name = extract_session_from_filename(original_name)
+            if not session_name:
+                session_name = original_name  # Fallback to original name
+            
+            # Create the zip file
+            zip_path = create_xml_zip(all_xml_files, output_dir, session_name, cleanup=True)
+            
+            # Add zip file to results at the beginning
+            generated_clips.insert(0, {
+                'type': 'zip',
+                'name': f'All XML Files - {session_name}',
+                'path': zip_path,
+                'description': f'Zip archive containing all {len([f for f in all_xml_files if f])} XML files'
+            })
         
         # Complete
         job.status = 'completed'
         job.progress = 100
-        job.message = f'Successfully generated {len(generated_clips)} files'
+        job.message = f'Successfully generated {len(generated_clips)} files (including zip archive)'
         job.results = generated_clips
         
         print(f"Processing complete - Generated {len(generated_clips)} total files")

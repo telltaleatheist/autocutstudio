@@ -107,7 +107,6 @@ class FCPXMLUtils:
         gap.set('name', name)
         gap.set('offset', offset)
         gap.set('duration', duration)
-        # Remove the hardcoded start time - let it be calculated dynamically
         return gap
     
     @staticmethod
@@ -129,7 +128,7 @@ class FCPXMLUtils:
         # Use exact effect state data from template
         data = ET.SubElement(filter_audio, 'data')
         data.set('key', 'effectState')
-        data.text = 'YnBsaXN0MDDUAQIDBAUGBwpYJHZlcnNpb25ZJGFyY2hpdmVyVCR0b3BYJG9iamVjdHMSAAGGoF8QD05TS2V5ZWRBcmNoaXZlctEICVtlZmZlY3RTdGF0ZYABrxAPCwwfICEiIyQlJicoKSorVSRudWxs0w0ODxAXHldOUy5rZXlzWk5TLm9iamVjdHNWJGNsYXNzphESExQVFoACgAOABIAFgAaAB6YYGRobHB2ACIAJgAqAC4AMgA2ADlRuYW1lXG1hbnVmYWN0dXJlclRkYXRhVHR5cGVXc3VidHlwZVd2ZXJzaW9uWFVudGl0bGVkEkVNQUdPEJSUAAAAAQAAAB8AAABHQU1FVFNQUJoAAAAAAAAAAACgwQAAAEAAAAAAAAB6RAAAAAAAAIA/AAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAANxFAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAADIQgAAAAAAAAAAAAAAAAAAAAAAAAAAEmF1ZngQmhAA0iwtLi9aJGNsYXNzbmFtZVgkY2xhc3Nlc1xOU0RpY3Rpb25hcnmiLjBYTlNPYmplY3QACAARABoAJAApADIANwBJAEwAWABaAGwAcgB5AIEAjACTAJoAnACeAKAAogCkAKYArQCvALEAswC1ALcAuQC7AMAAzQDSANcA3wDnAPAA9QGMAZEBkwGVAZoBpQGuAbsBvgAAAAAAAAIBAAAAAAAAADEAAAAAAAAAAAAAAAAAAAHH'
+        data.text = 'YnBsaXN0MDDUAQIDBAUGBwpYJHZlcnNpb25ZJGFyY2hpdmVyVCR0b3BYJG9iamVjdHMSAAGGoF8QD05TS2V5ZWRBcmNoaXZlctEICVtlZmZlY3RTdGF0ZYABrxAPCwwfICEiIyQlJicoKSorVSRudWxs0w0ODxAXHldOUy5rZXlzWk5TLm9iamVjdHNWJGNsYXNzphESExQVFoACgAOABIAFgAaAB6YYGRobHB2ACIAJgAqAC4AMgA2ADlR0eXBlXG1hbnVmYWN0dXJlclRkYXRhVG5hbWVXc3VidHlwZVd2ZXJzaW9uEmF1ZngSRU1BR08QlJQAAAABAAAAHwAAAEdBTUVUU1BQmgAAAAAAAAAAAKDBAAAAQAAAAAAAAHpEAAAAAAAAgD8AAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA3EUAAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAMhCAAAAAAAAAAAAAAAAAAAAAAAAAABYVW50aXRsZWQQmhAA0iwtLi9aJGNsYXNzbmFtZVgkY2xhc3Nlc1xOU0RpY3Rpb25hcnmiLjBYTlNPYmplY3QACAARABoAJAApADIANwBJAEwAWABaAGwAcgB5AIEAjACTAJoAnACeAKAAogCkAKYArQCvALEAswC1ALcAuQC7AMAAzQDSANcA3wDnAOwA8QGIAZEBkwGVAZoBpQGuAbsBvgAAAAAAAAIBAAAAAAAAADEAAAAAAAAAAAAAAAAAAAHH'
         
         # Add parameter
         param = ET.SubElement(filter_audio, 'param')
@@ -181,9 +180,8 @@ class FCPXMLUtils:
         return volume_adjust
     
     @staticmethod
-    def add_audio_effects_to_clip(clip: ET.Element, audio_type: str, resources: ET.Element) -> None:
-        """Add audio effects to a clip based on audio source type."""
-        # Create effect elements in resources if they don't exist
+    def ensure_audio_effects_in_resources(resources: ET.Element) -> Tuple[str, str]:
+        """Ensure compressor and noise gate effects exist in resources, return their IDs."""
         compressor_effect_id = 'r_compressor_effect'
         noise_gate_effect_id = 'r_noise_gate_effect'
         
@@ -204,44 +202,65 @@ class FCPXMLUtils:
             )
             resources.append(noise_gate_effect)
         
-        # Apply effects based on audio source type
-        if audio_type in ['mic1', 'mic2', 'mic3', 'mic4']:
-            # Mic audio effects (from "dc" compound)
-            # Voice isolation: 75%
-            voice_isolation = FCPXMLUtils.create_voice_isolation_element('75')
-            clip.append(voice_isolation)
-            
-            # Compressor: 3.5:1 ratio
-            compressor = FCPXMLUtils.create_compressor_filter(compressor_effect_id, '3.5:1', '31')
-            clip.append(compressor)
-            
-            # Noise gate: -50dB threshold
-            noise_gate = FCPXMLUtils.create_noise_gate_filter(noise_gate_effect_id, '-50')
-            clip.append(noise_gate)
-            
-            # Volume: 0.0471005dB
-            volume = FCPXMLUtils.create_volume_adjustment('0.0471005dB')
-            clip.append(volume)
-            
-        elif audio_type in ['screen', 'game', 'bluetooth']:
-            # System audio effects (from "gs dc" compound)
-            # Voice isolation: 50%
-            voice_isolation = FCPXMLUtils.create_voice_isolation_element('50')
-            clip.append(voice_isolation)
-            
-            # Compressor: 30.0:1 ratio
-            compressor = FCPXMLUtils.create_compressor_filter(compressor_effect_id, '30.0:1', '85')
-            clip.append(compressor)
-            
-            # Volume: -6dB
-            volume = FCPXMLUtils.create_volume_adjustment('-6dB')
-            clip.append(volume)
-            
-        elif audio_type == 'sound_effects':
-            # Sound effects: -10dB volume reduction
-            volume = FCPXMLUtils.create_volume_adjustment('-10dB')
-            clip.append(volume)
+        return compressor_effect_id, noise_gate_effect_id
     
+    def create_audio_clip(name: str, ref: str, lane: str, offset: str, 
+                        duration: str, audio_type: Optional[str] = None,
+                        resources: Optional[ET.Element] = None) -> ET.Element:
+        """Create an audio element for audio clips with basic volume adjustment only."""
+        audio = ET.Element('audio')
+        audio.set('ref', ref)
+        audio.set('lane', lane)
+        audio.set('offset', offset)
+        audio.set('name', name)
+        audio.set('duration', duration)
+        audio.set('role', 'dialogue.dialogue-1')
+        audio.set('srcCh', '1, 2')
+        
+        # Only apply volume adjustment to the audio element itself
+        if audio_type:
+            if audio_type in ['mic1', 'mic2', 'mic3', 'mic4']:
+                volume = ET.SubElement(audio, 'adjust-volume')
+                volume.set('amount', '0.0471005dB')
+            elif audio_type in ['screen', 'game', 'bluetooth']:
+                volume = ET.SubElement(audio, 'adjust-volume')
+                volume.set('amount', '-10dB')
+            elif audio_type == 'sound_effects':
+                volume = ET.SubElement(audio, 'adjust-volume')
+                volume.set('amount', '-15dB')
+        else:
+            volume = ET.SubElement(audio, 'adjust-volume')
+            volume.set('amount', '-96dB')
+        
+        return audio
+
+    @staticmethod
+    def create_clip_with_audio_effects(name: str, ref: str, lane: str, offset: str, 
+                                    duration: str, audio_type: Optional[str] = None,
+                                    resources: Optional[ET.Element] = None) -> ET.Element:
+        """Create an audio element with proper volume adjustment."""
+        # Changed from creating a clip to creating a direct audio element
+        audio = ET.Element('audio')
+        audio.set('ref', ref)
+        audio.set('lane', lane)
+        audio.set('offset', offset)
+        audio.set('name', name)
+        audio.set('duration', duration)
+        audio.set('role', 'dialogue.dialogue-1')
+        audio.set('srcCh', '1, 2')
+        
+        # Add volume adjustment based on audio type
+        if audio_type:
+            volume = ET.SubElement(audio, 'adjust-volume')
+            if audio_type in ['mic1', 'mic2', 'mic3', 'mic4']:
+                volume.set('amount', '0.0471005dB')
+            elif audio_type in ['screen', 'game', 'bluetooth']:
+                volume.set('amount', '-6dB')
+            elif audio_type == 'sound_effects':
+                volume.set('amount', '-10dB')
+        
+        return audio
+
     @staticmethod
     def create_asset_clip(name: str, ref: str, lane: str, offset: str, 
                         duration: str, format_id: Optional[str] = None,
@@ -297,7 +316,7 @@ class FCPXMLUtils:
                 volume.set('amount', '-6dB')
             elif audio_type == 'sound_effects':
                 volume = ET.SubElement(clip, 'adjust-volume')
-                volume.set('amount', '-10dB')
+                volume.set('amount', '-15dB')
         else:
             # Mute if no audio type specified
             volume = ET.SubElement(clip, 'adjust-volume')
@@ -369,34 +388,6 @@ class FCPXMLUtils:
                 kw.set('value', keyword.get('value', 'white boxes'))
         
         return video
-    
-    @staticmethod
-    def create_audio_clip(name: str, ref: str, lane: str, offset: str, 
-                        duration: str, audio_type: Optional[str] = None,
-                        resources: Optional[ET.Element] = None) -> ET.Element:
-        """Create an audio element for audio clips with proper DTD compliance."""
-        audio = ET.Element('audio')
-        audio.set('ref', ref)
-        audio.set('lane', lane)
-        audio.set('offset', offset)
-        audio.set('name', name)
-        audio.set('duration', duration)
-        audio.set('role', 'dialogue.dialogue-1')
-        audio.set('srcCh', '1, 2')
-        
-        # Add volume adjustment based on audio type (DTD allows adjust-volume as direct child)
-        if audio_type:
-            if audio_type in ['mic1', 'mic2', 'mic3', 'mic4']:
-                volume = ET.SubElement(audio, 'adjust-volume')
-                volume.set('amount', '0.0471005dB')
-            elif audio_type in ['screen', 'game', 'bluetooth']:
-                volume = ET.SubElement(audio, 'adjust-volume')
-                volume.set('amount', '-6dB')
-            elif audio_type == 'sound_effects':
-                volume = ET.SubElement(audio, 'adjust-volume')
-                volume.set('amount', '-10dB')
-        
-        return audio
 
     @staticmethod
     def get_compound_timeline_cuts(tree: ET.ElementTree) -> List[Dict]:
@@ -419,7 +410,7 @@ class FCPXMLUtils:
     def create_audio_only_clip(name: str, ref: str, lane: str, offset: str, 
                             duration: str, role: str = "dialogue.dialogue-1",
                             channels: str = "1, 2", enabled: bool = True) -> ET.Element:
-        """Create a clip element with audio only."""
+        """Create a clip element with audio only (for disabled master audio)."""
         clip = ET.Element('clip')
         clip.set('lane', lane)
         clip.set('offset', offset)
@@ -445,65 +436,3 @@ class FCPXMLUtils:
         audio.set('srcCh', channels)
         
         return clip
-
-    @staticmethod
-    def add_audio_effects_to_asset_clip(clip: ET.Element, audio_type: str, 
-                                    audio_lane: str, resources: ET.Element) -> None:
-        """Add audio effects to an already-created asset-clip element."""
-        if not audio_type or audio_type not in ['mic1', 'mic2', 'mic3', 'mic4', 'screen', 'game', 'bluetooth']:
-            return
-        
-        # Create unique effect IDs based on audio type and lane to avoid duplicates
-        compressor_id = f'r_{audio_type}_{audio_lane.replace("-", "neg")}_compressor'
-        noise_gate_id = f'r_{audio_type}_{audio_lane.replace("-", "neg")}_noise_gate'
-        
-        # Ensure effects exist in resources with unique IDs
-        if not resources.find(f'.//effect[@id="{compressor_id}"]'):
-            resources.append(FCPXMLUtils.create_effect_element(
-                compressor_id, 'Compressor', 
-                'AudioUnit: 0x617566780000009a454d4147'
-            ))
-        
-        if not resources.find(f'.//effect[@id="{noise_gate_id}"]'):
-            resources.append(FCPXMLUtils.create_effect_element(
-                noise_gate_id, 'Noise Gate',
-                'AudioUnit: 0x61756678000000b3454d4147'
-            ))
-        
-        # Find the gap element (should be the last child)
-        gap = clip.find('gap')
-        gap_index = list(clip).index(gap)
-        
-        # Add audio-channel-source with voice isolation BEFORE the gap
-        if audio_type in ['mic1', 'mic2', 'mic3', 'mic4']:
-            audio_channel = ET.Element('audio-channel-source')
-            audio_channel.set('srcCh', '1, 2')
-            audio_channel.set('role', 'dialogue.dialogue-1')
-            voice_isolation = ET.SubElement(audio_channel, 'adjust-voiceIsolation')
-            voice_isolation.set('amount', '75')
-            clip.insert(gap_index, audio_channel)
-            gap_index += 1
-        elif audio_type in ['screen', 'game', 'bluetooth']:
-            audio_channel = ET.Element('audio-channel-source')
-            audio_channel.set('srcCh', '1, 2')
-            audio_channel.set('role', 'dialogue.dialogue-1')
-            voice_isolation = ET.SubElement(audio_channel, 'adjust-voiceIsolation')
-            voice_isolation.set('amount', '50')
-            clip.insert(gap_index, audio_channel)
-            gap_index += 1
-        
-        # Add filter effects BEFORE the gap
-        if audio_type in ['mic1', 'mic2', 'mic3', 'mic4']:
-            # Mic: Compressor 3.5:1 + Noise Gate
-            compressor = FCPXMLUtils.create_compressor_filter(compressor_id, '3.5:1', '31')
-            clip.insert(gap_index, compressor)
-            gap_index += 1
-            
-            noise_gate = FCPXMLUtils.create_noise_gate_filter(noise_gate_id, '-50')
-            clip.insert(gap_index, noise_gate)
-            gap_index += 1
-        elif audio_type in ['screen', 'game', 'bluetooth']:
-            # System: Compressor 30.0:1
-            compressor = FCPXMLUtils.create_compressor_filter(compressor_id, '30.0:1', '85')
-            clip.insert(gap_index, compressor)
-            gap_index += 1

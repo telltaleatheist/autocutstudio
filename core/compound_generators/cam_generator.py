@@ -178,7 +178,7 @@ class CamGenerator:
         for audio_type in audio_sources_config:
             if audio_type in audio_assets:
                 audio_info = processed_audio_sources[audio_type]
-                audio_clip = self.xml_utils.create_audio_clip(
+                audio_clip = self.xml_utils.create_clip_with_audio_effects(
                     Path(audio_info['path']).stem,
                     audio_assets[audio_type],
                     str(audio_lane),

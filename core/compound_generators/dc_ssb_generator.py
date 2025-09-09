@@ -42,11 +42,16 @@ class DCSSBGenerator:
         
         # Process screen audio (DC SSB only uses screen audio)
         processed_audio_sources = {}
-        audio_sources_config = layout_config.get('audio_sources', ['screen'])
-        
+        audio_sources_config = layout_config.get('audio_sources', ['screen', 'game', 'bluetooth'])
+
         for audio_type in audio_sources_config:
             if audio_type in audio_sources and audio_sources[audio_type]:
                 try:
+                    # Check if the file actually exists before processing
+                    if not Path(audio_sources[audio_type]).exists():
+                        print(f"Warning: {audio_type} audio file not found: {audio_sources[audio_type]}")
+                        continue
+                        
                     processed_path, duration, sample_rate, channels = \
                         self.audio_processor.process_audio_source(audio_sources[audio_type], apply_audio_sync)
                     processed_audio_sources[audio_type] = {
@@ -58,8 +63,13 @@ class DCSSBGenerator:
                     print(f"Processed {audio_type} audio: {processed_path}")
                 except Exception as e:
                     print(f"Warning: Failed to process {audio_type} audio ({audio_sources[audio_type]}): {e}")
-                    processed_audio_sources[audio_type] = None
-        
+                    # Continue without this audio source instead of failing
+                    continue
+
+        # Don't fail if no audio sources were processed - DC SSB can work without audio
+        if not processed_audio_sources:
+            print("Warning: No audio sources were successfully processed for DC SSB - continuing with video only")
+            
         # Get original compound info
         original_compound = root.find('.//media[@id="compound1"]')
         original_asset = root.find('.//asset[@id="r_original"]')
@@ -170,7 +180,7 @@ class DCSSBGenerator:
         # Add screen audio to gap structure (lane -2)
         if 'screen' in audio_assets:
             screen_audio_info = processed_audio_sources['screen']
-            screen_audio_clip = self.xml_utils.create_audio_clip(
+            screen_audio_clip = self.xml_utils.create_clip_with_audio_effects(
                 Path(screen_audio_info['path']).stem,
                 audio_assets['screen'],
                 "-2",  # Lane -2 for screen audio
