@@ -762,6 +762,236 @@ def test_config():
             'error': str(e)
         }), 500
     
+# Add this route to webui/app.py
+
+@app.route('/api/apply-audio-corrections', methods=['POST'])
+def apply_audio_corrections():
+    """Apply audio corrections (29.97 sync and/or drift) to selected files."""
+    try:
+        data = request.get_json()
+        files = data.get('files', [])
+        global_drift_frames = float(data.get('globalDriftFrames', 0))
+        video_duration = float(data.get('videoDuration', 0))
+        
+        if not files:
+            return jsonify({'error': 'No files selected'}), 400
+        
+        # Load configuration
+        config = AutoCutStudioConfig('../config/autostudio_config.yaml')
+        audio_processor = AudioProcessor(config)
+        
+        processed_files = []
+        errors = []
+        
+        for file_info in files:
+            try:
+                file_path = Path(file_info['path'])
+                file_id = file_info['id']
+                sync_fix = file_info.get('syncFix', False)
+                apply_drift = file_info.get('applyDrift', False)
+                drift_frames = file_info.get('driftFrames', 0)
+                
+                current_path = str(file_path)
+                output_dir = file_path.parent
+                base_name = file_path.stem
+                
+                # Remove any existing correction suffixes for clean naming
+                base_name = base_name.replace('_synced', '').replace('_drift_', '')
+                for i in range(100):  # Remove drift_Xf patterns
+                    base_name = base_name.replace(f'_drift_{i}f', '')
+                
+                # Build suffix based on corrections applied
+                suffix_parts = []
+                
+                # Apply 29.97 sync if requested
+                if sync_fix:
+                    synced_path = output_dir / f"{base_name}_synced{file_path.suffix}"
+                    current_path = audio_processor.sync_audio_for_2997fps(
+                        current_path, 
+                        str(synced_path)
+                    )
+                    suffix_parts.append('synced')
+                
+                # Apply drift correction if requested
+                if apply_drift and drift_frames != 0:  # Changed from just drift_frames
+                    # Calculate output name
+                    drift_suffix = f"_drift_{int(abs(drift_frames))}f"  # Use absolute value for filename
+                    if drift_frames > 0:
+                        drift_suffix = f"_drift_minus{int(drift_frames)}f"  # Positive shortens
+                    else:
+                        drift_suffix = f"_drift_plus{int(abs(drift_frames))}f"  # Negative extends
+                    
+                    if sync_fix:
+                        # Already has _synced suffix
+                        drift_path = output_dir / f"{base_name}_synced{drift_suffix}{file_path.suffix}"
+                    else:
+                        drift_path = output_dir / f"{base_name}{drift_suffix}{file_path.suffix}"
+                    
+                    current_path = audio_processor.apply_drift_correction(
+                        input_path=current_path,
+                        drift_frames=drift_frames,
+                        video_duration=video_duration,
+                        fps=29.97,
+                        output_path=str(drift_path)
+                    )
+                    suffix_parts.append(drift_suffix)
+                
+                # Only add to processed if any correction was applied
+                if sync_fix or apply_drift:
+                    processed_files.append({
+                        'id': file_id,
+                        'originalPath': str(file_path),
+                        'newPath': current_path,
+                        'type': file_info.get('type'),
+                        'corrections': suffix_parts
+                    })
+                    
+                    print(f"Processed {file_path.name} -> {Path(current_path).name}")
+                
+            except Exception as e:
+                error_msg = f"Error processing {file_info['path']}: {str(e)}"
+                print(error_msg)
+                errors.append(error_msg)
+        
+        if processed_files:
+            return jsonify({
+                'success': True,
+                'processedFiles': processed_files,
+                'errors': errors,
+                'message': f'Successfully processed {len(processed_files)} files'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'No corrections were applied to any files',
+                'errors': errors
+            }), 400
+            
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+    
+@app.route('/api/video-duration', methods=['POST'])
+def get_video_duration():
+    """Get the duration of a video file using the AudioProcessor."""
+    try:
+        data = request.get_json()
+        video_path = data.get('videoPath')
+        
+        if not video_path:
+            return jsonify({'error': 'Video path is required'}), 400
+        
+        if not video_path.startswith('/Volumes/Callisto/Movies'):
+            return jsonify({'error': 'Access denied - path outside allowed directory'}), 403
+        
+        # Use existing AudioProcessor to get duration
+        config = AutoCutStudioConfig('../config/autostudio_config.yaml')
+        audio_processor = AudioProcessor(config)
+        
+        # Get audio info returns (duration, sample_rate, channels)
+        duration_str, sample_rate, channels = audio_processor.get_audio_info(video_path)
+        
+        # Parse FCPX duration format "3600000/30000s" to seconds
+        if '/' in duration_str:
+            numerator, denominator = duration_str.rstrip('s').split('/')
+            duration = float(numerator) / float(denominator)
+        else:
+            duration = float(duration_str.rstrip('s'))
+        
+        return jsonify({
+            'success': True,
+            'duration': duration
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/apply-audio-changes', methods=['POST'])
+def apply_audio_changes():
+    """Apply audio changes (drift correction, etc.) to selected files."""
+    try:
+        data = request.get_json()
+        files = data.get('files', [])
+        drift_frames = float(data.get('driftFrames', 0))
+        video_duration = float(data.get('videoDuration', 0))
+        correction_factor = float(data.get('correctionFactor', 1.0))
+        
+        if not files:
+            return jsonify({'error': 'No files selected'}), 400
+        
+        if not drift_frames or not video_duration:
+            return jsonify({'error': 'Drift frames and video duration are required'}), 400
+        
+        # Load configuration
+        config = AutoCutStudioConfig('../config/autostudio_config.yaml')
+        audio_processor = AudioProcessor(config)
+        
+        processed_files = []
+        errors = []
+        
+        for file_info in files:
+            try:
+                file_path = Path(file_info['path'])
+                file_id = file_info['id']
+                
+                # Generate output filename
+                output_dir = file_path.parent
+                base_name = file_path.stem
+                
+                # Add drift correction suffix
+                drift_suffix = f"_drift_{int(drift_frames)}f"
+                output_name = f"{base_name}{drift_suffix}{file_path.suffix}"
+                output_path = output_dir / output_name
+                
+                # Apply drift correction using AudioProcessor
+                corrected_path = audio_processor.apply_drift_correction(
+                    input_path=str(file_path),
+                    drift_frames=drift_frames,
+                    video_duration=video_duration,
+                    fps=29.97,
+                    output_path=str(output_path)
+                )
+                
+                processed_files.append({
+                    'id': file_id,
+                    'originalPath': str(file_path),
+                    'newPath': corrected_path,
+                    'type': file_info.get('type')
+                })
+                
+                print(f"Successfully processed {file_path.name} -> {output_path.name}")
+                
+            except Exception as e:
+                error_msg = f"Error processing {file_info['path']}: {str(e)}"
+                print(error_msg)
+                errors.append(error_msg)
+                # Continue with other files even if one fails
+        
+        if processed_files:
+            return jsonify({
+                'success': True,
+                'processedFiles': processed_files,
+                'errors': errors,
+                'message': f'Successfully processed {len(processed_files)} files'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Failed to process any files',
+                'errors': errors
+            }), 500
+            
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+    
 @app.errorhandler(404)
 def not_found(error):
     return render_template('404.html'), 404

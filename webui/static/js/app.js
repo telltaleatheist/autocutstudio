@@ -8,6 +8,8 @@ let selectedFilePath = null;
 let fileBrowserTarget = null;
 let projectAudioSources = {};
 let browserMode = 'master';
+let masterVideoDuration = null;
+let audioChangesInProgress = false;
 
 // Theme management
 function toggleTheme() {
@@ -79,6 +81,7 @@ function updateProjectAudioList() {
     
     if (Object.keys(projectAudioSources).length === 0) {
         container.innerHTML = '<p class="form-help">No audio sources added yet. Use auto-detect or add manually.</p>';
+        updateCorrectionsStatus();
         return;
     }
     
@@ -86,6 +89,8 @@ function updateProjectAudioList() {
     for (const [id, source] of Object.entries(projectAudioSources)) {
         const fileName = source.path.split('/').pop();
         const syncCheckboxId = `sync${id}`;
+        const driftCheckboxId = `drift${id}`;
+        const applyCorrectionsId = `apply${id}`;
         
         // Create dropdown options
         const audioTypes = [
@@ -105,10 +110,14 @@ function updateProjectAudioList() {
             .filter(s => s !== source && s.type)
             .map(s => s.type);
         
+        // Check if file has been corrected
+        const hasCorrectionsSuffix = fileName.includes('_synced') || fileName.includes('_drift_');
+        
         html += `
             <div class="project-audio-item ${!source.type ? 'unassigned' : ''}" data-id="${id}">
                 <div class="audio-item-info">
                     <div class="audio-item-path" title="${source.path}">${fileName}</div>
+                    ${hasCorrectionsSuffix ? '<span class="audio-corrected-badge">Corrected</span>' : ''}
                 </div>
                 <div class="audio-item-controls">
                     <select class="audio-type-select" onchange="assignAudioType('${id}', this.value)">
@@ -118,13 +127,36 @@ function updateProjectAudioList() {
                             return `<option value="${opt.value}" ${disabled} ${selected}>${opt.label}${disabled ? ' (in use)' : ''}</option>`;
                         }).join('')}
                     </select>
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="${syncCheckboxId}" ${source.syncFix ? 'checked' : ''} 
-                               onchange="updateAudioSyncSetting('${id}', this.checked)"
-                               ${!source.type ? 'disabled' : ''}>
-                        <span class="checkbox-custom"></span>
-                        29.97fps
-                    </label>
+                    
+                    <div class="audio-corrections-group">
+                        <label class="checkbox-label" title="Apply corrections to this file">
+                            <input type="checkbox" id="${applyCorrectionsId}" 
+                                   onchange="updateApplyCorrections('${id}', this.checked)"
+                                   ${source.applyCorrections ? 'checked' : ''}
+                                   ${!source.type ? 'disabled' : ''}>
+                            <span class="checkbox-custom"></span>
+                            Apply
+                        </label>
+                        
+                        <label class="checkbox-label" title="29.97fps sync correction">
+                            <input type="checkbox" id="${syncCheckboxId}" 
+                                   onchange="updateAudioSyncSetting('${id}', this.checked)"
+                                   ${source.syncFix ? 'checked' : ''} 
+                                   ${!source.type || !source.applyCorrections ? 'disabled' : ''}>
+                            <span class="checkbox-custom"></span>
+                            29.97
+                        </label>
+                        
+                        <label class="checkbox-label" title="Apply drift correction">
+                            <input type="checkbox" id="${driftCheckboxId}" 
+                                   onchange="updateAudioDriftSetting('${id}', this.checked)"
+                                   ${source.applyDrift ? 'checked' : ''}
+                                   ${!source.type || !source.applyCorrections ? 'disabled' : ''}>
+                            <span class="checkbox-custom"></span>
+                            Drift
+                        </label>
+                    </div>
+                    
                     <button type="button" class="btn btn-small btn-danger" onclick="removeAudioSource('${id}')">
                         Remove
                     </button>
@@ -134,6 +166,30 @@ function updateProjectAudioList() {
     }
     
     container.innerHTML = html;
+    updateCorrectionsStatus();
+}
+
+function updateApplyCorrections(fileId, apply) {
+    if (projectAudioSources[fileId]) {
+        projectAudioSources[fileId].applyCorrections = apply;
+        
+        // Enable/disable the sync and drift checkboxes
+        const syncCheckbox = document.getElementById(`sync${fileId}`);
+        const driftCheckbox = document.getElementById(`drift${fileId}`);
+        
+        if (syncCheckbox) syncCheckbox.disabled = !apply;
+        if (driftCheckbox) driftCheckbox.disabled = !apply;
+        
+        // Reset if disabled
+        if (!apply) {
+            projectAudioSources[fileId].syncFix = false;
+            projectAudioSources[fileId].applyDrift = false;
+            if (syncCheckbox) syncCheckbox.checked = false;
+            if (driftCheckbox) driftCheckbox.checked = false;
+        }
+        
+        updateCorrectionsStatus();
+    }
 }
 
 function assignAudioType(fileId, audioType) {
@@ -165,6 +221,160 @@ function assignAudioType(fileId, audioType) {
 function updateAudioSyncSetting(fileId, syncEnabled) {
     if (projectAudioSources[fileId]) {
         projectAudioSources[fileId].syncFix = syncEnabled;
+        updateCorrectionsStatus();
+    }
+}
+
+function updateGlobalDrift() {
+    const driftInput = document.getElementById('globalDriftFrames');
+    globalDriftFrames = parseFloat(driftInput.value) || 0;
+    
+    // Update drift info display
+    if (globalDriftFrames && masterVideoDuration) {
+        const fps = 29.97;
+        const totalFrames = masterVideoDuration * fps;
+        const correctionFactor = 1 + (globalDriftFrames / totalFrames);
+        
+        document.getElementById('driftCorrectionInfo').textContent = 
+            `Correction: ${correctionFactor.toFixed(6)}x`;
+    } else {
+        document.getElementById('driftCorrectionInfo').textContent = '';
+    }
+    
+    updateCorrectionsStatus();
+}
+
+function updateCorrectionsStatus() {
+    const statusEl = document.getElementById('correctionsStatus');
+    const applyBtn = document.getElementById('applyCorrectionsBtn');
+    
+    // Count files marked for corrections
+    const filesForCorrection = Object.values(projectAudioSources)
+        .filter(s => s.type && s.applyCorrections);
+    
+    const syncCount = filesForCorrection.filter(s => s.syncFix).length;
+    const driftCount = filesForCorrection.filter(s => s.applyDrift).length;
+    
+    if (filesForCorrection.length === 0) {
+        statusEl.textContent = 'Select files and corrections to apply';
+        applyBtn.disabled = true;
+    } else {
+        let status = `Ready to process ${filesForCorrection.length} file(s)`;
+        const corrections = [];
+        if (syncCount > 0) corrections.push(`${syncCount} with 29.97 sync`);
+        if (driftCount > 0) corrections.push(`${driftCount} with drift correction`);
+        if (corrections.length > 0) {
+            status += ` (${corrections.join(', ')})`;
+        }
+        statusEl.textContent = status;
+        applyBtn.disabled = false;
+    }
+}
+
+async function applyAudioCorrections() {
+    // Get files marked for correction
+    const filesToProcess = [];
+    
+    for (const [id, source] of Object.entries(projectAudioSources)) {
+        if (source.type && source.applyCorrections) {
+            filesToProcess.push({
+                id: id,
+                path: source.path,
+                type: source.type,
+                syncFix: source.syncFix || false,
+                applyDrift: source.applyDrift || false,
+                driftFrames: source.applyDrift ? globalDriftFrames : 0
+            });
+        }
+    }
+    
+    if (filesToProcess.length === 0) {
+        showAlert('warning', 'No files selected for correction');
+        return;
+    }
+    
+    // Validate drift correction if any files need it
+    const needsDrift = filesToProcess.some(f => f.applyDrift);
+    if (needsDrift && !globalDriftFrames) {
+        showAlert('warning', 'Please enter drift frames value');
+        return;
+    }
+    
+    if (needsDrift && !masterVideoDuration) {
+        await fetchMasterVideoDuration();
+        if (!masterVideoDuration) {
+            showAlert('warning', 'Please select master video to calculate drift correction');
+            return;
+        }
+    }
+    
+    const applyBtn = document.getElementById('applyCorrectionsBtn');
+    applyBtn.disabled = true;
+    applyBtn.textContent = 'Processing...';
+    
+    try {
+        const response = await fetch('/api/apply-audio-corrections', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                files: filesToProcess,
+                globalDriftFrames: globalDriftFrames,
+                videoDuration: masterVideoDuration
+            })
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            showAlert('success', `Successfully processed ${result.processedFiles.length} audio files`);
+            
+            // Update paths to corrected versions
+            result.processedFiles.forEach(file => {
+                if (projectAudioSources[file.id]) {
+                    projectAudioSources[file.id].path = file.newPath;
+                    // Reset correction flags since file is now corrected
+                    projectAudioSources[file.id].applyCorrections = false;
+                    projectAudioSources[file.id].syncFix = false;
+                    projectAudioSources[file.id].applyDrift = false;
+                }
+            });
+            
+            updateProjectAudioList();
+        } else {
+            showAlert('danger', `Failed to process audio: ${result.error}`);
+        }
+    } catch (error) {
+        showAlert('danger', `Error processing audio: ${error.message}`);
+    } finally {
+        applyBtn.disabled = false;
+        applyBtn.textContent = '🎵 Apply Audio Corrections';
+    }
+}
+
+async function fetchMasterVideoDuration() {
+    const masterPath = document.getElementById('masterVideoPath').value;
+    if (!masterPath) return;
+    
+    try {
+        const response = await fetch('/api/video-duration', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ videoPath: masterPath })
+        });
+        
+        const result = await response.json();
+        if (result.success) {
+            masterVideoDuration = result.duration;
+        }
+    } catch (error) {
+        console.error('Error fetching video duration:', error);
+    }
+}
+
+function updateAudioDriftSetting(fileId, driftEnabled) {
+    if (projectAudioSources[fileId]) {
+        projectAudioSources[fileId].applyDrift = driftEnabled;
+        updateCorrectionsStatus();
     }
 }
 
@@ -686,3 +896,224 @@ function selectCurrentFile() {
         showAlert('info', `Added ${fileName} to project. Please select its audio type.`);
     }
 }
+
+function updateProjectAudioListExtended() {
+    // Call original function
+    updateProjectAudioList();
+    
+    // Also update audio changes file list
+    updateAudioChangeFiles();
+}
+
+// Replace all calls to updateProjectAudioList with updateProjectAudioListExtended
+
+function updateAudioChangeFiles() {
+    const container = document.getElementById('audioChangeFiles');
+    
+    if (Object.keys(projectAudioSources).length === 0) {
+        container.innerHTML = '<p class="form-help">Add audio files to the project first</p>';
+        document.getElementById('applyChangesBtn').disabled = true;
+        return;
+    }
+    
+    let html = '';
+    let hasAssignedFiles = false;
+    
+    for (const [id, source] of Object.entries(projectAudioSources)) {
+        if (source.type) {  // Only show assigned files
+            hasAssignedFiles = true;
+            const fileName = source.path.split('/').pop();
+            const checkboxId = `audioChange_${id}`;
+            
+            html += `
+                <div class="audio-change-file-item">
+                    <label class="checkbox-label audio-change-checkbox">
+                        <input type="checkbox" id="${checkboxId}" value="${id}" name="audioChangeFiles">
+                        <span class="checkbox-custom"></span>
+                    </label>
+                    <span class="audio-change-filename" title="${source.path}">${fileName}</span>
+                    <span class="audio-change-type">${getAudioTypeLabel(source.type)}</span>
+                </div>
+            `;
+        }
+    }
+    
+    if (!hasAssignedFiles) {
+        html = '<p class="form-help">Assign types to audio files first</p>';
+        document.getElementById('applyChangesBtn').disabled = true;
+    } else {
+        document.getElementById('applyChangesBtn').disabled = false;
+    }
+    
+    container.innerHTML = html;
+}
+
+// Calculate drift correction when master video is selected or drift frames change
+function calculateDriftCorrection() {
+    const masterPath = document.getElementById('masterVideoPath').value;
+    const driftFrames = parseFloat(document.getElementById('driftFrames').value);
+    
+    if (!masterPath || !driftFrames) {
+        document.getElementById('driftInfo').classList.add('hidden');
+        return;
+    }
+    
+    // Get video duration from backend
+    fetchVideoDuration(masterPath).then(duration => {
+        if (duration) {
+            masterVideoDuration = duration;
+            const fps = 29.97;
+            const totalFrames = duration * fps;
+            const correctionFactor = 1 + (driftFrames / totalFrames);
+            
+            // Update UI
+            document.getElementById('videoDuration').textContent = formatDuration(duration);
+            document.getElementById('correctionFactor').textContent = correctionFactor.toFixed(6);
+            document.getElementById('driftInfo').classList.remove('hidden');
+        }
+    });
+}
+
+async function fetchVideoDuration(videoPath) {
+    try {
+        const response = await fetch('/api/video-duration', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ videoPath: videoPath })
+        });
+        
+        const result = await response.json();
+        if (result.success) {
+            return result.duration;
+        }
+    } catch (error) {
+        console.error('Error fetching video duration:', error);
+    }
+    return null;
+}
+
+function formatDuration(seconds) {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
+
+async function applyAudioChanges() {
+    // Get selected files
+    const selectedFiles = [];
+    document.querySelectorAll('input[name="audioChangeFiles"]:checked').forEach(checkbox => {
+        const fileId = checkbox.value;
+        if (projectAudioSources[fileId]) {
+            selectedFiles.push({
+                id: fileId,
+                path: projectAudioSources[fileId].path,
+                type: projectAudioSources[fileId].type
+            });
+        }
+    });
+    
+    if (selectedFiles.length === 0) {
+        showAlert('warning', 'Please select at least one audio file to process');
+        return;
+    }
+    
+    const driftFrames = parseFloat(document.getElementById('driftFrames').value);
+    if (!driftFrames) {
+        showAlert('warning', 'Please enter the number of frames to correct');
+        return;
+    }
+    
+    if (!masterVideoDuration) {
+        showAlert('warning', 'Please select a master video first to calculate correction');
+        return;
+    }
+    
+    // Calculate correction factor
+    const fps = 29.97;
+    const totalFrames = masterVideoDuration * fps;
+    const correctionFactor = 1 + (driftFrames / totalFrames);
+    
+    // Disable button during processing
+    const applyBtn = document.getElementById('applyChangesBtn');
+    applyBtn.disabled = true;
+    applyBtn.textContent = 'Processing...';
+    audioChangesInProgress = true;
+    
+    try {
+        const response = await fetch('/api/apply-audio-changes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                files: selectedFiles,
+                driftFrames: driftFrames,
+                videoDuration: masterVideoDuration,
+                correctionFactor: correctionFactor
+            })
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            showAlert('success', `Successfully processed ${result.processedFiles.length} audio files`);
+            
+            // Update project audio sources with new files
+            result.processedFiles.forEach(file => {
+                // Update the path to the corrected version
+                if (projectAudioSources[file.id]) {
+                    projectAudioSources[file.id].path = file.newPath;
+                }
+            });
+            
+            updateProjectAudioListExtended();
+        } else {
+            showAlert('danger', `Failed to process audio: ${result.error}`);
+        }
+    } catch (error) {
+        showAlert('danger', `Error processing audio: ${error.message}`);
+    } finally {
+        applyBtn.disabled = false;
+        applyBtn.textContent = '🎵 Apply Audio Changes';
+        audioChangesInProgress = false;
+    }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    const masterVideoPath = document.getElementById('masterVideoPath');
+    if (masterVideoPath) {
+        const observer = new MutationObserver(function(mutations) {
+            fetchMasterVideoDuration();
+        });
+        
+        observer.observe(masterVideoPath, {
+            attributes: true,
+            attributeFilter: ['value']
+        });
+    }
+});
+
+// Event listeners for drift calculation
+document.addEventListener('DOMContentLoaded', function() {
+    // Add event listener for drift frames input
+    const driftFramesInput = document.getElementById('driftFrames');
+    if (driftFramesInput) {
+        driftFramesInput.addEventListener('input', calculateDriftCorrection);
+    }
+    
+    // Watch for master video changes
+    const masterVideoPath = document.getElementById('masterVideoPath');
+    if (masterVideoPath) {
+        // Create a MutationObserver to watch for value changes
+        const observer = new MutationObserver(function(mutations) {
+            calculateDriftCorrection();
+        });
+        
+        observer.observe(masterVideoPath, {
+            attributes: true,
+            attributeFilter: ['value']
+        });
+        
+        // Also add direct event listener for programmatic changes
+        masterVideoPath.addEventListener('change', calculateDriftCorrection);
+    }
+});

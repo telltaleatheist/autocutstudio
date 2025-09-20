@@ -1,4 +1,6 @@
-# core/audio_processor.py
+# Updated methods for core/audio_processor.py to avoid subprocess calls
+# Note: This assumes you want to keep using subprocess for ffmpeg since Python 
+# doesn't have a pure-Python FFmpeg implementation, but we structure it better
 
 import subprocess
 import json
@@ -15,6 +17,81 @@ class AudioProcessor:
         self.temp_dir = Path(config.get('paths.temp_dir', './temp'))
         self.temp_dir.mkdir(parents=True, exist_ok=True)
     
+    def apply_drift_correction(self, input_path: str, drift_frames: float, 
+                              video_duration: float, fps: float = 29.97,
+                              output_path: Optional[str] = None) -> str:
+        """Apply clock drift correction to audio file.
+        
+        Args:
+            input_path: Path to input audio file
+            drift_frames: Number of frames of drift (positive = audio slower than video)
+            video_duration: Duration of the video in seconds
+            fps: Frame rate of the video (default 29.97)
+            output_path: Optional output path
+            
+        Returns:
+            Path to the corrected audio file
+        """
+        input_path = Path(input_path)
+        
+        # Calculate correction factor
+        total_frames = video_duration * fps
+        correction_factor = 1 + (drift_frames / total_frames)
+        
+        if output_path is None:
+            # Generate output filename with drift information
+            drift_suffix = f"_drift_{int(drift_frames)}f"
+            output_path = input_path.parent / f"{input_path.stem}{drift_suffix}{input_path.suffix}"
+        
+        output_path = Path(output_path)
+        
+        # Apply drift correction using ffmpeg atempo filter
+        # Note: While this uses subprocess, it's encapsulated in the AudioProcessor
+        # and could be replaced with a Python audio library like pydub or librosa
+        # if you want pure Python processing
+        cmd = [
+            'ffmpeg', '-i', str(input_path),
+            '-filter:a', f'atempo={correction_factor}',
+            '-c:a', 'pcm_s24le',  # 24-bit PCM for high quality
+            '-y',  # Overwrite output
+            str(output_path)
+        ]
+        
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            print(f"Applied drift correction to {input_path.name}")
+            print(f"  Drift: {drift_frames} frames over {video_duration:.1f} seconds")
+            print(f"  Correction factor: {correction_factor:.6f}")
+            print(f"  Output: {output_path.name}")
+            return str(output_path)
+        except subprocess.CalledProcessError as e:
+            print(f"Error applying drift correction to {input_path}: {e}")
+            print(f"stderr: {e.stderr}")
+            raise
+    
+    def get_duration_seconds(self, file_path: str) -> float:
+        """Get duration in seconds from a media file.
+        
+        This is a convenience method that parses the FCPX format
+        returned by get_audio_info into plain seconds.
+        
+        Args:
+            file_path: Path to the media file
+            
+        Returns:
+            Duration in seconds as a float
+        """
+        duration_str, _, _ = self.get_audio_info(file_path)
+        
+        # Parse FCPX duration format "3600000/30000s" to seconds
+        if '/' in duration_str:
+            numerator, denominator = duration_str.rstrip('s').split('/')
+            return float(numerator) / float(denominator)
+        else:
+            # Handle plain seconds format if any
+            return float(duration_str.rstrip('s'))
+    
+    # Keep all existing methods as they are...
     def extract_audio_from_video(self, video_path: str, output_path: Optional[str] = None) -> str:
         """Extract audio from video file using ffmpeg."""
         video_path = Path(video_path)

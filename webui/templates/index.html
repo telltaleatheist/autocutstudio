@@ -67,6 +67,39 @@
                             </div>
                         </div>
 
+                        <!-- Audio Corrections Section (Independent of XML Generation) -->
+                        <div class="form-group">
+                            <label>Audio Corrections (Apply Before XML Generation)</label>
+                            <div class="audio-corrections-panel">
+                                <!-- Drift Correction Settings -->
+                                <div class="drift-correction-settings">
+                                    <div class="drift-input-row">
+                                        <label for="globalDriftFrames">Clock Drift (frames):</label>
+                                        <input type="number" id="globalDriftFrames" placeholder="e.g., 13 or -13" step="any" onchange="updateGlobalDrift()">
+                                        <span class="drift-info" id="driftCorrectionInfo"></span>
+                                    </div>
+                                    <small class="form-help">
+                                        Positive (+13) = shorten audio by 13 frames (audio is slower than video)<br>
+                                        Negative (-13) = extend audio by 13 frames (audio is faster than video)<br>
+                                        This drift value will be applied to all files with "Drift" checked.
+                                    </small>
+                                </div>
+                                
+                                <div class="correction-options">
+                                    <h5>Select which corrections to apply to each file:</h5>
+                                    <small class="form-help">Check "Apply" on files above, then select "29.97" and/or "Drift" for each file</small>
+                                </div>
+                                
+                                <!-- Apply Corrections Button -->
+                                <div class="audio-corrections-actions">
+                                    <button type="button" class="btn btn-primary" onclick="applyAudioCorrections()" id="applyCorrectionsBtn">
+                                        🎵 Apply Audio Corrections Now
+                                    </button>
+                                    <small class="form-help" id="correctionsStatus">Select files and corrections to apply</small>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- XML Generation Options -->
                         <div class="form-group">
                             <label>XML Generation Options</label>
