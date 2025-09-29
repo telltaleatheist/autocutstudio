@@ -149,6 +149,10 @@ def auto_detect_audio():
         
         # Look for audio files in the same directory
         for item in os.listdir(directory):
+            # Skip hidden/system files that start with ._
+            if item.startswith('._'):
+                continue
+                
             if Path(item).suffix.lower() in audio_exts:
                 item_path = os.path.join(directory, item)
                 item_name = Path(item).stem.lower()
@@ -168,9 +172,10 @@ def auto_detect_audio():
                     audio_files['mic3'] = item_path
                 elif 'mic 4' in item_name or 'mic4' in item_name or 'mic audio 4' in item_name:
                     audio_files['mic4'] = item_path
-                elif ('mic audio' in item_name and not any(x in item_name for x in ['1', '2', '3', '4'])) or \
+                elif item_name == 'mic audio' or \
+                     ('mic audio' in item_name and not any(x in item_name for x in ['1', '2', '3', '4'])) or \
                      ('mic' in item_name and 'audio' in item_name and not any(x in item_name for x in ['1', '2', '3', '4'])):
-                    # Default mic audio without number goes to mic1
+                    # Default mic audio without number goes to mic1, including exact "mic audio" matches
                     if 'mic1' not in audio_files:
                         audio_files['mic1'] = item_path
                 elif 'screen' in item_name:
