@@ -285,6 +285,41 @@ def process_video_background(job, data):
         threshold = data.get('threshold', config.default_threshold)
         xml_options = data.get('xmlOptions', None)  # Get XML generation options
         
+        # Auto-detect framerate from master video
+        print(f"Auto-detecting framerate from master video: {master_video}")
+        detected_framerate = None
+        try:
+            import subprocess
+            import json
+            cmd = [
+                'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                '-show_entries', 'stream=r_frame_rate',
+                '-of', 'json', master_video
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            data_ffprobe = json.loads(result.stdout)
+            
+            if 'streams' in data_ffprobe and len(data_ffprobe['streams']) > 0:
+                r_frame_rate = data_ffprobe['streams'][0].get('r_frame_rate', '30000/1001')
+                num, den = map(int, r_frame_rate.split('/'))
+                fps = num / den
+                
+                if abs(fps - 29.97) < 0.01:
+                    detected_framerate = "29.97"
+                elif abs(fps - 30.0) < 0.01:
+                    detected_framerate = "30"
+                else:
+                    detected_framerate = "29.97"  # Default fallback
+                
+                print(f"Detected framerate: {detected_framerate} fps")
+            else:
+                detected_framerate = "29.97"
+                print("Could not detect framerate, defaulting to 29.97")
+                
+        except Exception as e:
+            print(f"Error detecting framerate, defaulting to 29.97: {e}")
+            detected_framerate = "29.97"
+        
         # Audio sources - map to generator expected keys
         audio_sources = {}
         for key in ['mic1Audio', 'mic2Audio', 'mic3Audio', 'mic4Audio', 'screenAudio', 'gameAudio', 'soundEffectsAudio', 'bluetoothAudio']:
@@ -619,6 +654,13 @@ def process_video_background(job, data):
         # Create master project generator
         from core.compound_generators.master_project_generator import MasterProjectGenerator
         master_generator = MasterProjectGenerator(config)
+        
+        # Set the detected framerate for the master generator
+        master_generator.detected_framerate = detected_framerate
+        
+        # Also detect framerate from the master video using the generator's method
+        # (This ensures consistency and uses the same detection logic)
+        master_generator.detect_framerate(master_video)
         
         # Generate SOLO master project (if we have the required compounds and it's requested)
         if should_generate('masterSolo') and cam_solo_path and gs_solo_path and ssb_solo_path:

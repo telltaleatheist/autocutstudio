@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import uuid
 import datetime
+import subprocess
+import json
 
 from ..xml_utils import FCPXMLUtils
 
@@ -14,6 +16,49 @@ class MasterProjectGenerator:
     def __init__(self, config):
         self.config = config
         self.xml_utils = FCPXMLUtils()
+        self.detected_framerate = None  # Will be auto-detected
+    
+    def detect_framerate(self, video_path: str) -> str:
+        """Detect framerate from video file using ffprobe."""
+        try:
+            cmd = [
+                'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                '-show_entries', 'stream=r_frame_rate',
+                '-of', 'json', video_path
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            data = json.loads(result.stdout)
+            
+            if 'streams' in data and len(data['streams']) > 0:
+                r_frame_rate = data['streams'][0].get('r_frame_rate', '30000/1001')
+                num, den = map(int, r_frame_rate.split('/'))
+                fps = num / den
+                
+                # Determine framerate type
+                if abs(fps - 29.97) < 0.01:
+                    self.detected_framerate = "29.97"
+                elif abs(fps - 30.0) < 0.01:
+                    self.detected_framerate = "30"
+                elif abs(fps - 23.976) < 0.01:
+                    self.detected_framerate = "23.976"
+                elif abs(fps - 24.0) < 0.01:
+                    self.detected_framerate = "24"
+                elif abs(fps - 25.0) < 0.01:
+                    self.detected_framerate = "25"
+                elif abs(fps - 60.0) < 0.01:
+                    self.detected_framerate = "60"
+                elif abs(fps - 59.94) < 0.01:
+                    self.detected_framerate = "59.94"
+                else:
+                    self.detected_framerate = "29.97"  # Default fallback
+                
+                print(f"Detected framerate: {self.detected_framerate} fps")
+                return self.detected_framerate
+                
+        except Exception as e:
+            print(f"Could not detect framerate, defaulting to 29.97: {e}")
+            self.detected_framerate = "29.97"
+            return self.detected_framerate
     
     def generate_solo_master_project(self, cam_xml_path: str, gs_xml_path: str, 
                                    ssb_xml_path: str, original_name: str, 
@@ -81,33 +126,84 @@ class MasterProjectGenerator:
         
         return resources
     
-    def _convert_to_2997_time(self, time_str: str) -> str:
-        """Convert 30fps time to 29.97fps fractional time."""
-        if not time_str or time_str == '0s' or time_str == '0/30s':
+    def _align_to_frame_boundary(self, time_str: str) -> str:
+        """Align time values to proper frame boundaries for the detected framerate."""
+        if not time_str or time_str == '0s':
             return '0s'
         
-        # Parse the time string (e.g., "1595/30s" or "531531/10000s")
-        if '/' in time_str:
-            parts = time_str.replace('s', '').split('/')
-            if len(parts) == 2:
-                numerator = int(parts[0])
-                denominator = int(parts[1])
-                
-                # If it's already in a high precision format, keep it
-                if denominator >= 10000:
-                    return time_str
-                
-                # Convert 30fps to 29.97fps (multiply by 1001/1000)
-                # For 30fps: multiply numerator by 1001, denominator by 1000
-                if denominator == 30:
-                    new_numerator = numerator * 1001
-                    new_denominator = 30000
-                    # Simplify if possible
-                    if new_numerator % 10 == 0:
-                        return f"{new_numerator // 10}/{new_denominator // 10}s"
-                    return f"{new_numerator}/{new_denominator}s"
+        if '/' not in time_str:
+            return time_str
         
+        # Parse the time value
+        parts = time_str.replace('s', '').split('/')
+        if len(parts) != 2:
+            return time_str
+        
+        numerator = int(parts[0])
+        denominator = int(parts[1])
+        
+        if self.detected_framerate == "29.97":
+            # For 29.97fps, frame duration is 1001/30000s
+            # Convert to seconds, round to nearest frame, convert back
+            time_in_seconds = numerator / denominator
+            frame_duration = 1001 / 30000  # 29.97fps frame duration
+            
+            # Round to nearest frame
+            frame_number = round(time_in_seconds / frame_duration)
+            
+            # Convert back to fractional format
+            aligned_numerator = frame_number * 1001
+            aligned_denominator = 30000
+            
+            # Simplify the fraction
+            from math import gcd
+            divisor = gcd(aligned_numerator, aligned_denominator)
+            aligned_numerator //= divisor
+            aligned_denominator //= divisor
+            
+            return f"{aligned_numerator}/{aligned_denominator}s"
+        
+        elif self.detected_framerate == "30":
+            # For 30fps, frame duration is 1/30s
+            time_in_seconds = numerator / denominator
+            frame_duration = 1 / 30
+            
+            # Round to nearest frame
+            frame_number = round(time_in_seconds / frame_duration)
+            
+            # Convert back to fractional format
+            return f"{frame_number}/30s"
+        
+        # For other framerates, return as-is
         return time_str
+    
+    def _convert_time_format(self, time_str: str) -> str:
+        """Convert and align time format based on detected framerate."""
+        return self._align_to_frame_boundary(time_str)
+    
+    def _copy_element_with_conversion(self, source_elem: ET.Element, target_parent: ET.Element):
+        """Copy element structure while converting time values to proper framerate format."""
+        elem_copy = ET.SubElement(target_parent, source_elem.tag)
+        
+        # Copy all attributes, converting time values
+        for attr, value in source_elem.attrib.items():
+            if attr in ['duration', 'offset', 'start']:
+                converted_value = self._convert_time_format(value)
+                elem_copy.set(attr, converted_value)
+            else:
+                elem_copy.set(attr, value)
+        
+        # Copy text content
+        if source_elem.text and source_elem.text.strip():
+            elem_copy.text = source_elem.text
+        if source_elem.tail and source_elem.tail.strip():
+            elem_copy.tail = source_elem.tail
+        
+        # Recursively copy children
+        for child in source_elem:
+            self._copy_element_with_conversion(child, elem_copy)
+        
+        return elem_copy
     
     def _generate_master_project(self, cam_xml_path: str, gs_xml_path: str, 
                                 ssb_xml_path: str, original_name: str, 
@@ -140,20 +236,32 @@ class MasterProjectGenerator:
         # Resources section
         resources_elem = ET.SubElement(root, 'resources')
         
-        # Add timeline format (1080p 29.97fps to match source)
+        # Add timeline format based on detected framerate
         timeline_format = ET.SubElement(resources_elem, 'format')
         timeline_format.set('id', 'r1')
-        timeline_format.set('name', 'FFVideoFormat1080p2997')
-        timeline_format.set('frameDuration', '1001/30000s')
+        
+        if self.detected_framerate == "30":
+            timeline_format.set('name', 'FFVideoFormat1080p30')
+            timeline_format.set('frameDuration', '1/30s')
+        else:  # Default to 29.97
+            timeline_format.set('name', 'FFVideoFormat1080p2997')
+            timeline_format.set('frameDuration', '1001/30000s')
+        
         timeline_format.set('width', '1920')
         timeline_format.set('height', '1080')
         timeline_format.set('colorSpace', '1-1-1 (Rec. 709)')
         
-        # Add compound format (29.97 fps for compounds)
+        # Add compound format (matches timeline format)
         compound_format = ET.SubElement(resources_elem, 'format')
         compound_format.set('id', 'r3')
-        compound_format.set('name', 'FFVideoFormat1080p2997')
-        compound_format.set('frameDuration', '1001/30000s')
+        
+        if self.detected_framerate == "30":
+            compound_format.set('name', 'FFVideoFormat1080p30')
+            compound_format.set('frameDuration', '1/30s')
+        else:  # Default to 29.97
+            compound_format.set('name', 'FFVideoFormat1080p2997')
+            compound_format.set('frameDuration', '1001/30000s')
+        
         compound_format.set('width', '1920')
         compound_format.set('height', '1080')
         compound_format.set('colorSpace', '1-1-1 (Rec. 709)')
@@ -171,16 +279,19 @@ class MasterProjectGenerator:
         if cam_sequence is not None:
             cam_sequence_copy = ET.SubElement(cam_media_copy, 'sequence')
             for attr, value in cam_sequence.attrib.items():
-                if attr != 'format':
+                if attr == 'format':
+                    cam_sequence_copy.set('format', 'r3')  # Use compound format
+                elif attr == 'duration':
+                    # Convert duration to proper framerate format
+                    converted_duration = self._convert_time_format(value)
+                    cam_sequence_copy.set(attr, converted_duration)
+                else:
                     cam_sequence_copy.set(attr, value)
-            cam_sequence_copy.set('format', 'r3')  # Use compound format
             
-            # Copy the spine structure
+            # Copy the spine structure and convert any time values
             cam_spine = cam_sequence.find('spine')
             if cam_spine is not None:
-                spine_copy = ET.SubElement(cam_sequence_copy, 'spine')
-                for child in cam_spine:
-                    spine_copy.append(child)
+                self._copy_element_with_conversion(cam_spine, cam_sequence_copy)
         
         # SSB compound
         ssb_media_copy = ET.SubElement(resources_elem, 'media')
@@ -195,16 +306,19 @@ class MasterProjectGenerator:
         if ssb_sequence is not None:
             ssb_sequence_copy = ET.SubElement(ssb_media_copy, 'sequence')
             for attr, value in ssb_sequence.attrib.items():
-                if attr != 'format':
+                if attr == 'format':
+                    ssb_sequence_copy.set('format', 'r3')  # Use compound format
+                elif attr == 'duration':
+                    # Convert duration to proper framerate format
+                    converted_duration = self._convert_time_format(value)
+                    ssb_sequence_copy.set(attr, converted_duration)
+                else:
                     ssb_sequence_copy.set(attr, value)
-            ssb_sequence_copy.set('format', 'r3')  # Use compound format
             
-            # Copy the spine structure
+            # Copy the spine structure and convert any time values
             ssb_spine = ssb_sequence.find('spine')
             if ssb_spine is not None:
-                spine_copy = ET.SubElement(ssb_sequence_copy, 'spine')
-                for child in ssb_spine:
-                    spine_copy.append(child)
+                self._copy_element_with_conversion(ssb_spine, ssb_sequence_copy)
         
         # GS compound
         gs_media_copy = ET.SubElement(resources_elem, 'media')
@@ -219,16 +333,19 @@ class MasterProjectGenerator:
         if gs_sequence is not None:
             gs_sequence_copy = ET.SubElement(gs_media_copy, 'sequence')
             for attr, value in gs_sequence.attrib.items():
-                if attr != 'format':
+                if attr == 'format':
+                    gs_sequence_copy.set('format', 'r3')  # Use compound format
+                elif attr == 'duration':
+                    # Convert duration to proper framerate format
+                    converted_duration = self._convert_time_format(value)
+                    gs_sequence_copy.set(attr, converted_duration)
+                else:
                     gs_sequence_copy.set(attr, value)
-            gs_sequence_copy.set('format', 'r3')  # Use compound format
             
-            # Copy the spine structure
+            # Copy the spine structure and convert any time values
             gs_spine = gs_sequence.find('spine')
             if gs_spine is not None:
-                spine_copy = ET.SubElement(gs_sequence_copy, 'spine')
-                for child in gs_spine:
-                    spine_copy.append(child)
+                self._copy_element_with_conversion(gs_spine, gs_sequence_copy)
         
         # Add other necessary resources (assets, effects, etc.) from original files
         # Skip the compound media elements we already added
@@ -273,10 +390,10 @@ class MasterProjectGenerator:
             duration = ref_clip.get('duration', '30/30s')
             start = ref_clip.get('start', '0s')
             
-            # Convert all time values to 29.97fps format
-            converted_offset = self._convert_to_2997_time(offset)
-            converted_duration = self._convert_to_2997_time(duration)
-            converted_start = self._convert_to_2997_time(start)
+            # Convert time values based on detected framerate
+            converted_offset = self._convert_time_format(offset)
+            converted_duration = self._convert_time_format(duration)
+            converted_start = self._convert_time_format(start)
             
             # Create main CAM ref-clip (video only)
             main_clip = ET.SubElement(spine, 'ref-clip')
@@ -292,7 +409,7 @@ class MasterProjectGenerator:
             
             # Add conform-rate
             conform_rate = ET.SubElement(main_clip, 'conform-rate')
-            conform_rate.set('srcFrameRate', '29.97')
+            conform_rate.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
             
             # Lane -2: SSB audio
             ssb_audio = ET.SubElement(main_clip, 'ref-clip')
@@ -307,7 +424,7 @@ class MasterProjectGenerator:
                 ssb_audio.set('start', converted_start)
             
             ssb_audio_conform = ET.SubElement(ssb_audio, 'conform-rate')
-            ssb_audio_conform.set('srcFrameRate', '29.97')
+            ssb_audio_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
             
             # Lane -1: CAM audio
             cam_audio = ET.SubElement(main_clip, 'ref-clip')
@@ -322,7 +439,7 @@ class MasterProjectGenerator:
                 cam_audio.set('start', converted_start)
             
             cam_audio_conform = ET.SubElement(cam_audio, 'conform-rate')
-            cam_audio_conform.set('srcFrameRate', '29.97')
+            cam_audio_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
             
             # Lane 1: GS (muted)
             gs_clip = ET.SubElement(main_clip, 'ref-clip')
@@ -336,7 +453,7 @@ class MasterProjectGenerator:
                 gs_clip.set('start', converted_start)
             
             gs_conform = ET.SubElement(gs_clip, 'conform-rate')
-            gs_conform.set('srcFrameRate', '29.97')
+            gs_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
             
             # Mute GS audio
             gs_volume = ET.SubElement(gs_clip, 'adjust-volume')
@@ -355,7 +472,7 @@ class MasterProjectGenerator:
                 ssb_video.set('start', converted_start)
             
             ssb_video_conform = ET.SubElement(ssb_video, 'conform-rate')
-            ssb_video_conform.set('srcFrameRate', '29.97')
+            ssb_video_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
         
         print(f"Created timeline with {len(cam_cuts)} cuts")
         
@@ -408,8 +525,8 @@ class MasterProjectGenerator:
         total_num //= divisor
         total_den //= divisor
         
-        # Convert to 29.97fps format
-        return self._convert_to_2997_time(f"{total_num}/{total_den}s")
+        # Convert to appropriate format based on detected framerate
+        return self._convert_time_format(f"{total_num}/{total_den}s")
     
     def _add_smart_collections(self, library: ET.Element):
         """Add standard smart collections to the library."""
