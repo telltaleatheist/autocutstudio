@@ -6,3 +6,7 @@ core/editors/__pycache__/*
 script.sh
 .vscode/*
 .DS_Store
+xml/template master_ALTERED_COMPOUND_CAM.fcpxml
+xml/template master_ALTERED_COMPOUND_GS.fcpxml
+xml/template master_ALTERED_COMPOUND_SSB.fcpxml
+xml/template master.fcpxml
