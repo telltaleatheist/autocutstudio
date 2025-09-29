@@ -24,7 +24,7 @@ class AudioProcessor:
         
         Args:
             input_path: Path to input audio file
-            drift_frames: Number of frames of drift (positive = audio slower than video)
+            drift_frames: Number of frames of drift (negative = shrink audio, positive = expand audio)
             video_duration: Duration of the video in seconds
             fps: Frame rate of the video (default 29.97)
             output_path: Optional output path
@@ -36,11 +36,15 @@ class AudioProcessor:
         
         # Calculate correction factor
         total_frames = video_duration * fps
-        correction_factor = 1 + (drift_frames / total_frames)
+        correction_factor = 1 - (drift_frames / total_frames)
         
         if output_path is None:
             # Generate output filename with drift information
-            drift_suffix = f"_drift_{int(drift_frames)}f"
+            # Negative values shrink (speed up), positive values expand (slow down)
+            if drift_frames < 0:
+                drift_suffix = f"_drift_minus{abs(int(drift_frames))}f"
+            else:
+                drift_suffix = f"_drift_plus{int(drift_frames)}f"
             output_path = input_path.parent / f"{input_path.stem}{drift_suffix}{input_path.suffix}"
         
         output_path = Path(output_path)

@@ -83,9 +83,9 @@ The system now includes a dedicated audio corrections panel that operates indepe
 - **Symptom**: Audio drifts 13 frames over 3 hours (0.0042% drift = 42 PPM)
 - **Solution**: Enter drift frames to calculate and apply precise speed correction
 - **Input**:
-  - Positive values (+13): Shortens audio by 13 frames (audio is slower than video)
-  - Negative values (-13): Extends audio by 13 frames (audio is faster than video)
-- **Calculation**: `correction_factor = 1 + (drift_frames / (video_duration * fps))`
+  - Negative values (-13): Shortens audio by 13 frames (shrinks/speeds up audio)
+  - Positive values (+13): Extends audio by 13 frames (expands/slows down audio)
+- **Calculation**: `correction_factor = 1 - (drift_frames / (video_duration * fps))`
 - **Implementation**: Uses FFmpeg's `atempo` filter for high-quality time stretching
 
 **29.97fps Sync Correction:**
@@ -96,8 +96,8 @@ The system now includes a dedicated audio corrections panel that operates indepe
 **File Naming Convention:**
 - Original: `2025-09-14 mic 1 audio.wav`
 - 29.97 sync only: `2025-09-14 mic 1 audio_synced.wav`
-- Drift only (shorten): `2025-09-14 mic 1 audio_drift_minus13f.wav`
-- Drift only (extend): `2025-09-14 mic 1 audio_drift_plus13f.wav`
+- Drift only (shrink): `2025-09-14 mic 1 audio_drift_minus13f.wav`
+- Drift only (expand): `2025-09-14 mic 1 audio_drift_plus13f.wav`
 - Both corrections: `2025-09-14 mic 1 audio_synced_drift_minus13f.wav`
 
 **Correction Controls Per File:**
@@ -339,8 +339,8 @@ def create_xml_zip(xml_files, output_dir, session_name, cleanup=True):
 ### Sync Correction Guidelines
 - **29.97 sync**: For frame rate mismatches (29.97fps vs 30fps)
 - **Clock drift**: For independent device timing differences
-- **Positive drift**: Audio needs to be shortened (audio slower than video)
-- **Negative drift**: Audio needs to be extended (audio faster than video)
+- **Negative drift**: Audio needs to be shortened (shrink/speed up audio)
+- **Positive drift**: Audio needs to be extended (expand/slow down audio)
 - **Warning system**: Visual indicators for already corrected files
 - **Per-file control**: Individual correction settings prevent over-correction
 
