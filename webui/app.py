@@ -449,6 +449,7 @@ def process_video_background(job, data):
                 cam_solo_path = cam_generator.generate_cam_compound(
                     compound_xml, cam_audio_sources, 'solo', None, False
                 )
+                all_xml_files.append(cam_solo_path)  # Add to zip even if not displayed
             except Exception as e:
                 print(f"Error generating CAM Solo (for master): {e}")
         
@@ -484,6 +485,7 @@ def process_video_background(job, data):
                 cam_dual_path = dc_cam_generator.generate_dc_cam_compound(
                     compound_xml, cam_audio_sources, None, False
                 )
+                all_xml_files.append(cam_dual_path)  # Add to zip even if not displayed
             except Exception as e:
                 print(f"Error generating CAM Dual (for master): {e}")
         
@@ -525,6 +527,7 @@ def process_video_background(job, data):
                 gs_solo_path = gs_generator.generate_gs_compound(
                     compound_xml, gs_audio_sources, None, False
                 )
+                all_xml_files.append(gs_solo_path)  # Add to zip even if not displayed
             except Exception as e:
                 print(f"Error generating GS Solo (for master): {e}")
         
@@ -560,6 +563,7 @@ def process_video_background(job, data):
                 gs_dual_path = dc_gs_generator.generate_dc_gs_compound(
                     compound_xml, gs_audio_sources, None, False
                 )
+                all_xml_files.append(gs_dual_path)  # Add to zip even if not displayed
             except Exception as e:
                 print(f"Error generating GS Dual (for master): {e}")
                         
@@ -604,6 +608,7 @@ def process_video_background(job, data):
                 ssb_solo_path = ssb_generator.generate_ssb_compound(
                     compound_xml, ssb_audio_sources if ssb_audio_sources else {}, 'solo', None, False
                 )
+                all_xml_files.append(ssb_solo_path)  # Add to zip even if not displayed
             except Exception as e:
                 print(f"Error generating SSB Solo (for master): {e}")
 
@@ -641,6 +646,7 @@ def process_video_background(job, data):
                 ssb_dual_path = dc_ssb_generator.generate_dc_ssb_compound(
                     compound_xml, ssb_audio_sources if ssb_audio_sources else {}, None, False
                 )
+                all_xml_files.append(ssb_dual_path)  # Add to zip even if not displayed
             except Exception as e:
                 print(f"Error generating SSB Dual (for master): {e}")
             
@@ -671,17 +677,22 @@ def process_video_background(job, data):
         if should_generate('masterSolo') and cam_solo_path and gs_solo_path and ssb_solo_path:
             try:
                 print(f"Generating SOLO master project...")
-                solo_master_path = master_generator.generate_solo_master_project(
+                solo_master_paths = master_generator.generate_solo_master_project(
                     cam_solo_path, gs_solo_path, ssb_solo_path, original_name
                 )
-                all_xml_files.append(solo_master_path)
-                generated_clips.append({
-                    'type': 'master',
-                    'name': f'{original_name} - SOLO Master Project',
-                    'path': solo_master_path,
-                    'description': 'Complete project with CAM, GS, and SSB on separate lanes with detached audio'
-                })
-                print(f"Successfully generated SOLO master: {solo_master_path}")
+                # Add all generated parts to XML files list
+                all_xml_files.extend(solo_master_paths)
+
+                # Add display entry for each part
+                for idx, solo_path in enumerate(solo_master_paths):
+                    part_suffix = f" (Part {idx + 1})" if len(solo_master_paths) > 1 else ""
+                    generated_clips.append({
+                        'type': 'master',
+                        'name': f'{original_name} - SOLO Master Project{part_suffix}',
+                        'path': solo_path,
+                        'description': 'Complete project with CAM, GS, and SSB on separate lanes with detached audio'
+                    })
+                print(f"Successfully generated SOLO master: {len(solo_master_paths)} file(s)")
             except Exception as e:
                 error_msg = f"Failed to generate SOLO master project: {e}"
                 job.message = f"Warning: {error_msg}"
@@ -696,17 +707,22 @@ def process_video_background(job, data):
         if should_generate('masterDC') and cam_dual_path and gs_dual_path and ssb_dual_path:
             try:
                 print(f"Generating DC master project...")
-                dc_master_path = master_generator.generate_dc_master_project(
+                dc_master_paths = master_generator.generate_dc_master_project(
                     cam_dual_path, gs_dual_path, ssb_dual_path, original_name
                 )
-                all_xml_files.append(dc_master_path)
-                generated_clips.append({
-                    'type': 'master',
-                    'name': f'{original_name} - DC Master Project',
-                    'path': dc_master_path,
-                    'description': 'Complete dual camera project with DC CAM, DC GS, and DC SSB on separate lanes'
-                })
-                print(f"Successfully generated DC master: {dc_master_path}")
+                # Add all generated parts to XML files list
+                all_xml_files.extend(dc_master_paths)
+
+                # Add display entry for each part
+                for idx, dc_path in enumerate(dc_master_paths):
+                    part_suffix = f" (Part {idx + 1})" if len(dc_master_paths) > 1 else ""
+                    generated_clips.append({
+                        'type': 'master',
+                        'name': f'{original_name} - DC Master Project{part_suffix}',
+                        'path': dc_path,
+                        'description': 'Complete dual camera project with DC CAM, DC GS, and DC SSB on separate lanes'
+                    })
+                print(f"Successfully generated DC master: {len(dc_master_paths)} file(s)")
             except Exception as e:
                 error_msg = f"Failed to generate DC master project: {e}"
                 job.message = f"Warning: {error_msg}"
@@ -720,25 +736,28 @@ def process_video_background(job, data):
         # Step 6: Create ZIP file with all XMLs
         job.progress = 95
         job.message = 'Creating zip archive of all XML files...'
-        
+
+        # Filter out None values and ensure all paths are valid
+        valid_xml_files = [f for f in all_xml_files if f and Path(f).exists()]
+
         # Get output directory from one of the XML files
-        if all_xml_files and all_xml_files[0]:
-            output_dir = Path(all_xml_files[0]).parent
-            
+        if valid_xml_files:
+            output_dir = Path(valid_xml_files[0]).parent
+
             # Extract session name for zip file naming
             session_name = extract_session_from_filename(original_name)
             if not session_name:
                 session_name = original_name  # Fallback to original name
-            
-            # Create the zip file
-            zip_path = create_xml_zip(all_xml_files, output_dir, session_name, cleanup=True)
+
+            # Create the zip file with all valid XML files
+            zip_path = create_xml_zip(valid_xml_files, output_dir, session_name, cleanup=True)
             
             # Add zip file to results at the beginning
             generated_clips.insert(0, {
                 'type': 'zip',
                 'name': f'All XML Files - {session_name}',
                 'path': zip_path,
-                'description': f'Zip archive containing all {len([f for f in all_xml_files if f])} XML files'
+                'description': f'Zip archive containing all {len(valid_xml_files)} XML files'
             })
         
         # Complete

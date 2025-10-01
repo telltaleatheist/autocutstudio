@@ -60,21 +60,29 @@ class MasterProjectGenerator:
             self.detected_framerate = "29.97"
             return self.detected_framerate
     
-    def generate_solo_master_project(self, cam_xml_path: str, gs_xml_path: str, 
-                                   ssb_xml_path: str, original_name: str, 
-                                   output_path: Optional[str] = None) -> str:
-        """Generate SOLO master project combining CAM, GS, and SSB compounds."""
+    def generate_solo_master_project(self, cam_xml_path: str, gs_xml_path: str,
+                                   ssb_xml_path: str, original_name: str,
+                                   output_path: Optional[str] = None) -> List[str]:
+        """Generate SOLO master project combining CAM, GS, and SSB compounds.
+
+        Returns:
+            List of paths to generated project files (may be multiple if split into parts)
+        """
         return self._generate_master_project(
-            cam_xml_path, gs_xml_path, ssb_xml_path, 
+            cam_xml_path, gs_xml_path, ssb_xml_path,
             original_name, "SOLO", output_path
         )
-    
-    def generate_dc_master_project(self, cam_xml_path: str, gs_xml_path: str, 
-                                 ssb_xml_path: str, original_name: str, 
-                                 output_path: Optional[str] = None) -> str:
-        """Generate DC (Dual Camera) master project combining CAM, GS, and SSB compounds."""
+
+    def generate_dc_master_project(self, cam_xml_path: str, gs_xml_path: str,
+                                 ssb_xml_path: str, original_name: str,
+                                 output_path: Optional[str] = None) -> List[str]:
+        """Generate DC (Dual Camera) master project combining CAM, GS, and SSB compounds.
+
+        Returns:
+            List of paths to generated project files (may be multiple if split into parts)
+        """
         return self._generate_master_project(
-            cam_xml_path, gs_xml_path, ssb_xml_path, 
+            cam_xml_path, gs_xml_path, ssb_xml_path,
             original_name, "DC", output_path
         )
     
@@ -205,16 +213,22 @@ class MasterProjectGenerator:
         
         return elem_copy
     
-    def _generate_master_project(self, cam_xml_path: str, gs_xml_path: str, 
-                                ssb_xml_path: str, original_name: str, 
-                                project_type: str, output_path: Optional[str] = None) -> str:
-        """Generate master project by building a new timeline structure from scratch."""
-        
+    def _generate_master_project(self, cam_xml_path: str, gs_xml_path: str,
+                                ssb_xml_path: str, original_name: str,
+                                project_type: str, output_path: Optional[str] = None) -> List[str]:
+        """Generate master project by building a new timeline structure from scratch.
+
+        Projects are automatically split into ~2 hour segments to avoid large XML files.
+
+        Returns:
+            List of paths to generated project files (may be multiple if split into parts)
+        """
+
         print(f"Generating {project_type} master project...")
         print(f"CAM: {cam_xml_path}")
         print(f"GS: {gs_xml_path}")
         print(f"SSB: {ssb_xml_path}")
-        
+
         # Extract compound info from each XML
         cam_id, cam_media, cam_cuts = self._extract_compound_info(cam_xml_path)
         gs_id, gs_media, _ = self._extract_compound_info(gs_xml_path)
@@ -222,12 +236,48 @@ class MasterProjectGenerator:
         
         print(f"Found compounds: CAM={cam_id}, GS={gs_id}, SSB={ssb_id}")
         print(f"Found {len(cam_cuts)} cuts in CAM timeline")
-        
+
+        # Split cuts into 2-hour segments
+        segments = self._split_clips_into_segments(cam_cuts, segment_hours=2.0)
+        print(f"Split into {len(segments)} segments")
+
         # Extract all resources from all three XMLs
         all_resources = {}
         for xml_path in [cam_xml_path, gs_xml_path, ssb_xml_path]:
             resources = self._extract_all_resources(xml_path)
             all_resources.update(resources)
+
+        # Generate a project file for each segment
+        output_paths = []
+        for segment_idx, segment_cuts in enumerate(segments):
+            part_num = segment_idx + 1
+            part_suffix = f" part {part_num}" if len(segments) > 1 else ""
+
+            print(f"\nGenerating part {part_num}/{len(segments)} ({len(segment_cuts)} cuts)...")
+
+            output_path_for_segment = self._generate_project_segment(
+                cam_media, gs_media, ssb_media,
+                segment_cuts, all_resources,
+                original_name, project_type, part_suffix,
+                cam_xml_path, output_path
+            )
+            output_paths.append(output_path_for_segment)
+
+        if len(output_paths) == 1:
+            print(f"\nMaster project saved: {output_paths[0]}")
+        else:
+            print(f"\nMaster project split into {len(output_paths)} parts:")
+            for path in output_paths:
+                print(f"  - {path}")
+
+        return output_paths  # Return all paths
+
+    def _generate_project_segment(self, cam_media: ET.Element, gs_media: ET.Element,
+                                  ssb_media: ET.Element, cam_cuts: List[ET.Element],
+                                  all_resources: Dict[str, ET.Element],
+                                  original_name: str, project_type: str, part_suffix: str,
+                                  cam_xml_path: str, output_path: Optional[str] = None) -> str:
+        """Generate a single project segment with the given cuts."""
         
         # Build the master project XML
         root = ET.Element('fcpxml')
@@ -349,22 +399,22 @@ class MasterProjectGenerator:
         
         # Add other necessary resources (assets, effects, etc.) from original files
         # Skip the compound media elements we already added
-        skip_ids = {cam_id, gs_id, ssb_id, 'r1', 'r2', 'r3', 'r6', 'r12'}
-        
+        skip_ids = {'r1', 'r2', 'r3', 'r6', 'r12'}
+
         for resource_id, resource in all_resources.items():
             if resource_id not in skip_ids and resource.tag != 'media':
                 resources_elem.append(resource)
-        
+
         # Create library structure
         library = ET.SubElement(root, 'library')
         library.set('location', f'file:///Volumes/Callisto/Movies/FCPX/{original_name}/{original_name}.fcpbundle/')
-        
+
         event = ET.SubElement(library, 'event')
         event.set('name', 'Auto-Editor Media Group')
         event.set('uid', str(uuid.uuid4()).upper())
-        
+
         project = ET.SubElement(event, 'project')
-        project_name = f"{original_name} {project_type.lower()}"
+        project_name = f"{original_name} {project_type.lower()}{part_suffix}"
         project.set('name', project_name)
         project.set('uid', str(uuid.uuid4()).upper())
         project.set('modDate', datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S -0400"))
@@ -382,16 +432,28 @@ class MasterProjectGenerator:
         sequence.set('audioRate', '48k')
         
         spine = ET.SubElement(sequence, 'spine')
-        
+
+        # Calculate the offset adjustment for this segment
+        # (subtract the first clip's offset so the segment starts at 0s)
+        segment_start_offset = 0.0
+        if cam_cuts:
+            first_offset = cam_cuts[0].get('offset', '0s')
+            segment_start_offset = self._parse_time_to_seconds(first_offset)
+
         # Build timeline with multi-lane structure for each cut
         for ref_clip in cam_cuts:
             # Get timing from original cut
             offset = ref_clip.get('offset', '0s')
             duration = ref_clip.get('duration', '30/30s')
             start = ref_clip.get('start', '0s')
-            
+
+            # Adjust offset relative to segment start
+            offset_seconds = self._parse_time_to_seconds(offset)
+            adjusted_offset_seconds = offset_seconds - segment_start_offset
+            adjusted_offset = self._seconds_to_time_str(adjusted_offset_seconds)
+
             # Convert time values based on detected framerate
-            converted_offset = self._convert_time_format(offset)
+            converted_offset = self._convert_time_format(adjusted_offset)
             converted_duration = self._convert_time_format(duration)
             converted_start = self._convert_time_format(start)
             
@@ -481,25 +543,74 @@ class MasterProjectGenerator:
         
         # Save the master project XML
         if output_path is None:
-            output_filename = f"{original_name}_{project_type}.fcpxml"
+            if part_suffix:
+                # Extract part number from suffix like " part 1"
+                output_filename = f"{original_name}_{project_type}{part_suffix.replace(' ', '_')}.fcpxml"
+            else:
+                output_filename = f"{original_name}_{project_type}.fcpxml"
             output_path = Path(cam_xml_path).parent / output_filename
-        
+        else:
+            # If output_path was provided, add part suffix to it
+            if part_suffix:
+                base_path = Path(output_path)
+                output_path = base_path.parent / f"{base_path.stem}{part_suffix.replace(' ', '_')}{base_path.suffix}"
+
         tree = ET.ElementTree(root)
         self.xml_utils.save_fcpxml(tree, str(output_path))
-        
-        print(f"Master project saved: {output_path}")
+
         return str(output_path)
     
+    def _parse_time_to_seconds(self, time_str: str) -> float:
+        """Parse FCPXML time string to seconds."""
+        if not time_str or time_str == '0s':
+            return 0.0
+
+        time_str = time_str.replace('s', '')
+        if '/' in time_str:
+            parts = time_str.split('/')
+            if len(parts) == 2:
+                return float(parts[0]) / float(parts[1])
+
+        try:
+            return float(time_str)
+        except:
+            return 0.0
+
+    def _seconds_to_time_str(self, seconds: float) -> str:
+        """Convert seconds to FCPXML time string format."""
+        if seconds == 0:
+            return '0s'
+
+        # Use appropriate time base for framerate
+        if self.detected_framerate == "29.97":
+            # 29.97fps uses 30000/1001 timebase
+            numerator = int(round(seconds * 30000))
+            denominator = 30000
+        elif self.detected_framerate == "30":
+            numerator = int(round(seconds * 30))
+            denominator = 30
+        else:
+            # Default to 29.97
+            numerator = int(round(seconds * 30000))
+            denominator = 30000
+
+        from math import gcd
+        divisor = gcd(numerator, denominator)
+        numerator //= divisor
+        denominator //= divisor
+
+        return f"{numerator}/{denominator}s"
+
     def _calculate_total_duration(self, ref_clips: List[ET.Element]) -> str:
         """Calculate total duration from ref-clips."""
         if not ref_clips:
             return "0s"
-        
+
         # Get the last ref-clip's offset and duration
         last_clip = ref_clips[-1]
         offset = last_clip.get('offset', '0s')
         duration = last_clip.get('duration', '0s')
-        
+
         # Parse and add offset + duration for total timeline length
         def parse_time(time_str):
             if '/' in time_str:
@@ -507,10 +618,10 @@ class MasterProjectGenerator:
                 if len(parts) == 2:
                     return int(parts[0]), int(parts[1])
             return 0, 1
-        
+
         offset_num, offset_den = parse_time(offset)
         duration_num, duration_den = parse_time(duration)
-        
+
         # Add fractions: a/b + c/d = (a*d + c*b)/(b*d)
         if offset_den == duration_den:
             total_num = offset_num + duration_num
@@ -518,15 +629,73 @@ class MasterProjectGenerator:
         else:
             total_num = (offset_num * duration_den) + (duration_num * offset_den)
             total_den = offset_den * duration_den
-        
+
         # Simplify if possible
         from math import gcd
         divisor = gcd(total_num, total_den)
         total_num //= divisor
         total_den //= divisor
-        
+
         # Convert to appropriate format based on detected framerate
         return self._convert_time_format(f"{total_num}/{total_den}s")
+
+    def _find_nearest_cut_for_split(self, ref_clips: List[ET.Element], target_seconds: float) -> int:
+        """Find the index of the cut nearest to the target time in seconds."""
+        best_index = 0
+        best_diff = float('inf')
+
+        for i, clip in enumerate(ref_clips):
+            offset = clip.get('offset', '0s')
+            offset_seconds = self._parse_time_to_seconds(offset)
+
+            diff = abs(offset_seconds - target_seconds)
+            if diff < best_diff:
+                best_diff = diff
+                best_index = i
+
+        return best_index
+
+    def _split_clips_into_segments(self, ref_clips: List[ET.Element], segment_hours: float = 2.0) -> List[List[ET.Element]]:
+        """Split ref_clips into segments of approximately segment_hours duration."""
+        if not ref_clips:
+            return []
+
+        # Calculate total duration in seconds
+        last_clip = ref_clips[-1]
+        last_offset = self._parse_time_to_seconds(last_clip.get('offset', '0s'))
+        last_duration = self._parse_time_to_seconds(last_clip.get('duration', '0s'))
+        total_seconds = last_offset + last_duration
+
+        segment_seconds = segment_hours * 3600  # Convert hours to seconds
+
+        # If project is shorter than one segment, return as single segment
+        if total_seconds <= segment_seconds:
+            return [ref_clips]
+
+        segments = []
+        current_segment_start = 0
+
+        while current_segment_start < len(ref_clips):
+            # Find target time for next split
+            target_time = (len(segments) + 1) * segment_seconds
+
+            # If we're near the end, just take remaining clips
+            if target_time >= total_seconds:
+                segments.append(ref_clips[current_segment_start:])
+                break
+
+            # Find nearest cut point
+            split_index = self._find_nearest_cut_for_split(ref_clips, target_time)
+
+            # Make sure we're making progress
+            if split_index <= current_segment_start:
+                split_index = current_segment_start + 1
+
+            # Add this segment
+            segments.append(ref_clips[current_segment_start:split_index])
+            current_segment_start = split_index
+
+        return segments
     
     def _add_smart_collections(self, library: ET.Element):
         """Add standard smart collections to the library."""
