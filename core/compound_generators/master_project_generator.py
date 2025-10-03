@@ -237,8 +237,8 @@ class MasterProjectGenerator:
         print(f"Found compounds: CAM={cam_id}, GS={gs_id}, SSB={ssb_id}")
         print(f"Found {len(cam_cuts)} cuts in CAM timeline")
 
-        # Split cuts into 2-hour segments
-        segments = self._split_clips_into_segments(cam_cuts, segment_hours=2.0)
+        # Split cuts into 1-hour segments
+        segments = self._split_clips_into_segments(cam_cuts, segment_hours=1.0)
         print(f"Split into {len(segments)} segments")
 
         # Extract all resources from all three XMLs
@@ -246,6 +246,16 @@ class MasterProjectGenerator:
         for xml_path in [cam_xml_path, gs_xml_path, ssb_xml_path]:
             resources = self._extract_all_resources(xml_path)
             all_resources.update(resources)
+
+        # Generate consistent UIDs for compounds and event that will be shared across all parts
+        # This ensures that when multiple parts are imported into FCPX, they reference
+        # the same compound clips and event instead of creating duplicates
+        shared_uids = {
+            'cam': str(uuid.uuid4()).upper(),
+            'gs': str(uuid.uuid4()).upper(),
+            'ssb': str(uuid.uuid4()).upper(),
+            'event': str(uuid.uuid4()).upper()  # Shared event UID
+        }
 
         # Generate a project file for each segment
         output_paths = []
@@ -259,7 +269,7 @@ class MasterProjectGenerator:
                 cam_media, gs_media, ssb_media,
                 segment_cuts, all_resources,
                 original_name, project_type, part_suffix,
-                cam_xml_path, output_path
+                cam_xml_path, output_path, shared_uids
             )
             output_paths.append(output_path_for_segment)
 
@@ -276,8 +286,14 @@ class MasterProjectGenerator:
                                   ssb_media: ET.Element, cam_cuts: List[ET.Element],
                                   all_resources: Dict[str, ET.Element],
                                   original_name: str, project_type: str, part_suffix: str,
-                                  cam_xml_path: str, output_path: Optional[str] = None) -> str:
-        """Generate a single project segment with the given cuts."""
+                                  cam_xml_path: str, output_path: Optional[str] = None,
+                                  shared_uids: Optional[Dict[str, str]] = None) -> str:
+        """Generate a single project segment with the given cuts.
+
+        Args:
+            shared_uids: Dict with 'cam', 'gs', 'ssb' keys containing UIDs to use for compounds.
+                        If None, new UIDs will be generated.
+        """
         
         # Build the master project XML
         root = ET.Element('fcpxml')
@@ -321,7 +337,9 @@ class MasterProjectGenerator:
         cam_media_copy.set('id', 'r2')  # Use consistent IDs like template
         cam_name = f"{original_name} - CAM" if project_type == "SOLO" else f"{original_name} - DC CAM"
         cam_media_copy.set('name', cam_name)
-        cam_media_copy.set('uid', str(uuid.uuid4()).upper())
+        # Use shared UID if provided, otherwise generate new one
+        cam_uid = shared_uids['cam'] if shared_uids else str(uuid.uuid4()).upper()
+        cam_media_copy.set('uid', cam_uid)
         cam_media_copy.set('modDate', datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S -0400"))
         
         # Copy the sequence from the original CAM compound
@@ -348,7 +366,9 @@ class MasterProjectGenerator:
         ssb_media_copy.set('id', 'r6')  # Use consistent IDs like template
         ssb_name = f"{original_name} - SSB" if project_type == "SOLO" else f"{original_name} - DC SSB"
         ssb_media_copy.set('name', ssb_name)
-        ssb_media_copy.set('uid', str(uuid.uuid4()).upper())
+        # Use shared UID if provided, otherwise generate new one
+        ssb_uid = shared_uids['ssb'] if shared_uids else str(uuid.uuid4()).upper()
+        ssb_media_copy.set('uid', ssb_uid)
         ssb_media_copy.set('modDate', datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S -0400"))
         
         # Copy the sequence from the original SSB compound
@@ -375,7 +395,9 @@ class MasterProjectGenerator:
         gs_media_copy.set('id', 'r12')  # Use consistent IDs like template
         gs_name = f"{original_name} - GS" if project_type == "SOLO" else f"{original_name} - DC GS"
         gs_media_copy.set('name', gs_name)
-        gs_media_copy.set('uid', str(uuid.uuid4()).upper())
+        # Use shared UID if provided, otherwise generate new one
+        gs_uid = shared_uids['gs'] if shared_uids else str(uuid.uuid4()).upper()
+        gs_media_copy.set('uid', gs_uid)
         gs_media_copy.set('modDate', datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S -0400"))
         
         # Copy the sequence from the original GS compound
@@ -411,7 +433,9 @@ class MasterProjectGenerator:
 
         event = ET.SubElement(library, 'event')
         event.set('name', 'Auto-Editor Media Group')
-        event.set('uid', str(uuid.uuid4()).upper())
+        # Use shared event UID if provided, otherwise generate new one
+        event_uid = shared_uids['event'] if shared_uids else str(uuid.uuid4()).upper()
+        event.set('uid', event_uid)
 
         project = ET.SubElement(event, 'project')
         project_name = f"{original_name} {project_type.lower()}{part_suffix}"
@@ -472,23 +496,8 @@ class MasterProjectGenerator:
             # Add conform-rate
             conform_rate = ET.SubElement(main_clip, 'conform-rate')
             conform_rate.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
-            
-            # Lane -2: SSB audio
-            ssb_audio = ET.SubElement(main_clip, 'ref-clip')
-            ssb_audio.set('ref', 'r6')  # SSB compound
-            ssb_audio.set('lane', '-2')
-            # Nested clips offset matches start for proper frame alignment
-            ssb_audio.set('offset', converted_start)
-            ssb_audio.set('name', ssb_name)
-            ssb_audio.set('duration', converted_duration)
-            ssb_audio.set('srcEnable', 'audio')  # Audio only
-            if converted_start != '0s':
-                ssb_audio.set('start', converted_start)
-            
-            ssb_audio_conform = ET.SubElement(ssb_audio, 'conform-rate')
-            ssb_audio_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
-            
-            # Lane -1: CAM audio
+
+            # Lane -1: CAM audio (master audio - topmost audio lane)
             cam_audio = ET.SubElement(main_clip, 'ref-clip')
             cam_audio.set('ref', 'r2')  # CAM compound
             cam_audio.set('lane', '-1')
@@ -499,9 +508,24 @@ class MasterProjectGenerator:
             cam_audio.set('srcEnable', 'audio')  # Audio only
             if converted_start != '0s':
                 cam_audio.set('start', converted_start)
-            
+
             cam_audio_conform = ET.SubElement(cam_audio, 'conform-rate')
             cam_audio_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
+
+            # Lane -2: SSB audio (below master audio)
+            ssb_audio = ET.SubElement(main_clip, 'ref-clip')
+            ssb_audio.set('ref', 'r6')  # SSB compound
+            ssb_audio.set('lane', '-2')
+            # Nested clips offset matches start for proper frame alignment
+            ssb_audio.set('offset', converted_start)
+            ssb_audio.set('name', ssb_name)
+            ssb_audio.set('duration', converted_duration)
+            ssb_audio.set('srcEnable', 'audio')  # Audio only
+            if converted_start != '0s':
+                ssb_audio.set('start', converted_start)
+
+            ssb_audio_conform = ET.SubElement(ssb_audio, 'conform-rate')
+            ssb_audio_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
             
             # Lane 1: GS (muted)
             gs_clip = ET.SubElement(main_clip, 'ref-clip')
