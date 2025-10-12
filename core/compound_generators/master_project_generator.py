@@ -138,50 +138,45 @@ class MasterProjectGenerator:
         """Align time values to proper frame boundaries for the detected framerate."""
         if not time_str or time_str == '0s':
             return '0s'
-        
+
         if '/' not in time_str:
             return time_str
-        
+
         # Parse the time value
         parts = time_str.replace('s', '').split('/')
         if len(parts) != 2:
             return time_str
-        
+
         numerator = int(parts[0])
         denominator = int(parts[1])
-        
+
         if self.detected_framerate == "29.97":
             # For 29.97fps, frame duration is 1001/30000s
             # Convert to seconds, round to nearest frame, convert back
             time_in_seconds = numerator / denominator
             frame_duration = 1001 / 30000  # 29.97fps frame duration
-            
+
             # Round to nearest frame
             frame_number = round(time_in_seconds / frame_duration)
-            
-            # Convert back to fractional format
+
+            # Convert back to fractional format - KEEP in 30000 denominator, don't simplify
             aligned_numerator = frame_number * 1001
             aligned_denominator = 30000
-            
-            # Simplify the fraction
-            from math import gcd
-            divisor = gcd(aligned_numerator, aligned_denominator)
-            aligned_numerator //= divisor
-            aligned_denominator //= divisor
-            
+
+            # Do NOT simplify the fraction - keep consistent denominator
             return f"{aligned_numerator}/{aligned_denominator}s"
-        
+
         elif self.detected_framerate == "30":
             # For 30fps, frame duration is 1/30s
             time_in_seconds = numerator / denominator
             frame_duration = 1 / 30
-            
+
             # Round to nearest frame
             frame_number = round(time_in_seconds / frame_duration)
-            
+
             # Convert back to fractional format
             return f"{frame_number}/30s"
-        
+
         # For other framerates, return as-is
         return time_str
     
@@ -459,27 +454,33 @@ class MasterProjectGenerator:
 
         # Calculate the offset adjustment for this segment
         # (subtract the first clip's offset so the segment starts at 0s)
-        segment_start_offset = 0.0
+        segment_start_offset_str = '0s'
         if cam_cuts:
-            first_offset = cam_cuts[0].get('offset', '0s')
-            segment_start_offset = self._parse_time_to_seconds(first_offset)
+            segment_start_offset_str = cam_cuts[0].get('offset', '0s')
 
         # Build timeline with multi-lane structure for each cut
-        for ref_clip in cam_cuts:
+        # Track expected offset to ensure continuity
+        expected_offset = "0s"
+
+        for i, ref_clip in enumerate(cam_cuts):
             # Get timing from original cut
             offset = ref_clip.get('offset', '0s')
             duration = ref_clip.get('duration', '30/30s')
             start = ref_clip.get('start', '0s')
 
-            # Adjust offset relative to segment start
-            offset_seconds = self._parse_time_to_seconds(offset)
-            adjusted_offset_seconds = offset_seconds - segment_start_offset
-            adjusted_offset = self._seconds_to_time_str(adjusted_offset_seconds)
-
-            # Convert time values based on detected framerate
-            converted_offset = self._convert_time_format(adjusted_offset)
+            # Convert duration and start to proper framerate
             converted_duration = self._convert_time_format(duration)
             converted_start = self._convert_time_format(start)
+
+            # Use expected_offset for continuity (only convert first clip's offset)
+            if i == 0:
+                # First clip: adjust and convert offset
+                adjusted_offset = self._subtract_time_fractions(offset, segment_start_offset_str)
+                converted_offset = self._convert_time_format(adjusted_offset)
+                expected_offset = converted_offset
+            else:
+                # Subsequent clips: use expected offset to maintain continuity
+                converted_offset = expected_offset
             
             # Create main CAM ref-clip (video only)
             main_clip = ET.SubElement(spine, 'ref-clip')
@@ -526,7 +527,7 @@ class MasterProjectGenerator:
 
             ssb_audio_conform = ET.SubElement(ssb_audio, 'conform-rate')
             ssb_audio_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
-            
+
             # Lane 1: GS (muted)
             gs_clip = ET.SubElement(main_clip, 'ref-clip')
             gs_clip.set('ref', 'r12')  # GS compound
@@ -537,14 +538,14 @@ class MasterProjectGenerator:
             gs_clip.set('duration', converted_duration)
             if converted_start != '0s':
                 gs_clip.set('start', converted_start)
-            
+
             gs_conform = ET.SubElement(gs_clip, 'conform-rate')
             gs_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
-            
+
             # Mute GS audio
             gs_volume = ET.SubElement(gs_clip, 'adjust-volume')
             gs_volume.set('amount', '-96dB')
-            
+
             # Lane 2: SSB video
             ssb_video = ET.SubElement(main_clip, 'ref-clip')
             ssb_video.set('ref', 'r6')  # SSB compound
@@ -556,10 +557,13 @@ class MasterProjectGenerator:
             ssb_video.set('srcEnable', 'video')  # Video only
             if converted_start != '0s':
                 ssb_video.set('start', converted_start)
-            
+
             ssb_video_conform = ET.SubElement(ssb_video, 'conform-rate')
             ssb_video_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
-        
+
+            # Calculate next expected offset to maintain continuity
+            expected_offset = self._add_time_fractions(converted_offset, converted_duration)
+
         print(f"Created timeline with {len(cam_cuts)} cuts")
         
         # Add smart collections
@@ -600,6 +604,66 @@ class MasterProjectGenerator:
         except:
             return 0.0
 
+    def _add_time_fractions(self, time_str1: str, time_str2: str) -> str:
+        """Add two time values as fractions."""
+        def parse_time(t):
+            if t.endswith('s'):
+                t = t[:-1]
+            if '/' in t:
+                num, den = t.split('/')
+                return int(num), int(den)
+            return int(t), 1
+
+        num1, den1 = parse_time(time_str1)
+        num2, den2 = parse_time(time_str2)
+
+        if den1 == den2:
+            result_num = num1 + num2
+            result_den = den1
+        else:
+            result_num = num1 * den2 + num2 * den1
+            result_den = den1 * den2
+
+        return f"{result_num}/{result_den}s"
+
+    def _subtract_time_fractions(self, time_str1: str, time_str2: str) -> str:
+        """Subtract two time values using fraction math to avoid rounding errors."""
+        if not time_str1 or time_str1 == '0s':
+            return '0s'
+        if not time_str2 or time_str2 == '0s':
+            return time_str1
+
+        # Parse first time
+        t1 = time_str1.replace('s', '')
+        if '/' in t1:
+            num1, den1 = map(int, t1.split('/'))
+        else:
+            num1, den1 = int(float(t1) * 30000), 30000
+
+        # Parse second time
+        t2 = time_str2.replace('s', '')
+        if '/' in t2:
+            num2, den2 = map(int, t2.split('/'))
+        else:
+            num2, den2 = int(float(t2) * 30000), 30000
+
+        # Subtract: a/b - c/d = (a*d - c*b)/(b*d)
+        # But normalize to common denominator 30000
+        if den1 == den2 == 30000:
+            result_num = num1 - num2
+            result_den = 30000
+        else:
+            result_num = num1 * den2 - num2 * den1
+            result_den = den1 * den2
+            # Normalize to 30000
+            result_num = int(result_num * 30000 / result_den)
+            result_den = 30000
+
+        if result_num == 0:
+            return '0s'
+
+        return f"{result_num}/{result_den}s"
+
     def _seconds_to_time_str(self, seconds: float) -> str:
         """Convert seconds to FCPXML time string format."""
         if seconds == 0:
@@ -607,7 +671,7 @@ class MasterProjectGenerator:
 
         # Use appropriate time base for framerate
         if self.detected_framerate == "29.97":
-            # 29.97fps uses 30000/1001 timebase
+            # 29.97fps uses 30000 denominator - keep it consistent, don't simplify
             numerator = int(round(seconds * 30000))
             denominator = 30000
         elif self.detected_framerate == "30":
@@ -618,11 +682,7 @@ class MasterProjectGenerator:
             numerator = int(round(seconds * 30000))
             denominator = 30000
 
-        from math import gcd
-        divisor = gcd(numerator, denominator)
-        numerator //= divisor
-        denominator //= divisor
-
+        # Do NOT simplify the fraction - keep consistent denominator
         return f"{numerator}/{denominator}s"
 
     def _calculate_total_duration(self, ref_clips: List[ET.Element]) -> str:

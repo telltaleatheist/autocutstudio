@@ -415,20 +415,32 @@ class DCSSBGenerator:
         
         # Add ref-clips for each cut, referencing the dc ssb compound
         main_timeline_frame_duration = original_format.get('frameDuration', '1/30s') if original_format is not None else '1/30s'
-        
-        for cut in cuts:
+
+        # Track expected offset to ensure continuity (no gaps/overlaps)
+        expected_offset = "0s"
+
+        for i, cut in enumerate(cuts):
             ref_clip = ET.SubElement(main_spine, 'ref-clip')
             ref_clip.set('ref', dc_ssb_compound_id)
             ref_clip.set('name', dc_ssb_name)
-            
-            # Snap all timecodes to frame boundaries using main timeline frame duration
-            snapped_offset = self._snap_to_frame_boundary(cut['offset'], main_timeline_frame_duration)
-            snapped_duration = self._snap_to_frame_boundary(cut['duration'], main_timeline_frame_duration)  
+
+            # Snap duration and start to frame boundaries
+            snapped_duration = self._snap_to_frame_boundary(cut['duration'], main_timeline_frame_duration)
             snapped_start = self._snap_to_frame_boundary(cut['start'], main_timeline_frame_duration)
-            
+
+            # Use expected_offset to ensure continuity (no gaps between clips)
+            if i == 0:
+                snapped_offset = self._snap_to_frame_boundary(cut['offset'], main_timeline_frame_duration)
+                expected_offset = snapped_offset
+            else:
+                snapped_offset = expected_offset
+
             ref_clip.set('offset', snapped_offset)
             ref_clip.set('duration', snapped_duration)
             ref_clip.set('start', snapped_start)
+
+            # Calculate next expected offset
+            expected_offset = self._add_time_fractions(snapped_offset, snapped_duration)
         
         # Save the new XML
         if output_path is None:
@@ -499,7 +511,29 @@ class DCSSBGenerator:
         except Exception as e:
             print(f"Error generating DC SSB compound clip: {e}")
             return 1
-            
+
+    def _add_time_fractions(self, time_str1: str, time_str2: str) -> str:
+        """Add two time values as fractions."""
+        def parse_time(t):
+            if t.endswith('s'):
+                t = t[:-1]
+            if '/' in t:
+                num, den = t.split('/')
+                return int(num), int(den)
+            return int(t), 1
+
+        num1, den1 = parse_time(time_str1)
+        num2, den2 = parse_time(time_str2)
+
+        if den1 == den2:
+            result_num = num1 + num2
+            result_den = den1
+        else:
+            result_num = num1 * den2 + num2 * den1
+            result_den = den1 * den2
+
+        return f"{result_num}/{result_den}s"
+
     def _snap_to_frame_boundary(self, time_str: str, frame_duration_str: str) -> str:
         """Snap a time value to the nearest frame boundary."""
         def parse_time(t):
@@ -509,21 +543,30 @@ class DCSSBGenerator:
                 num, den = t.split('/')
                 return int(num), int(den)
             return int(t), 1
-        
+
         time_num, time_den = parse_time(time_str)
         frame_num, frame_den = parse_time(frame_duration_str)
-        
-        # Convert both to common denominator
-        if time_den != frame_den:
-            # Find LCM or use larger denominator
-            common_den = max(time_den, frame_den)
-            time_num = time_num * common_den // time_den
-            frame_num = frame_num * common_den // frame_den
-            time_den = common_den
-            frame_den = common_den
-        
+
+        # Calculate time in seconds and frame duration in seconds
+        time_seconds = time_num / time_den
+        frame_duration_seconds = frame_num / frame_den
+
         # Round to nearest frame
-        frames = round(time_num / frame_num)
-        snapped_time = frames * frame_num
-        
-        return f"{snapped_time}/{time_den}s"
+        frames = round(time_seconds / frame_duration_seconds)
+
+        # Convert back to fractional format with fixed denominator (30000 for 29.97fps)
+        # Keep denominator consistent to avoid rounding errors
+        if frame_duration_str == '1001/30000s':
+            # 29.97fps
+            snapped_num = frames * 1001
+            snapped_den = 30000
+        elif frame_duration_str == '1/30s':
+            # 30fps
+            snapped_num = frames
+            snapped_den = 30
+        else:
+            # Generic case - use original denominator
+            snapped_num = frames * frame_num
+            snapped_den = frame_den
+
+        return f"{snapped_num}/{snapped_den}s"

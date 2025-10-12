@@ -277,7 +277,7 @@ class DCGSGenerator:
         # Add screen video (top left) - cropped from master using exact template values
         screen_config = layout_config.get('screen', {})
         if screen_config:
-            # Use exact transforms from dc gs template (lane 2)
+            # Use exact transforms from dc gs template (lane 6 - above game)
             screen_transforms = {
                 'crop': [2.02365, 1.18815, 90.863, 51.1176],
                 'crop_mode': 'trim',
@@ -286,23 +286,23 @@ class DCGSGenerator:
                     'scale': 1.17903
                 }
             }
-            
+
             screen_clip = self.xml_utils.create_video_clip(
                 f"{original_name} - Screen",
                 original_asset_id,
-                "2",
+                "6",
                 "0s",
                 original_duration,
                 screen_transforms
             )
             gap.append(screen_clip)
-            
+
             # Add screen border - use gs_dc.top_left directly
             screen_border_path = self.config.get_border_path('gs_dc.top_left')
-            
+
             if screen_border_path and screen_border_path != '':
                 print(f"Adding screen border: {screen_border_path}")
-                
+
                 # Create border asset
                 border_asset_id = "r_gs_dc_top_left_screen"
                 border_asset = self.xml_utils.create_asset_element(
@@ -315,12 +315,12 @@ class DCGSGenerator:
                     has_video=True
                 )
                 resources.append(border_asset)
-                
-                # Add border clip (lane 3)
+
+                # Add border clip (lane 7)
                 border_clip = self.xml_utils.create_video_clip(
                     "gs dc top left - Screen",
                     border_asset_id,
-                    "3",
+                    "7",
                     "0s",
                     original_duration,
                     None
@@ -383,7 +383,7 @@ class DCGSGenerator:
         # Add game video (bottom right) - cropped from master using exact template values
         game_config = layout_config.get('game', {})
         if game_config:
-            # Use exact transforms from dc gs template (lane 6)
+            # Use exact transforms from dc gs template (lane 2 - below screen)
             game_transforms = {
                 'crop': [91.1158, 51.1409, 1.77082, 1.1649],
                 'crop_mode': 'trim',
@@ -392,20 +392,20 @@ class DCGSGenerator:
                     'scale': 1.23
                 }
             }
-            
+
             game_clip = self.xml_utils.create_video_clip(
                 f"{original_name} - Game",
                 original_asset_id,
-                "6",
+                "2",
                 "0s",
                 original_duration,
                 game_transforms
             )
             gap.append(game_clip)
-            
+
             # Add game border - use gs_dc.bottom_right directly
             game_border_path = self.config.get_border_path('gs_dc.bottom_right')
-            
+
             if game_border_path and game_border_path != '':
                 # Create border asset
                 border_asset_id = "r_gs_dc_bottom_right_game"
@@ -419,12 +419,12 @@ class DCGSGenerator:
                     has_video=True
                 )
                 resources.append(border_asset)
-                
-                # Add border clip (lane 7)
+
+                # Add border clip (lane 3)
                 border_clip = self.xml_utils.create_video_clip(
                     "gs dc bottom right - Game",
                     border_asset_id,
-                    "7",
+                    "3",
                     "0s",
                     original_duration,
                     None
@@ -506,20 +506,32 @@ class DCGSGenerator:
         
         # Add ref-clips for each cut, referencing the dc gs compound
         main_timeline_frame_duration = original_format.get('frameDuration', '1/30s') if original_format is not None else '1/30s'
-        
-        for cut in cuts:
+
+        # Track expected offset to ensure continuity (no gaps/overlaps)
+        expected_offset = "0s"
+
+        for i, cut in enumerate(cuts):
             ref_clip = ET.SubElement(main_spine, 'ref-clip')
             ref_clip.set('ref', dc_gs_compound_id)
             ref_clip.set('name', dc_gs_name)
-            
-            # Snap all timecodes to frame boundaries using main timeline frame duration
-            snapped_offset = self._snap_to_frame_boundary(cut['offset'], main_timeline_frame_duration)
-            snapped_duration = self._snap_to_frame_boundary(cut['duration'], main_timeline_frame_duration)  
+
+            # Snap duration and start to frame boundaries
+            snapped_duration = self._snap_to_frame_boundary(cut['duration'], main_timeline_frame_duration)
             snapped_start = self._snap_to_frame_boundary(cut['start'], main_timeline_frame_duration)
-            
+
+            # Use expected_offset to ensure continuity (no gaps between clips)
+            if i == 0:
+                snapped_offset = self._snap_to_frame_boundary(cut['offset'], main_timeline_frame_duration)
+                expected_offset = snapped_offset
+            else:
+                snapped_offset = expected_offset
+
             ref_clip.set('offset', snapped_offset)
             ref_clip.set('duration', snapped_duration)
             ref_clip.set('start', snapped_start)
+
+            # Calculate next expected offset
+            expected_offset = self._add_time_fractions(snapped_offset, snapped_duration)
         
         # Save the new XML
         if output_path is None:
@@ -538,14 +550,14 @@ class DCGSGenerator:
         try:
             # Validate input files
             compound_path = Path(args.compound)
-            
+
             if not compound_path.exists():
                 print(f"Error: Compound XML file not found: {compound_path}")
                 return 1
-            
+
             # Build audio sources dictionary from explicit arguments
             audio_sources = {}
-            
+
             if args.mic_audio:
                 mic_path = Path(args.mic_audio)
                 if mic_path.exists():
@@ -554,7 +566,7 @@ class DCGSGenerator:
                 else:
                     print(f"Error: Mic1 audio file not found: {mic_path}")
                     return 1
-            
+
             if args.mic2_audio:
                 mic2_path = Path(args.mic2_audio)
                 if mic2_path.exists():
@@ -562,7 +574,7 @@ class DCGSGenerator:
                     print(f"Using mic2 audio: {mic2_path}")
                 else:
                     print(f"Warning: Mic2 audio file not found: {mic2_path}")
-            
+
             if args.mic3_audio:
                 mic3_path = Path(args.mic3_audio)
                 if mic3_path.exists():
@@ -570,7 +582,7 @@ class DCGSGenerator:
                     print(f"Using mic3 audio: {mic3_path}")
                 else:
                     print(f"Warning: Mic3 audio file not found: {mic3_path}")
-            
+
             if args.mic4_audio:
                 mic4_path = Path(args.mic4_audio)
                 if mic4_path.exists():
@@ -578,7 +590,7 @@ class DCGSGenerator:
                     print(f"Using mic4 audio: {mic4_path}")
                 else:
                     print(f"Warning: Mic4 audio file not found: {mic4_path}")
-            
+
             if args.screen_audio:
                 screen_path = Path(args.screen_audio)
                 if screen_path.exists():
@@ -586,7 +598,7 @@ class DCGSGenerator:
                     print(f"Using screen audio: {screen_path}")
                 else:
                     print(f"Warning: Screen audio file not found: {screen_path}")
-            
+
             if args.game_audio:
                 game_path = Path(args.game_audio)
                 if game_path.exists():
@@ -594,7 +606,7 @@ class DCGSGenerator:
                     print(f"Using game audio: {game_path}")
                 else:
                     print(f"Warning: Game audio file not found: {game_path}")
-            
+
             if args.sound_effects:
                 sfx_path = Path(args.sound_effects)
                 if sfx_path.exists():
@@ -602,16 +614,16 @@ class DCGSGenerator:
                     print(f"Using sound effects: {sfx_path}")
                 else:
                     print(f"Warning: Sound effects file not found: {sfx_path}")
-            
+
             if not audio_sources:
                 print("Error: At least one audio source is required")
                 return 1
-            
+
             print(f"Processing audio sources: {list(audio_sources.keys())}")
-            
+
             # Create DC GS generator
             dc_gs_generator = cls(config)
-            
+
             # Generate DC GS compound clip
             output_path = dc_gs_generator.generate_dc_gs_compound(
                 str(compound_path),
@@ -619,19 +631,41 @@ class DCGSGenerator:
                 args.output,
                 args.sync_audio
             )
-            
+
             print(f"Success! DC GS compound clip generated: {output_path}")
             print("\nNext steps:")
             print("1. Import the XML file into Final Cut Pro X")
             print("2. The DC GS compound clip will be available in your event")
             print("3. Use the main timeline to switch between cuts")
-            
+
             return 0
-            
+
         except Exception as e:
             print(f"Error generating DC GS compound clip: {e}")
             return 1
-                
+
+    def _add_time_fractions(self, time_str1: str, time_str2: str) -> str:
+        """Add two time values as fractions."""
+        def parse_time(t):
+            if t.endswith('s'):
+                t = t[:-1]
+            if '/' in t:
+                num, den = t.split('/')
+                return int(num), int(den)
+            return int(t), 1
+
+        num1, den1 = parse_time(time_str1)
+        num2, den2 = parse_time(time_str2)
+
+        if den1 == den2:
+            result_num = num1 + num2
+            result_den = den1
+        else:
+            result_num = num1 * den2 + num2 * den1
+            result_den = den1 * den2
+
+        return f"{result_num}/{result_den}s"
+
     def _snap_to_frame_boundary(self, time_str: str, frame_duration_str: str) -> str:
         """Snap a time value to the nearest frame boundary."""
         def parse_time(t):
@@ -641,21 +675,30 @@ class DCGSGenerator:
                 num, den = t.split('/')
                 return int(num), int(den)
             return int(t), 1
-        
+
         time_num, time_den = parse_time(time_str)
         frame_num, frame_den = parse_time(frame_duration_str)
-        
-        # Convert both to common denominator
-        if time_den != frame_den:
-            # Find LCM or use larger denominator
-            common_den = max(time_den, frame_den)
-            time_num = time_num * common_den // time_den
-            frame_num = frame_num * common_den // frame_den
-            time_den = common_den
-            frame_den = common_den
-        
+
+        # Calculate time in seconds and frame duration in seconds
+        time_seconds = time_num / time_den
+        frame_duration_seconds = frame_num / frame_den
+
         # Round to nearest frame
-        frames = round(time_num / frame_num)
-        snapped_time = frames * frame_num
-        
-        return f"{snapped_time}/{time_den}s"
+        frames = round(time_seconds / frame_duration_seconds)
+
+        # Convert back to fractional format with fixed denominator (30000 for 29.97fps)
+        # Keep denominator consistent to avoid rounding errors
+        if frame_duration_str == '1001/30000s':
+            # 29.97fps
+            snapped_num = frames * 1001
+            snapped_den = 30000
+        elif frame_duration_str == '1/30s':
+            # 30fps
+            snapped_num = frames
+            snapped_den = 30
+        else:
+            # Generic case - use original denominator
+            snapped_num = frames * frame_num
+            snapped_den = frame_den
+
+        return f"{snapped_num}/{snapped_den}s"
