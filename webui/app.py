@@ -124,10 +124,29 @@ def browse_files():
         }), 500
 
 def extract_session_from_filename(filename):
-    """Extract session identifier from filename using pattern: 2025-09-03 1, 2025-09-03 2, etc."""
-    # Match pattern: YYYY-MM-DD followed by space and number
+    """Extract session identifier from filename.
+
+    Supports two patterns:
+    1. Date + Number: "2025-09-03 1", "2025-09-03 2", etc.
+    2. Date + Label: "2025-10-12 podcast", "2025-10-12 gaming", etc.
+
+    Returns the session identifier without "master" or audio type keywords.
+    """
+    # First, try to match date + number pattern: YYYY-MM-DD followed by space and number
     match = re.match(r'^(\d{4}-\d{2}-\d{2}\s+\d+)', filename)
-    return match.group(1) if match else None
+    if match:
+        return match.group(1)
+
+    # Then, try to match date + label pattern: YYYY-MM-DD followed by space and words
+    # We need to extract everything before "master", "mic", "screen", "game", etc.
+    match = re.match(r'^(\d{4}-\d{2}-\d{2}\s+\w+)', filename)
+    if match:
+        session = match.group(1)
+        # Remove common suffixes that might be part of the match
+        session = re.sub(r'\s+(master|mic|screen|game|audio|bluetooth|sound|effects|sfx).*$', '', session, flags=re.IGNORECASE)
+        return session.strip()
+
+    return None
 
 @app.route('/api/auto-detect-audio')
 def auto_detect_audio():
@@ -136,65 +155,95 @@ def auto_detect_audio():
         master_path = request.args.get('masterPath')
         if not master_path:
             return jsonify({'error': 'Master path is required'}), 400
-        
+
         if not master_path.startswith('/Volumes/Callisto/Movies'):
             return jsonify({'error': 'Access denied - path outside allowed directory'}), 403
-        
+
         directory = str(Path(master_path).parent)
         master_name = Path(master_path).stem
-        
-        # Extract session from master filename
+
+        # Extract session from master filename (e.g., "2025-10-12 podcast" or "2025-10-12 1")
         master_session = extract_session_from_filename(master_name)
-        
+
+        print(f"Master file: {master_name}")
+        print(f"Extracted master session: {master_session}")
+
         audio_files = {}
         audio_exts = ['.mp3', '.wav', '.aac', '.flac', '.ogg', '.m4a']
-        
+
         # Look for audio files in the same directory
         for item in os.listdir(directory):
             # Skip hidden/system files that start with ._
             if item.startswith('._'):
                 continue
-                
+
             if Path(item).suffix.lower() in audio_exts:
                 item_path = os.path.join(directory, item)
-                item_name = Path(item).stem.lower()
-                
-                # If we have a session, only match files from the same session
-                if master_session:
-                    item_session = extract_session_from_filename(Path(item).stem)
-                    if not item_session or item_session != master_session:
-                        continue  # Skip files from different sessions
-                
+                item_name = Path(item).stem
+                item_name_lower = item_name.lower()
+
+                # Extract session from this audio file
+                item_session = extract_session_from_filename(item_name)
+
+                print(f"Checking audio file: {item_name}")
+                print(f"  Extracted session: {item_session}")
+
+                # Only match files from the same session (if we have a session)
+                if master_session and item_session:
+                    if item_session != master_session:
+                        print(f"  Skipping - session mismatch")
+                        continue
+
                 # Try to match audio files to types based on naming patterns
-                if 'mic 1' in item_name or 'mic1' in item_name or 'mic audio 1' in item_name:
+                # Check for numbered mic patterns first
+                if 'mic 1' in item_name_lower or 'mic1' in item_name_lower or 'mic audio 1' in item_name_lower:
                     audio_files['mic1'] = item_path
-                elif 'mic 2' in item_name or 'mic2' in item_name or 'mic audio 2' in item_name:
+                    print(f"  Matched as mic1")
+                elif 'mic 2' in item_name_lower or 'mic2' in item_name_lower or 'mic audio 2' in item_name_lower:
                     audio_files['mic2'] = item_path
-                elif 'mic 3' in item_name or 'mic3' in item_name or 'mic audio 3' in item_name:
+                    print(f"  Matched as mic2")
+                elif 'mic 3' in item_name_lower or 'mic3' in item_name_lower or 'mic audio 3' in item_name_lower:
                     audio_files['mic3'] = item_path
-                elif 'mic 4' in item_name or 'mic4' in item_name or 'mic audio 4' in item_name:
+                    print(f"  Matched as mic3")
+                elif 'mic 4' in item_name_lower or 'mic4' in item_name_lower or 'mic audio 4' in item_name_lower:
                     audio_files['mic4'] = item_path
-                elif item_name == 'mic audio' or \
-                     ('mic audio' in item_name and not any(x in item_name for x in ['1', '2', '3', '4'])) or \
-                     ('mic' in item_name and 'audio' in item_name and not any(x in item_name for x in ['1', '2', '3', '4'])):
-                    # Default mic audio without number goes to mic1, including exact "mic audio" matches
+                    print(f"  Matched as mic4")
+                # Check for generic mic audio (without number)
+                elif ('mic audio' in item_name_lower or 'mic' in item_name_lower) and not any(x in item_name_lower for x in ['1', '2', '3', '4']):
+                    # Only assign to mic1 if not already taken
                     if 'mic1' not in audio_files:
                         audio_files['mic1'] = item_path
-                elif 'screen' in item_name:
+                        print(f"  Matched as mic1 (default)")
+                # Check for other audio types
+                elif 'screen' in item_name_lower and 'audio' in item_name_lower:
                     audio_files['screen'] = item_path
-                elif 'game' in item_name:
+                    print(f"  Matched as screen")
+                elif 'screen' in item_name_lower:
+                    audio_files['screen'] = item_path
+                    print(f"  Matched as screen")
+                elif 'game' in item_name_lower:
                     audio_files['game'] = item_path
-                elif 'sound effects' in item_name or 'sfx' in item_name or 'soundeffects' in item_name:
+                    print(f"  Matched as game")
+                elif 'sound effects' in item_name_lower or 'sfx' in item_name_lower or 'soundeffects' in item_name_lower:
                     audio_files['soundEffects'] = item_path
-                elif 'bluetooth' in item_name:
+                    print(f"  Matched as soundEffects")
+                elif 'bluetooth' in item_name_lower:
                     audio_files['bluetooth'] = item_path
-        
+                    print(f"  Matched as bluetooth")
+                else:
+                    print(f"  No match found")
+
+        print(f"Final audio files detected: {list(audio_files.keys())}")
+
         return jsonify({
             'success': True,
             'audioFiles': audio_files
         })
-    
+
     except Exception as e:
+        print(f"Error in auto_detect_audio: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({
             'success': False,
             'error': str(e)
