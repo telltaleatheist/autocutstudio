@@ -48,6 +48,51 @@ function getSelectedXmlOptions() {
     return selected.length > 0 ? selected : null;
 }
 
+// Accordion toggle function
+function toggleAccordion(accordionId) {
+    const content = document.getElementById(accordionId);
+    const header = content.previousElementSibling;
+
+    if (content.classList.contains('collapsed')) {
+        content.classList.remove('collapsed');
+        header.classList.add('expanded');
+    } else {
+        content.classList.add('collapsed');
+        header.classList.remove('expanded');
+    }
+}
+
+// Master project dependency management
+function handleMasterProjectChange(masterType) {
+    const masterCheckbox = document.querySelector(`input[value="${masterType}"]`);
+
+    if (masterCheckbox.checked) {
+        // If master project is checked, check required compounds
+        if (masterType === 'masterSolo') {
+            // SOLO Master requires: camSolo, gsSolo, ssbSolo
+            document.querySelector('input[value="camSolo"]').checked = true;
+            document.querySelector('input[value="gsSolo"]').checked = true;
+            document.querySelector('input[value="ssbSolo"]').checked = true;
+        } else if (masterType === 'masterDC') {
+            // DC Master requires: camDual, gsDual, ssbDual
+            document.querySelector('input[value="camDual"]').checked = true;
+            document.querySelector('input[value="gsDual"]').checked = true;
+            document.querySelector('input[value="ssbDual"]').checked = true;
+        }
+    } else {
+        // If master project is unchecked, uncheck required compounds
+        if (masterType === 'masterSolo') {
+            document.querySelector('input[value="camSolo"]').checked = false;
+            document.querySelector('input[value="gsSolo"]').checked = false;
+            document.querySelector('input[value="ssbSolo"]').checked = false;
+        } else if (masterType === 'masterDC') {
+            document.querySelector('input[value="camDual"]').checked = false;
+            document.querySelector('input[value="gsDual"]').checked = false;
+            document.querySelector('input[value="ssbDual"]').checked = false;
+        }
+    }
+}
+
 // Audio source management
 function openAudioFileBrowser() {
     browserMode = 'audio';
@@ -1099,7 +1144,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (driftFramesInput) {
         driftFramesInput.addEventListener('input', calculateDriftCorrection);
     }
-    
+
     // Watch for master video changes
     const masterVideoPath = document.getElementById('masterVideoPath');
     if (masterVideoPath) {
@@ -1107,13 +1152,29 @@ document.addEventListener('DOMContentLoaded', function() {
         const observer = new MutationObserver(function(mutations) {
             calculateDriftCorrection();
         });
-        
+
         observer.observe(masterVideoPath, {
             attributes: true,
             attributeFilter: ['value']
         });
-        
+
         // Also add direct event listener for programmatic changes
         masterVideoPath.addEventListener('change', calculateDriftCorrection);
+    }
+
+    // Add change listeners to master project checkboxes
+    const masterSoloCheckbox = document.querySelector('input[value="masterSolo"]');
+    const masterDCCheckbox = document.querySelector('input[value="masterDC"]');
+
+    if (masterSoloCheckbox) {
+        masterSoloCheckbox.addEventListener('change', function() {
+            handleMasterProjectChange('masterSolo');
+        });
+    }
+
+    if (masterDCCheckbox) {
+        masterDCCheckbox.addEventListener('change', function() {
+            handleMasterProjectChange('masterDC');
+        });
     }
 });

@@ -1201,17 +1201,67 @@ body {
     cursor: not-allowed;
 }
 
+/* XML Accordion Styles */
+.xml-accordion {
+    margin-top: 1rem;
+}
+
+.xml-accordion-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    padding: 0.5rem;
+    border-radius: var(--border-radius);
+    transition: var(--transition);
+}
+
+.xml-accordion-header:hover {
+    background: rgba(255, 107, 53, 0.1);
+}
+
+.xml-accordion-header .xml-section-title {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+}
+
+.accordion-icon {
+    font-size: 0.9rem;
+    color: var(--primary-orange);
+    transition: transform 0.3s ease;
+    font-weight: bold;
+}
+
+.xml-accordion-header.expanded .accordion-icon {
+    transform: rotate(180deg);
+}
+
+.xml-accordion-content {
+    max-height: 500px;
+    overflow: hidden;
+    transition: max-height 0.3s ease, opacity 0.3s ease, margin-top 0.3s ease;
+    opacity: 1;
+    margin-top: 0.5rem;
+}
+
+.xml-accordion-content.collapsed {
+    max-height: 0;
+    opacity: 0;
+    margin-top: 0;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .drift-input-row {
         flex-direction: column;
         align-items: flex-start;
     }
-    
+
     .drift-input-row label {
         min-width: auto;
     }
-    
+
     .audio-corrections-group {
         flex-wrap: wrap;
     }

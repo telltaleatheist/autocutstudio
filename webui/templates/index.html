@@ -104,81 +104,14 @@
                         <div class="form-group">
                             <label>XML Generation Options</label>
                             <small class="form-help">Select which compound clips to generate. Base files are always created.</small>
-                            
+
                             <div class="xml-options-container">
-                                <div class="xml-option-section">
-                                    <h5 class="xml-section-title">Single Camera Compounds</h5>
-                                    <div class="xml-option-item">
-                                        <label class="checkbox-label">
-                                            <input type="checkbox" name="xmlOptions" value="camSolo" checked>
-                                            <span class="checkbox-custom"></span>
-                                            <div class="xml-option-info">
-                                                <span class="xml-option-name">CAM Solo</span>
-                                                <span class="xml-option-desc">Single camera with mic audio</span>
-                                            </div>
-                                        </label>
-                                    </div>
-                                    <div class="xml-option-item">
-                                        <label class="checkbox-label">
-                                            <input type="checkbox" name="xmlOptions" value="gsSolo" checked>
-                                            <span class="checkbox-custom"></span>
-                                            <div class="xml-option-info">
-                                                <span class="xml-option-name">GS Solo</span>
-                                                <span class="xml-option-desc">Game share with single camera</span>
-                                            </div>
-                                        </label>
-                                    </div>
-                                    <div class="xml-option-item">
-                                        <label class="checkbox-label">
-                                            <input type="checkbox" name="xmlOptions" value="ssbSolo" checked>
-                                            <span class="checkbox-custom"></span>
-                                            <div class="xml-option-info">
-                                                <span class="xml-option-name">SSB Solo</span>
-                                                <span class="xml-option-desc">Screen share with small camera</span>
-                                            </div>
-                                        </label>
-                                    </div>
-                                </div>
-                                
-                                <div class="xml-option-section">
-                                    <h5 class="xml-section-title">Dual Camera Compounds</h5>
-                                    <div class="xml-option-item">
-                                        <label class="checkbox-label">
-                                            <input type="checkbox" name="xmlOptions" value="camDual" checked>
-                                            <span class="checkbox-custom"></span>
-                                            <div class="xml-option-info">
-                                                <span class="xml-option-name">CAM Dual</span>
-                                                <span class="xml-option-desc">Dual camera layout</span>
-                                            </div>
-                                        </label>
-                                    </div>
-                                    <div class="xml-option-item">
-                                        <label class="checkbox-label">
-                                            <input type="checkbox" name="xmlOptions" value="gsDual" checked>
-                                            <span class="checkbox-custom"></span>
-                                            <div class="xml-option-info">
-                                                <span class="xml-option-name">GS Dual</span>
-                                                <span class="xml-option-desc">Game share with dual cameras</span>
-                                            </div>
-                                        </label>
-                                    </div>
-                                    <div class="xml-option-item">
-                                        <label class="checkbox-label">
-                                            <input type="checkbox" name="xmlOptions" value="ssbDual" checked>
-                                            <span class="checkbox-custom"></span>
-                                            <div class="xml-option-info">
-                                                <span class="xml-option-name">SSB Dual</span>
-                                                <span class="xml-option-desc">Screen share with dual cameras</span>
-                                            </div>
-                                        </label>
-                                    </div>
-                                </div>
-                                
+                                <!-- Master Projects Section (Always Visible) -->
                                 <div class="xml-option-section">
                                     <h5 class="xml-section-title">Master Projects</h5>
                                     <div class="xml-option-item">
                                         <label class="checkbox-label">
-                                            <input type="checkbox" name="xmlOptions" value="masterSolo" checked>
+                                            <input type="checkbox" name="xmlOptions" value="masterSolo" checked onchange="handleMasterProjectChange('masterSolo')">
                                             <span class="checkbox-custom"></span>
                                             <div class="xml-option-info">
                                                 <span class="xml-option-name">SOLO Master</span>
@@ -188,13 +121,93 @@
                                     </div>
                                     <div class="xml-option-item">
                                         <label class="checkbox-label">
-                                            <input type="checkbox" name="xmlOptions" value="masterDC" checked>
+                                            <input type="checkbox" name="xmlOptions" value="masterDC" checked onchange="handleMasterProjectChange('masterDC')">
                                             <span class="checkbox-custom"></span>
                                             <div class="xml-option-info">
                                                 <span class="xml-option-name">DC Master</span>
                                                 <span class="xml-option-desc">Complete dual camera project</span>
                                             </div>
                                         </label>
+                                    </div>
+                                </div>
+
+                                <!-- Single Camera Accordion -->
+                                <div class="xml-option-section xml-accordion">
+                                    <div class="xml-accordion-header" onclick="toggleAccordion('singleCamAccordion')">
+                                        <h5 class="xml-section-title">Single Camera Compounds</h5>
+                                        <span class="accordion-icon">▼</span>
+                                    </div>
+                                    <div id="singleCamAccordion" class="xml-accordion-content collapsed">
+                                        <div class="xml-option-item">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" name="xmlOptions" value="camSolo" checked>
+                                                <span class="checkbox-custom"></span>
+                                                <div class="xml-option-info">
+                                                    <span class="xml-option-name">CAM Solo</span>
+                                                    <span class="xml-option-desc">Single camera with mic audio</span>
+                                                </div>
+                                            </label>
+                                        </div>
+                                        <div class="xml-option-item">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" name="xmlOptions" value="gsSolo" checked>
+                                                <span class="checkbox-custom"></span>
+                                                <div class="xml-option-info">
+                                                    <span class="xml-option-name">GS Solo</span>
+                                                    <span class="xml-option-desc">Game share with single camera</span>
+                                                </div>
+                                            </label>
+                                        </div>
+                                        <div class="xml-option-item">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" name="xmlOptions" value="ssbSolo" checked>
+                                                <span class="checkbox-custom"></span>
+                                                <div class="xml-option-info">
+                                                    <span class="xml-option-name">SSB Solo</span>
+                                                    <span class="xml-option-desc">Screen share with small camera</span>
+                                                </div>
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Dual Camera Accordion -->
+                                <div class="xml-option-section xml-accordion">
+                                    <div class="xml-accordion-header" onclick="toggleAccordion('dualCamAccordion')">
+                                        <h5 class="xml-section-title">Dual Camera Compounds</h5>
+                                        <span class="accordion-icon">▼</span>
+                                    </div>
+                                    <div id="dualCamAccordion" class="xml-accordion-content collapsed">
+                                        <div class="xml-option-item">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" name="xmlOptions" value="camDual" checked>
+                                                <span class="checkbox-custom"></span>
+                                                <div class="xml-option-info">
+                                                    <span class="xml-option-name">CAM Dual</span>
+                                                    <span class="xml-option-desc">Dual camera layout</span>
+                                                </div>
+                                            </label>
+                                        </div>
+                                        <div class="xml-option-item">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" name="xmlOptions" value="gsDual" checked>
+                                                <span class="checkbox-custom"></span>
+                                                <div class="xml-option-info">
+                                                    <span class="xml-option-name">GS Dual</span>
+                                                    <span class="xml-option-desc">Game share with dual cameras</span>
+                                                </div>
+                                            </label>
+                                        </div>
+                                        <div class="xml-option-item">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" name="xmlOptions" value="ssbDual" checked>
+                                                <span class="checkbox-custom"></span>
+                                                <div class="xml-option-info">
+                                                    <span class="xml-option-name">SSB Dual</span>
+                                                    <span class="xml-option-desc">Screen share with dual cameras</span>
+                                                </div>
+                                            </label>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
