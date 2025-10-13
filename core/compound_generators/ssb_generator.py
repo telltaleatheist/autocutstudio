@@ -19,16 +19,18 @@ class SSBGenerator:
     
     def generate_ssb_compound(self, compound_xml_path: str, audio_sources: Dict[str, str],
                                 mode: str = "solo", output_path: Optional[str] = None,
-                                apply_audio_sync: bool = False) -> str:
+                                apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None) -> str:
             """Generate ssb compound clip from existing compound clip XML.
-            
+
             Args:
                 compound_xml_path: Path to existing compound XML file
                 audio_sources: Dictionary mapping audio types to file paths (e.g., {'screen': '/path/to/screen.mp3'})
                 mode: Layout mode ('solo' or 'dual')
                 output_path: Optional custom output path
                 apply_audio_sync: Whether to apply 29.97fps sync correction
+                video_sources: Optional dictionary of video source paths (e.g., {'cam1': '/path/to/cam.mp4', 'screen': '/path/to/screen.mp4'})
             """
+            video_sources = video_sources or {}
             
             # Load the original compound clip XML
             tree = self.xml_utils.parse_fcpxml(compound_xml_path)
@@ -157,7 +159,51 @@ class SSBGenerator:
                 has_video=True
             )
             resources.append(original_video_asset)
-            
+
+            # Check if optional cam1 video source is provided
+            cam1_asset_id = None
+            cam1_name = None
+            if 'cam1' in video_sources and video_sources['cam1']:
+                cam1_path = video_sources['cam1']
+                cam1_asset_id = "r_cam1_video"
+                cam1_name = Path(cam1_path).stem
+
+                print(f"SSB: Using individual camera video: {cam1_path}")
+
+                # Create asset for the cam1 video
+                cam1_asset = self.xml_utils.create_asset_element(
+                    cam1_asset_id,
+                    cam1_name,
+                    cam1_path,
+                    original_duration,
+                    'r1_ssb',
+                    has_audio=False,
+                    has_video=True
+                )
+                resources.append(cam1_asset)
+
+            # Check if optional screen video source is provided
+            screen_asset_id = None
+            screen_name = None
+            if 'screen' in video_sources and video_sources['screen']:
+                screen_path = video_sources['screen']
+                screen_asset_id = "r_screen_video"
+                screen_name = Path(screen_path).stem
+
+                print(f"SSB: Using individual screen video: {screen_path}")
+
+                # Create asset for the screen video
+                screen_asset = self.xml_utils.create_asset_element(
+                    screen_asset_id,
+                    screen_name,
+                    screen_path,
+                    original_duration,
+                    'r1_ssb',
+                    has_audio=False,
+                    has_video=True
+                )
+                resources.append(screen_asset)
+
             # Create ssb compound media element
             ssb_media = self.xml_utils.create_media_compound(
                 ssb_compound_id,
@@ -239,22 +285,40 @@ class SSBGenerator:
                     )
                     gap.append(background_clip)
             
-            # Add camera video (top left, small) - cropped from master
+            # Add camera video (top left, small)
             camera_config = layout_config.get('camera', {})
             if camera_config:
-                # Use exact transforms from working template (lane 2)
-                camera_transforms = {
-                    'crop': [2.2772, 51.392, 91.1719, 1.49848],
-                    'crop_mode': 'trim',
-                    'transform': {
-                        'position': [16.4529, 49.3529],
-                        'scale': 1.1936
+                # Determine which asset and transforms to use
+                if cam1_asset_id:
+                    # Use individual cam1 video - NO CROPPING, only position/scale
+                    camera_asset = cam1_asset_id
+                    camera_name_for_clip = cam1_name
+                    camera_transforms = {
+                        'crop': None,  # No crop for individual video
+                        'crop_mode': None,
+                        'transform': {
+                            'position': [16.4529, 49.3529],  # Same position
+                            'scale': 0.25  # Scale down to fit small border (adjust as needed)
+                        }
                     }
-                }
-                
+                    print(f"SSB: Using cam1 video with scale-only transform (no crop)")
+                else:
+                    # Use master video - WITH CROPPING
+                    camera_asset = original_asset_id
+                    camera_name_for_clip = f"{original_name} - Camera"
+                    camera_transforms = {
+                        'crop': [2.2772, 51.392, 91.1719, 1.49848],
+                        'crop_mode': 'trim',
+                        'transform': {
+                            'position': [16.4529, 49.3529],
+                            'scale': 1.1936
+                        }
+                    }
+                    print(f"SSB: Using master video with crop and transform")
+
                 camera_clip = self.xml_utils.create_video_clip(
-                    f"{original_name} - Camera",
-                    original_asset_id,
+                    camera_name_for_clip,
+                    camera_asset,
                     "2",  # Lane 2 to match template
                     "0s",
                     original_duration,
@@ -292,22 +356,40 @@ class SSBGenerator:
                         )
                         gap.append(border_clip)
             
-            # Add screen video (bottom right, large) - cropped from master
+            # Add screen video (bottom right, large)
             screen_config = layout_config.get('screen', {})
             if screen_config:
-                # Use exact transforms from working template (lane 4)
-                screen_transforms = {
-                    'crop': [3.92176, 2.55248, 91.5688, 51.0858],
-                    'crop_mode': 'trim',
-                    'transform': {
-                        'position': [90.0328, -49.4777],
-                        'scale': 1.26677
+                # Determine which asset and transforms to use
+                if screen_asset_id:
+                    # Use individual screen video - NO CROPPING, only position/scale
+                    screen_video_asset = screen_asset_id
+                    screen_name_for_clip = screen_name
+                    screen_transforms = {
+                        'crop': None,  # No crop for individual video
+                        'crop_mode': None,
+                        'transform': {
+                            'position': [0, 0],  # Full screen position
+                            'scale': 1.0  # No scaling needed for full-screen
+                        }
                     }
-                }
-                
+                    print(f"SSB: Using screen video with no transforms (full screen)")
+                else:
+                    # Use master video - WITH CROPPING
+                    screen_video_asset = original_asset_id
+                    screen_name_for_clip = f"{original_name} - Screen"
+                    screen_transforms = {
+                        'crop': [3.92176, 2.55248, 91.5688, 51.0858],
+                        'crop_mode': 'trim',
+                        'transform': {
+                            'position': [90.0328, -49.4777],
+                            'scale': 1.26677
+                        }
+                    }
+                    print(f"SSB: Using master video for screen with crop and transform")
+
                 screen_clip = self.xml_utils.create_video_clip(
-                    f"{original_name} - Screen",
-                    original_asset_id,
+                    screen_name_for_clip,
+                    screen_video_asset,
                     "4",  # Lane 4 to match template
                     "0s",
                     original_duration,

@@ -356,7 +356,7 @@ class FCPXMLUtils:
         # Add transform elements if provided
         if transforms:
             # Add crop adjustment if specified
-            if 'crop' in transforms:
+            if 'crop' in transforms and transforms['crop'] is not None:
                 crop_values = transforms['crop']  # [left, top, right, bottom]
                 crop = ET.SubElement(video, 'adjust-crop')
                 crop.set('mode', transforms.get('crop_mode', 'trim'))

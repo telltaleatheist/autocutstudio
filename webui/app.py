@@ -334,12 +334,15 @@ def process_video_background(job, data):
     try:
         # Load configuration
         config = AutoCutStudioConfig(str(BASE_DIR / 'config' / 'autostudio_config.yaml'))
-        
+
         # Extract parameters
         master_video = data['masterVideo']
         audio_sync_settings = data.get('audioSyncSettings', {})  # Individual sync settings
         threshold = data.get('threshold', config.default_threshold)
         xml_options = data.get('xmlOptions', None)  # Get XML generation options
+        video_sources = data.get('videoSources', {})  # Get optional video sources (cam1, screen, game)
+
+        print(f"Optional video sources provided: {list(video_sources.keys())}")
         
         # Auto-detect framerate from master video
         print(f"Auto-detecting framerate from master video: {master_video}")
@@ -481,7 +484,8 @@ def process_video_background(job, data):
                     cam_audio_sources,
                     'solo',
                     None,
-                    False  # Audio already processed with individual sync settings
+                    False,  # Audio already processed with individual sync settings
+                    video_sources  # Pass optional video sources
                 )
                 all_xml_files.append(cam_solo_path)  # Add to XML collection
                 generated_clips.append({
@@ -498,7 +502,7 @@ def process_video_background(job, data):
             try:
                 cam_generator = CamGenerator(config)
                 cam_solo_path = cam_generator.generate_cam_compound(
-                    compound_xml, cam_audio_sources, 'solo', None, False
+                    compound_xml, cam_audio_sources, 'solo', None, False, video_sources
                 )
                 all_xml_files.append(cam_solo_path)  # Add to zip even if not displayed
             except Exception as e:
@@ -638,7 +642,8 @@ def process_video_background(job, data):
                     ssb_audio_sources if ssb_audio_sources else {},
                     'solo',
                     None,
-                    False
+                    False,
+                    video_sources  # Pass optional video sources
                 )
                 all_xml_files.append(ssb_solo_path)
                 generated_clips.append({
@@ -657,7 +662,7 @@ def process_video_background(job, data):
             try:
                 ssb_generator = SSBGenerator(config)
                 ssb_solo_path = ssb_generator.generate_ssb_compound(
-                    compound_xml, ssb_audio_sources if ssb_audio_sources else {}, 'solo', None, False
+                    compound_xml, ssb_audio_sources if ssb_audio_sources else {}, 'solo', None, False, video_sources
                 )
                 all_xml_files.append(ssb_solo_path)  # Add to zip even if not displayed
             except Exception as e:

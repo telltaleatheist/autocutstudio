@@ -7,6 +7,7 @@ let currentFileBrowserPath = '/Volumes/Callisto/Movies';
 let selectedFilePath = null;
 let fileBrowserTarget = null;
 let projectAudioSources = {};
+let projectVideoSources = {};  // Store optional video sources
 let browserMode = 'master';
 let masterVideoDuration = null;
 let audioChangesInProgress = false;
@@ -91,6 +92,46 @@ function handleMasterProjectChange(masterType) {
             document.querySelector('input[value="ssbDual"]').checked = false;
         }
     }
+}
+
+// Video source management
+function openVideoSourceBrowser(sourceType) {
+    fileBrowserTarget = sourceType;
+    browserMode = 'videoSource';
+    selectedFilePath = null;
+
+    const labels = {
+        'cam1': 'Camera 1 Video',
+        'screen': 'Screen Video',
+        'game': 'Game Video'
+    };
+
+    document.getElementById('modalTitle').textContent = `📁 Select ${labels[sourceType]}`;
+    document.getElementById('fileBrowserModal').classList.remove('hidden');
+    document.getElementById('selectFileBtn').classList.remove('hidden');
+    document.getElementById('selectFileBtn').disabled = true;
+    document.getElementById('selectFileBtn').textContent = 'Select Video';
+    loadFileBrowserPath(currentFileBrowserPath);
+}
+
+function clearVideoSource(sourceType) {
+    const pathInputId = `${sourceType}VideoPath`;
+    const clearBtnId = `clear${sourceType.charAt(0).toUpperCase() + sourceType.slice(1)}Btn`;
+
+    document.getElementById(pathInputId).value = '';
+    document.getElementById(clearBtnId).style.display = 'none';
+
+    delete projectVideoSources[sourceType];
+}
+
+function setVideoSource(sourceType, path) {
+    const pathInputId = `${sourceType}VideoPath`;
+    const clearBtnId = `clear${sourceType.charAt(0).toUpperCase() + sourceType.slice(1)}Btn`;
+
+    document.getElementById(pathInputId).value = path;
+    document.getElementById(clearBtnId).style.display = 'inline-flex';
+
+    projectVideoSources[sourceType] = path;
 }
 
 // Audio source management
@@ -464,10 +505,10 @@ async function autoDetectAudioFiles() {
 function getFormData() {
     const form = document.getElementById('videoForm');
     const formData = new FormData(form);
-    
+
     const audioSources = {};
     const audioSyncSettings = {};
-    
+
     // Convert from file IDs to audio types
     for (const [id, source] of Object.entries(projectAudioSources)) {
         if (source.type) {  // Only include files with assigned types
@@ -476,17 +517,18 @@ function getFormData() {
             audioSyncSettings[source.type] = source.syncFix || false;
         }
     }
-    
+
     const xmlOptions = getSelectedXmlOptions();
-    
+
     const data = {
         masterVideo: document.getElementById('masterVideoPath').value,
         threshold: formData.get('threshold'),
         audioSyncSettings: audioSyncSettings,
         xmlOptions: xmlOptions,
+        videoSources: projectVideoSources,  // Add optional video sources
         ...audioSources
     };
-    
+
     return data;
 }
 
@@ -852,28 +894,29 @@ async function loadFileBrowserPath(path) {
 
 function renderFileList(items) {
     const fileList = document.getElementById('fileList');
-    
+
     if (items.length === 0) {
         fileList.innerHTML = '<div class="loading">No files found</div>';
         return;
     }
-    
+
     let html = '';
     items.forEach(item => {
         const icon = getFileIcon(item.type);
-        const isSelectable = (browserMode === 'master' && item.type === 'video') || 
-                           (browserMode === 'audio' && (item.type === 'audio' || item.type === 'video'));
-        
+        const isSelectable = (browserMode === 'master' && item.type === 'video') ||
+                           (browserMode === 'audio' && (item.type === 'audio' || item.type === 'video')) ||
+                           (browserMode === 'videoSource' && item.type === 'video');
+
         html += `
-            <div class="file-item ${isSelectable ? 'selectable' : ''}" 
-                 data-path="${item.path}" 
+            <div class="file-item ${isSelectable ? 'selectable' : ''}"
+                 data-path="${item.path}"
                  data-type="${item.type}"
                  onclick="handleFileClick('${item.path}', '${item.type}')">
                 <div class="file-icon">${icon}</div>
                 <div class="file-info">
                     <div class="file-name">${item.name}</div>
                     <div class="file-details">
-                        ${item.type === 'directory' ? 'Folder' : 
+                        ${item.type === 'directory' ? 'Folder' :
                           item.type === 'video' ? `Video • ${item.sizeFormatted}` :
                           item.type === 'audio' ? `Audio • ${item.sizeFormatted}` : ''}
                     </div>
@@ -881,7 +924,7 @@ function renderFileList(items) {
             </div>
         `;
     });
-    
+
     fileList.innerHTML = html;
 }
 
@@ -898,11 +941,12 @@ function handleFileClick(path, type) {
     document.querySelectorAll('.file-item').forEach(item => {
         item.classList.remove('selected');
     });
-    
+
     if (type === 'directory') {
         loadFileBrowserPath(path);
-    } else if ((browserMode === 'master' && type === 'video') || 
-               (browserMode === 'audio' && (type === 'audio' || type === 'video'))) {
+    } else if ((browserMode === 'master' && type === 'video') ||
+               (browserMode === 'audio' && (type === 'audio' || type === 'video')) ||
+               (browserMode === 'videoSource' && type === 'video')) {
         selectedFilePath = path;
         event.target.closest('.file-item').classList.add('selected');
         document.getElementById('selectFileBtn').disabled = false;
@@ -911,7 +955,7 @@ function handleFileClick(path, type) {
 
 function selectCurrentFile() {
     if (!selectedFilePath) return;
-    
+
     if (fileBrowserTarget === 'masterVideo') {
         document.getElementById('masterVideoPath').value = selectedFilePath;
         closeFileBrowser();
@@ -919,7 +963,7 @@ function selectCurrentFile() {
         // Add file to project as unassigned
         const fileId = 'file_' + Date.now();
         const fileName = selectedFilePath.split('/').pop();
-        
+
         // Check if file already exists
         for (const [id, source] of Object.entries(projectAudioSources)) {
             if (source.path === selectedFilePath) {
@@ -928,17 +972,28 @@ function selectCurrentFile() {
                 return;
             }
         }
-        
+
         // Add as unassigned
         projectAudioSources[fileId] = {
             path: selectedFilePath,
             type: null,  // No type assigned yet
             syncFix: false
         };
-        
+
         updateProjectAudioList();
         closeFileBrowser();
         showAlert('info', `Added ${fileName} to project. Please select its audio type.`);
+    } else if (browserMode === 'videoSource') {
+        // Handle video source selection (cam1, screen, game)
+        setVideoSource(fileBrowserTarget, selectedFilePath);
+        closeFileBrowser();
+
+        const labels = {
+            'cam1': 'Camera 1',
+            'screen': 'Screen',
+            'game': 'Game'
+        };
+        showAlert('success', `Added ${labels[fileBrowserTarget]} video source`);
     }
 }
 

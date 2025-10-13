@@ -42,13 +42,68 @@
                         <div class="form-group">
                             <label for="masterVideo">Master Video File *</label>
                             <div class="file-selector">
-                                <input type="text" id="masterVideoPath" name="masterVideoPath" readonly 
+                                <input type="text" id="masterVideoPath" name="masterVideoPath" readonly
                                        placeholder="Click 'Browse Files' to select a video file" required>
                                 <button type="button" class="btn btn-secondary" onclick="openFileBrowser()">
                                     📁 Browse Files
                                 </button>
                             </div>
-                            <small class="form-help">Main recording file containing all camera angles</small>
+                            <small class="form-help">Main recording file containing all camera angles (or leave optional sources below empty to use master)</small>
+                        </div>
+
+                        <!-- Optional Video Sources -->
+                        <div class="form-group">
+                            <label>Optional Individual Video Sources</label>
+                            <small class="form-help">Add individual full-resolution video files to replace cropped sections from master. Leave empty to use master video.</small>
+                            <div class="video-sources-container">
+                                <!-- Camera 1 Video -->
+                                <div class="video-source-item">
+                                    <div class="video-source-info">
+                                        <label class="video-source-label">📹 Camera 1 Video</label>
+                                        <input type="text" id="cam1VideoPath" readonly placeholder="Optional - Full resolution camera 1 video">
+                                    </div>
+                                    <div class="video-source-actions">
+                                        <button type="button" class="btn btn-small btn-secondary" onclick="openVideoSourceBrowser('cam1')">
+                                            Browse
+                                        </button>
+                                        <button type="button" class="btn btn-small btn-danger" onclick="clearVideoSource('cam1')" style="display:none;" id="clearCam1Btn">
+                                            ✕
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- Screen Video -->
+                                <div class="video-source-item">
+                                    <div class="video-source-info">
+                                        <label class="video-source-label">🖥️ Screen Video</label>
+                                        <input type="text" id="screenVideoPath" readonly placeholder="Optional - Full resolution screen capture">
+                                    </div>
+                                    <div class="video-source-actions">
+                                        <button type="button" class="btn btn-small btn-secondary" onclick="openVideoSourceBrowser('screen')">
+                                            Browse
+                                        </button>
+                                        <button type="button" class="btn btn-small btn-danger" onclick="clearVideoSource('screen')" style="display:none;" id="clearScreenBtn">
+                                            ✕
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- Game Video -->
+                                <div class="video-source-item">
+                                    <div class="video-source-info">
+                                        <label class="video-source-label">🎮 Game Video</label>
+                                        <input type="text" id="gameVideoPath" readonly placeholder="Optional - Full resolution game capture">
+                                    </div>
+                                    <div class="video-source-actions">
+                                        <button type="button" class="btn btn-small btn-secondary" onclick="openVideoSourceBrowser('game')">
+                                            Browse
+                                        </button>
+                                        <button type="button" class="btn btn-small btn-danger" onclick="clearVideoSource('game')" style="display:none;" id="clearGameBtn">
+                                            ✕
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
 
                         <!-- Project Audio Sources -->

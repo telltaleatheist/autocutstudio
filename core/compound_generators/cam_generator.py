@@ -19,16 +19,18 @@ class CamGenerator:
     
     def generate_cam_compound(self, compound_xml_path: str, audio_sources: Dict[str, str],
                             mode: str = "solo", output_path: Optional[str] = None,
-                            apply_audio_sync: bool = False) -> str:
+                            apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None) -> str:
         """Generate cam compound clip from existing compound clip XML.
-        
+
         Args:
             compound_xml_path: Path to existing compound XML file
             audio_sources: Dictionary mapping audio types to file paths (e.g., {'mic1': '/path/to/mic.mp3', 'sound_effects': '/path/to/sfx.wav'})
             mode: Layout mode ('solo' or 'dual')
             output_path: Optional custom output path
             apply_audio_sync: Whether to apply 29.97fps sync correction
+            video_sources: Optional dictionary of video source paths (e.g., {'cam1': '/path/to/cam.mp4'})
         """
+        video_sources = video_sources or {}
         
         # Load the original compound clip XML
         tree = self.xml_utils.parse_fcpxml(compound_xml_path)
@@ -150,7 +152,29 @@ class CamGenerator:
             has_video=True
         )
         resources.append(original_video_asset)
-        
+
+        # Check if optional cam1 video source is provided
+        cam1_asset_id = None
+        cam1_name = None
+        if 'cam1' in video_sources and video_sources['cam1']:
+            cam1_path = video_sources['cam1']
+            cam1_asset_id = "r_cam1_video"
+            cam1_name = Path(cam1_path).stem
+
+            print(f"Using individual camera video: {cam1_path}")
+
+            # Create asset for the cam1 video
+            cam1_asset = self.xml_utils.create_asset_element(
+                cam1_asset_id,
+                cam1_name,
+                cam1_path,
+                original_duration,  # Use same duration as master
+                'r1_cam',
+                has_audio=False,  # Don't use audio from cam1 video
+                has_video=True
+            )
+            resources.append(cam1_asset)
+
         # Create cam compound media element
         cam_media = self.xml_utils.create_media_compound(
             cam_compound_id,
@@ -234,20 +258,33 @@ class CamGenerator:
         # Add camera video with transforms
         camera_config = layout_config.get('camera', {})
         if camera_config:
-            transforms = {
-                'crop': camera_config.get('crop', [0, 0, 100, 100]),
-                'crop_mode': camera_config.get('transform_mode', 'trim'),
-                'transform': {
-                    'position': camera_config.get('position', [50, 50]),
-                    'scale': camera_config.get('scale', 1.0)
+            # Determine which asset and transforms to use
+            if cam1_asset_id:
+                # Use individual cam1 video - NO TRANSFORMS AT ALL
+                # Individual video is already full 1920x1080, no crop/scale/position needed
+                camera_asset = cam1_asset_id
+                camera_name_for_clip = cam1_name
+                transforms = None  # No transforms for individual video
+                print(f"Using cam1 video source - no transforms applied (full 1920x1080)")
+            else:
+                # Use master video - WITH CROPPING AND TRANSFORMS
+                camera_asset = original_asset_id
+                camera_name_for_clip = original_name
+                transforms = {
+                    'crop': camera_config.get('crop', [0, 0, 100, 100]),
+                    'crop_mode': camera_config.get('transform_mode', 'trim'),
+                    'transform': {
+                        'position': camera_config.get('position', [50, 50]),
+                        'scale': camera_config.get('scale', 1.0)
+                    }
                 }
-            }
-            
+                print(f"Using master video with crop and transform")
+
             video_lane = "2" if background_asset_key else "1"  # Lane 2 if background exists, otherwise lane 1
-            
+
             camera_clip = self.xml_utils.create_video_clip(
-                original_name,
-                original_asset_id,
+                camera_name_for_clip,
+                camera_asset,
                 video_lane,
                 "0s",  # Start at beginning of gap
                 original_duration,
