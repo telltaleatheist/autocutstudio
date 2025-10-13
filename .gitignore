@@ -10,3 +10,4 @@ xml/template master_ALTERED_COMPOUND_CAM.fcpxml
 xml/template master_ALTERED_COMPOUND_GS.fcpxml
 xml/template master_ALTERED_COMPOUND_SSB.fcpxml
 xml/template master.fcpxml
+webui/__pycache__/*

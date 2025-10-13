@@ -17,7 +17,9 @@ import zipfile
 import shutil
 
 # Add parent directory to path to import core modules
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Get the base directory (AutoCutStudio root) regardless of where script is run from
+BASE_DIR = Path(__file__).parent.parent.resolve()
+sys.path.insert(0, str(BASE_DIR))
 
 from core.config import AutoCutStudioConfig
 from core.compound_generators.cam_generator import CamGenerator
@@ -282,7 +284,7 @@ def process_video_background(job, data):
     """Background processing function."""
     try:
         # Load configuration
-        config = AutoCutStudioConfig('../config/autostudio_config.yaml')
+        config = AutoCutStudioConfig(str(BASE_DIR / 'config' / 'autostudio_config.yaml'))
         
         # Extract parameters
         master_video = data['masterVideo']
@@ -812,7 +814,7 @@ def download_file(filename):
 def test_config():
     """Test configuration and CLI library access."""
     try:
-        config = AutoCutStudioConfig('../config/autostudio_config.yaml')
+        config = AutoCutStudioConfig(str(BASE_DIR / 'config' / 'autostudio_config.yaml'))
         
         return jsonify({
             'success': True,
@@ -841,11 +843,11 @@ def apply_audio_corrections():
         
         if not files:
             return jsonify({'error': 'No files selected'}), 400
-        
+
         # Load configuration
-        config = AutoCutStudioConfig('../config/autostudio_config.yaml')
+        config = AutoCutStudioConfig(str(BASE_DIR / 'config' / 'autostudio_config.yaml'))
         audio_processor = AudioProcessor(config)
-        
+
         processed_files = []
         errors = []
         
@@ -953,7 +955,7 @@ def get_video_duration():
             return jsonify({'error': 'Access denied - path outside allowed directory'}), 403
         
         # Use existing AudioProcessor to get duration
-        config = AutoCutStudioConfig('../config/autostudio_config.yaml')
+        config = AutoCutStudioConfig(str(BASE_DIR / 'config' / 'autostudio_config.yaml'))
         audio_processor = AudioProcessor(config)
         
         # Get audio info returns (duration, sample_rate, channels)
@@ -992,11 +994,11 @@ def apply_audio_changes():
         
         if not drift_frames or not video_duration:
             return jsonify({'error': 'Drift frames and video duration are required'}), 400
-        
+
         # Load configuration
-        config = AutoCutStudioConfig('../config/autostudio_config.yaml')
+        config = AutoCutStudioConfig(str(BASE_DIR / 'config' / 'autostudio_config.yaml'))
         audio_processor = AudioProcessor(config)
-        
+
         processed_files = []
         errors = []
         
