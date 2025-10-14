@@ -72,6 +72,22 @@
                                     </div>
                                 </div>
 
+                                <!-- Camera 2 Video -->
+                                <div class="video-source-item">
+                                    <div class="video-source-info">
+                                        <label class="video-source-label">📹 Camera 2 Video</label>
+                                        <input type="text" id="cam2VideoPath" readonly placeholder="Optional - Full resolution camera 2 video">
+                                    </div>
+                                    <div class="video-source-actions">
+                                        <button type="button" class="btn btn-small btn-secondary" onclick="openVideoSourceBrowser('cam2')">
+                                            Browse
+                                        </button>
+                                        <button type="button" class="btn btn-small btn-danger" onclick="clearVideoSource('cam2')" style="display:none;" id="clearCam2Btn">
+                                            ✕
+                                        </button>
+                                    </div>
+                                </div>
+
                                 <!-- Screen Video -->
                                 <div class="video-source-item">
                                     <div class="video-source-info">
@@ -329,11 +345,6 @@
                 <!-- Results will be populated by JavaScript -->
             </div>
 
-            <div class="text-center mt-2">
-                <button type="button" class="btn btn-secondary" onclick="resetForm()">
-                    🔄 Process Another Video
-                </button>
-            </div>
         </div>
     </section>
 

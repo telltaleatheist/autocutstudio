@@ -102,6 +102,7 @@ function openVideoSourceBrowser(sourceType) {
 
     const labels = {
         'cam1': 'Camera 1 Video',
+        'cam2': 'Camera 2 Video',
         'screen': 'Screen Video',
         'game': 'Game Video'
     };
@@ -990,6 +991,7 @@ function selectCurrentFile() {
 
         const labels = {
             'cam1': 'Camera 1',
+            'cam2': 'Camera 2',
             'screen': 'Screen',
             'game': 'Game'
         };

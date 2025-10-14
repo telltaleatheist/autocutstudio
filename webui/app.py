@@ -521,7 +521,8 @@ def process_video_background(job, data):
                     compound_xml,
                     cam_audio_sources,
                     None,
-                    False  # Audio already processed
+                    False,  # Audio already processed
+                    video_sources  # Pass optional video sources
                 )
                 all_xml_files.append(cam_dual_path)  # Add to XML collection
                 generated_clips.append({
@@ -538,7 +539,7 @@ def process_video_background(job, data):
             try:
                 dc_cam_generator = DCCamGenerator(config)
                 cam_dual_path = dc_cam_generator.generate_dc_cam_compound(
-                    compound_xml, cam_audio_sources, None, False
+                    compound_xml, cam_audio_sources, None, False, video_sources
                 )
                 all_xml_files.append(cam_dual_path)  # Add to zip even if not displayed
             except Exception as e:
@@ -563,7 +564,8 @@ def process_video_background(job, data):
                     compound_xml,
                     gs_audio_sources,
                     None,  # output_path (use default)
-                    False  # apply_audio_sync (already processed)
+                    False,  # apply_audio_sync (already processed)
+                    video_sources  # Pass optional video sources
                 )
                 all_xml_files.append(gs_solo_path)  # Add to XML collection
                 generated_clips.append({
@@ -580,7 +582,7 @@ def process_video_background(job, data):
             try:
                 gs_generator = GSGenerator(config)
                 gs_solo_path = gs_generator.generate_gs_compound(
-                    compound_xml, gs_audio_sources, None, False
+                    compound_xml, gs_audio_sources, None, False, video_sources
                 )
                 all_xml_files.append(gs_solo_path)  # Add to zip even if not displayed
             except Exception as e:
@@ -599,7 +601,8 @@ def process_video_background(job, data):
                     compound_xml,
                     gs_audio_sources,
                     None,  # output_path (use default)
-                    False  # apply_audio_sync (already processed)
+                    False,  # apply_audio_sync (already processed)
+                    video_sources
                 )
                 all_xml_files.append(gs_dual_path)  # Add to XML collection
                 generated_clips.append({
@@ -616,7 +619,7 @@ def process_video_background(job, data):
             try:
                 dc_gs_generator = DCGSGenerator(config)
                 gs_dual_path = dc_gs_generator.generate_dc_gs_compound(
-                    compound_xml, gs_audio_sources, None, False
+                    compound_xml, gs_audio_sources, None, False, video_sources
                 )
                 all_xml_files.append(gs_dual_path)  # Add to zip even if not displayed
             except Exception as e:
@@ -681,7 +684,8 @@ def process_video_background(job, data):
                     compound_xml,
                     ssb_audio_sources if ssb_audio_sources else {},
                     None,
-                    False
+                    False,
+                    video_sources
                 )
                 all_xml_files.append(ssb_dual_path)
                 generated_clips.append({
@@ -700,7 +704,7 @@ def process_video_background(job, data):
             try:
                 dc_ssb_generator = DCSSBGenerator(config)
                 ssb_dual_path = dc_ssb_generator.generate_dc_ssb_compound(
-                    compound_xml, ssb_audio_sources if ssb_audio_sources else {}, None, False
+                    compound_xml, ssb_audio_sources if ssb_audio_sources else {}, None, False, video_sources
                 )
                 all_xml_files.append(ssb_dual_path)  # Add to zip even if not displayed
             except Exception as e:

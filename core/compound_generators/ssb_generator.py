@@ -297,8 +297,8 @@ class SSBGenerator:
                         'crop': None,  # No crop for individual video
                         'crop_mode': None,
                         'transform': {
-                            'position': [16.4529, 49.3529],  # Same position
-                            'scale': 0.25  # Scale down to fit small border (adjust as needed)
+                            'position': [-36.481, 19.63],  # -394 / 10.8, 212 / 10.8
+                            'scale': 0.565  # 56.5%
                         }
                     }
                     print(f"SSB: Using cam1 video with scale-only transform (no crop)")
@@ -368,11 +368,11 @@ class SSBGenerator:
                         'crop': None,  # No crop for individual video
                         'crop_mode': None,
                         'transform': {
-                            'position': [0, 0],  # Full screen position
-                            'scale': 1.0  # No scaling needed for full-screen
+                            'position': [34.63, -18.75],  # 374 / 10.8, -202.5 / 10.8
+                            'scale': 0.5843  # 58.43%
                         }
                     }
-                    print(f"SSB: Using screen video with no transforms (full screen)")
+                    print(f"SSB: Using screen video with scale-only transform (no crop)")
                 else:
                     # Use master video - WITH CROPPING
                     screen_video_asset = original_asset_id

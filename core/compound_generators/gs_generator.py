@@ -19,15 +19,17 @@ class GSGenerator:
     
     def generate_gs_compound(self, compound_xml_path: str, audio_sources: Dict[str, str],
                             output_path: Optional[str] = None,
-                            apply_audio_sync: bool = False) -> str:
+                            apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None) -> str:
         """Generate gs compound clip from existing compound clip XML.
-        
+
         Args:
             compound_xml_path: Path to existing compound XML file
             audio_sources: Dictionary mapping audio types to file paths
             output_path: Optional custom output path
             apply_audio_sync: Whether to apply 29.97fps sync correction
+            video_sources: Optional dictionary of video source paths (e.g., {'game': '/path/to/game.mp4'})
         """
+        video_sources = video_sources or {}
         
         # Load the original compound clip XML
         tree = self.xml_utils.parse_fcpxml(compound_xml_path)
@@ -142,7 +144,49 @@ class GSGenerator:
             has_video=True
         )
         resources.append(original_video_asset)
-        
+
+        # Check if optional cam1 video source is provided
+        cam1_asset_id = None
+        cam1_name = None
+        if 'cam1' in video_sources and video_sources['cam1']:
+            cam1_path = video_sources['cam1']
+            cam1_asset_id = "r_cam1_video"
+            cam1_name = Path(cam1_path).stem
+            print(f"GS: Using individual cam1 video: {cam1_path}")
+            cam1_asset = self.xml_utils.create_asset_element(
+                cam1_asset_id, cam1_name, cam1_path, original_duration,
+                'r1_gs', has_audio=False, has_video=True
+            )
+            resources.append(cam1_asset)
+
+        # Check if optional game video source is provided
+        game_asset_id = None
+        game_name = None
+        if 'game' in video_sources and video_sources['game']:
+            game_path = video_sources['game']
+            game_asset_id = "r_game_video"
+            game_name = Path(game_path).stem
+            print(f"GS: Using individual game video: {game_path}")
+            game_asset = self.xml_utils.create_asset_element(
+                game_asset_id, game_name, game_path, original_duration,
+                'r1_gs', has_audio=False, has_video=True
+            )
+            resources.append(game_asset)
+
+        # Check if optional screen video source is provided
+        screen_asset_id = None
+        screen_name = None
+        if 'screen' in video_sources and video_sources['screen']:
+            screen_path = video_sources['screen']
+            screen_asset_id = "r_screen_video"
+            screen_name = Path(screen_path).stem
+            print(f"GS: Using individual screen video: {screen_path}")
+            screen_asset = self.xml_utils.create_asset_element(
+                screen_asset_id, screen_name, screen_path, original_duration,
+                'r1_gs', has_audio=False, has_video=True
+            )
+            resources.append(screen_asset)
+
         # Create gs compound media element
         gs_media = self.xml_utils.create_media_compound(
             gs_compound_id,
@@ -272,22 +316,40 @@ class GSGenerator:
                 )
                 gap.append(background_clip)
         
-        # Add camera video (bottom left) - cropped from master
+        # Add camera video (bottom left)
         camera_config = layout_config.get('camera', {})
         if camera_config:
-            # Use exact transforms from gs template
-            camera_transforms = {
-                'crop': [2.45, 51.7584, 91.1816, 1.37531],
-                'crop_mode': 'trim',
-                'transform': {
-                    'position': [-17.5288, -8.90442],
-                    'scale': 0.800813
+            # Determine which asset and transforms to use
+            if cam1_asset_id:
+                # Use individual cam1 video - NO CROPPING, only position/scale
+                camera_asset = cam1_asset_id
+                camera_name_for_clip = cam1_name
+                camera_transforms = {
+                    'crop': None,
+                    'crop_mode': None,
+                    'transform': {
+                        'position': [-52.963, -29.167],  # -572 / 10.8, -315 / 10.8
+                        'scale': 0.38  # 38%
+                    }
                 }
-            }
-            
+                print(f"GS: Using cam1 video with scale-only transform")
+            else:
+                # Use master video - WITH CROPPING
+                camera_asset = original_asset_id
+                camera_name_for_clip = f"{original_name} - Camera"
+                camera_transforms = {
+                    'crop': [2.45, 51.7584, 91.1816, 1.37531],
+                    'crop_mode': 'trim',
+                    'transform': {
+                        'position': [-17.5288, -8.90442],
+                        'scale': 0.800813
+                    }
+                }
+                print(f"GS: Using master video for camera with crop")
+
             camera_clip = self.xml_utils.create_video_clip(
-                f"{original_name} - Camera",
-                original_asset_id,
+                camera_name_for_clip,
+                camera_asset,
                 "2",
                 "0s",
                 original_duration,
@@ -322,22 +384,40 @@ class GSGenerator:
                 )
                 gap.append(border_clip)
         
-        # Add game video (bottom right) - cropped from master
+        # Add game video (bottom right)
         game_config = layout_config.get('game', {})
         if game_config:
-            # Use exact transforms from gs template
-            game_transforms = {
-                'crop': [91.1158, 51.1409, 1.77082, 1.1649],
-                'crop_mode': 'trim',
-                'transform': {
-                    'position': [-20.324, 12.126],
-                    'scale': 1.23
+            # Determine which asset and transforms to use
+            if game_asset_id:
+                # Use individual game video - NO CROPPING, only position/scale
+                game_video_asset = game_asset_id
+                game_name_for_clip = game_name
+                game_transforms = {
+                    'crop': None,
+                    'crop_mode': None,
+                    'transform': {
+                        'position': [34.537, -18.75],  # 373 / 10.8, -202.5 / 10.8
+                        'scale': 0.5843  # 58.43%
+                    }
                 }
-            }
-            
+                print(f"GS: Using game video with scale-only transform")
+            else:
+                # Use master video - WITH CROPPING
+                game_video_asset = original_asset_id
+                game_name_for_clip = f"{original_name} - Game"
+                game_transforms = {
+                    'crop': [91.1158, 51.1409, 1.77082, 1.1649],
+                    'crop_mode': 'trim',
+                    'transform': {
+                        'position': [-20.324, 12.126],
+                        'scale': 1.23
+                    }
+                }
+                print(f"GS: Using master video for game with crop")
+
             game_clip = self.xml_utils.create_video_clip(
-                f"{original_name} - Game",
-                original_asset_id,
+                game_name_for_clip,
+                game_video_asset,
                 "4",
                 "0s",
                 original_duration,
@@ -372,22 +452,40 @@ class GSGenerator:
                 )
                 gap.append(border_clip)
         
-        # Add screen video (top left) - cropped from master
+        # Add screen video (top left)
         screen_config = layout_config.get('screen', {})
         if screen_config:
-            # Use exact transforms from gs template
-            screen_transforms = {
-                'crop': [2.02365, 1.18815, 90.863, 51.1176],
-                'crop_mode': 'trim',
-                'transform': {
-                    'position': [15.8684, -9.95576],
-                    'scale': 1.17903
+            # Determine which asset and transforms to use
+            if screen_asset_id:
+                # Use individual screen video - NO CROPPING, only position/scale
+                screen_video_asset = screen_asset_id
+                screen_name_for_clip = screen_name
+                screen_transforms = {
+                    'crop': None,
+                    'crop_mode': None,
+                    'transform': {
+                        'position': [-36.481, 19.722],  # -394 / 10.8, 213 / 10.8
+                        'scale': 0.563  # 56.3%
+                    }
                 }
-            }
-            
+                print(f"GS: Using screen video with scale-only transform")
+            else:
+                # Use master video - WITH CROPPING
+                screen_video_asset = original_asset_id
+                screen_name_for_clip = f"{original_name} - Screen"
+                screen_transforms = {
+                    'crop': [2.02365, 1.18815, 90.863, 51.1176],
+                    'crop_mode': 'trim',
+                    'transform': {
+                        'position': [15.8684, -9.95576],
+                        'scale': 1.17903
+                    }
+                }
+                print(f"GS: Using master video for screen with crop")
+
             screen_clip = self.xml_utils.create_video_clip(
-                f"{original_name} - Screen",
-                original_asset_id,
+                screen_name_for_clip,
+                screen_video_asset,
                 "6",
                 "0s",
                 original_duration,

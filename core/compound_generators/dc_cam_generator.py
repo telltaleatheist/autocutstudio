@@ -19,15 +19,17 @@ class DCCamGenerator:
     
     def generate_dc_cam_compound(self, compound_xml_path: str, audio_sources: Dict[str, str],
                                 output_path: Optional[str] = None,
-                                apply_audio_sync: bool = False) -> str:
+                                apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None) -> str:
         """Generate dc cam compound clip from existing compound clip XML.
-        
+
         Args:
             compound_xml_path: Path to existing compound XML file
             audio_sources: Dictionary mapping audio types to file paths (e.g., {'mic1': '/path/to/mic.mp3'})
             output_path: Optional custom output path
             apply_audio_sync: Whether to apply 29.97fps sync correction
+            video_sources: Optional dictionary of video source paths (e.g., {'cam1': '/path/to/cam.mp4', 'cam2': '/path/to/cam2.mp4'})
         """
+        video_sources = video_sources or {}
         
         # Load the original compound clip XML
         tree = self.xml_utils.parse_fcpxml(compound_xml_path)
@@ -144,7 +146,35 @@ class DCCamGenerator:
             has_video=True
         )
         resources.append(original_video_asset)
-        
+
+        # Check if optional cam1 video source is provided
+        cam1_asset_id = None
+        cam1_name = None
+        if 'cam1' in video_sources and video_sources['cam1']:
+            cam1_path = video_sources['cam1']
+            cam1_asset_id = "r_cam1_video"
+            cam1_name = Path(cam1_path).stem
+            print(f"DC Cam: Using individual camera 1 video: {cam1_path}")
+            cam1_asset = self.xml_utils.create_asset_element(
+                cam1_asset_id, cam1_name, cam1_path, original_duration,
+                'r1_dc_cam', has_audio=False, has_video=True
+            )
+            resources.append(cam1_asset)
+
+        # Check if optional cam2 video source is provided
+        cam2_asset_id = None
+        cam2_name = None
+        if 'cam2' in video_sources and video_sources['cam2']:
+            cam2_path = video_sources['cam2']
+            cam2_asset_id = "r_cam2_video"
+            cam2_name = Path(cam2_path).stem
+            print(f"DC Cam: Using individual camera 2 video: {cam2_path}")
+            cam2_asset = self.xml_utils.create_asset_element(
+                cam2_asset_id, cam2_name, cam2_path, original_duration,
+                'r1_dc_cam', has_audio=False, has_video=True
+            )
+            resources.append(cam2_asset)
+
         # Create dc cam compound media element
         dc_cam_media = self.xml_utils.create_media_compound(
             dc_cam_compound_id,
@@ -243,22 +273,40 @@ class DCCamGenerator:
                 )
                 gap.append(background_clip)
         
-        # Add camera 1 video (top left) - cropped from master using exact template values
+        # Add camera 1 video (top left)
         cam1_config = layout_config.get('cam1', {})
         if cam1_config:
-            # Use exact transforms from dc cam template (lane 2)
-            cam1_transforms = {
-                'crop': [2.50097, 51.3552, 91.2482, 1.46395],
-                'crop_mode': 'trim',
-                'transform': {
-                    'position': [20.3319, 49.6649],
-                    'scale': 1.23811
+            # Determine which asset and transforms to use
+            if cam1_asset_id:
+                # Use individual cam1 video - NO CROPPING, only position/scale
+                camera1_asset = cam1_asset_id
+                camera1_name_for_clip = cam1_name
+                cam1_transforms = {
+                    'crop': None,
+                    'crop_mode': None,
+                    'transform': {
+                        'position': [-34.63, 18.611],  # -374 / 10.8, 201 / 10.8
+                        'scale': 0.585  # 58.5%
+                    }
                 }
-            }
-            
+                print(f"DC Cam: Using cam1 video with scale-only transform")
+            else:
+                # Use master video - WITH CROPPING
+                camera1_asset = original_asset_id
+                camera1_name_for_clip = f"{original_name} - Camera 1"
+                cam1_transforms = {
+                    'crop': [2.50097, 51.3552, 91.2482, 1.46395],
+                    'crop_mode': 'trim',
+                    'transform': {
+                        'position': [20.3319, 49.6649],
+                        'scale': 1.23811
+                    }
+                }
+                print(f"DC Cam: Using master video for cam1 with crop")
+
             cam1_clip = self.xml_utils.create_video_clip(
-                f"{original_name} - Camera 1",
-                original_asset_id,
+                camera1_name_for_clip,
+                camera1_asset,
                 "2",  # Lane 2 to match template
                 "0s",
                 original_duration,
@@ -296,22 +344,40 @@ class DCCamGenerator:
                     )
                     gap.append(border_clip)
         
-        # Add camera 2 video (bottom right) - cropped from master using exact template values
+        # Add camera 2 video (bottom right)
         cam2_config = layout_config.get('cam2', {})
         if cam2_config:
-            # Use exact transforms from dc cam template (lane 4)
-            cam2_transforms = {
-                'crop': [91.1111, 1.48148, 2.59259, 51.4815],
-                'crop_mode': 'trim',
-                'transform': {
-                    'position': [-20.3584, -49.8879],
-                    'scale': 1.243
+            # Determine which asset and transforms to use
+            if cam2_asset_id:
+                # Use individual cam2 video - NO CROPPING, only position/scale
+                camera2_asset = cam2_asset_id
+                camera2_name_for_clip = cam2_name
+                cam2_transforms = {
+                    'crop': None,
+                    'crop_mode': None,
+                    'transform': {
+                        'position': [34.583, -18.611],  # 373.5 / 10.8, -201 / 10.8
+                        'scale': 0.585  # 58.5%
+                    }
                 }
-            }
-            
+                print(f"DC Cam: Using cam2 video with scale-only transform")
+            else:
+                # Use master video - WITH CROPPING
+                camera2_asset = original_asset_id
+                camera2_name_for_clip = f"{original_name} - Camera 2"
+                cam2_transforms = {
+                    'crop': [91.1111, 1.48148, 2.59259, 51.4815],
+                    'crop_mode': 'trim',
+                    'transform': {
+                        'position': [-20.3584, -49.8879],
+                        'scale': 1.243
+                    }
+                }
+                print(f"DC Cam: Using master video for cam2 with crop")
+
             cam2_clip = self.xml_utils.create_video_clip(
-                f"{original_name} - Camera 2",
-                original_asset_id,
+                camera2_name_for_clip,
+                camera2_asset,
                 "4",  # Lane 4 to match template
                 "0s",
                 original_duration,

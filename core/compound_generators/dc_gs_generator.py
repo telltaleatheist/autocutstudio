@@ -19,15 +19,17 @@ class DCGSGenerator:
 
     def generate_dc_gs_compound(self, compound_xml_path: str, audio_sources: Dict[str, str],
                             output_path: Optional[str] = None,
-                            apply_audio_sync: bool = False) -> str:
+                            apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None) -> str:
         """Generate dc gs compound clip from existing compound clip XML.
-        
+
         Args:
             compound_xml_path: Path to existing compound XML file
             audio_sources: Dictionary mapping audio types to file paths
             output_path: Optional custom output path
             apply_audio_sync: Whether to apply 29.97fps sync correction
+            video_sources: Optional dictionary of video source paths (e.g., {'game': '/path/to/game.mp4'})
         """
+        video_sources = video_sources or {}
         
         # Load the original compound clip XML
         tree = self.xml_utils.parse_fcpxml(compound_xml_path)
@@ -143,7 +145,63 @@ class DCGSGenerator:
             has_video=True
         )
         resources.append(original_video_asset)
-        
+
+        # Check if optional game video source is provided
+        game_asset_id = None
+        game_name = None
+        if 'game' in video_sources and video_sources['game']:
+            game_path = video_sources['game']
+            game_asset_id = "r_game_video"
+            game_name = Path(game_path).stem
+            print(f"DC GS: Using individual game video: {game_path}")
+            game_asset = self.xml_utils.create_asset_element(
+                game_asset_id, game_name, game_path, original_duration,
+                'r1_dc_gs', has_audio=False, has_video=True
+            )
+            resources.append(game_asset)
+
+        # Check if optional cam1 video source is provided
+        cam1_asset_id = None
+        cam1_name = None
+        if 'cam1' in video_sources and video_sources['cam1']:
+            cam1_path = video_sources['cam1']
+            cam1_asset_id = "r_cam1_video"
+            cam1_name = Path(cam1_path).stem
+            print(f"DC GS: Using individual cam1 video: {cam1_path}")
+            cam1_asset = self.xml_utils.create_asset_element(
+                cam1_asset_id, cam1_name, cam1_path, original_duration,
+                'r1_dc_gs', has_audio=False, has_video=True
+            )
+            resources.append(cam1_asset)
+
+        # Check if optional cam2 video source is provided
+        cam2_asset_id = None
+        cam2_name = None
+        if 'cam2' in video_sources and video_sources['cam2']:
+            cam2_path = video_sources['cam2']
+            cam2_asset_id = "r_cam2_video"
+            cam2_name = Path(cam2_path).stem
+            print(f"DC GS: Using individual cam2 video: {cam2_path}")
+            cam2_asset = self.xml_utils.create_asset_element(
+                cam2_asset_id, cam2_name, cam2_path, original_duration,
+                'r1_dc_gs', has_audio=False, has_video=True
+            )
+            resources.append(cam2_asset)
+
+        # Check if optional screen video source is provided
+        screen_asset_id = None
+        screen_name = None
+        if 'screen' in video_sources and video_sources['screen']:
+            screen_path = video_sources['screen']
+            screen_asset_id = "r_screen_video"
+            screen_name = Path(screen_path).stem
+            print(f"DC GS: Using individual screen video: {screen_path}")
+            screen_asset = self.xml_utils.create_asset_element(
+                screen_asset_id, screen_name, screen_path, original_duration,
+                'r1_dc_gs', has_audio=False, has_video=True
+            )
+            resources.append(screen_asset)
+
         # Create dc gs compound media element
         dc_gs_media = self.xml_utils.create_media_compound(
             dc_gs_compound_id,
@@ -274,22 +332,40 @@ class DCGSGenerator:
                 )
                 gap.append(background_clip)
         
-        # Add screen video (top left) - cropped from master using exact template values
+        # Add screen video (top left)
         screen_config = layout_config.get('screen', {})
         if screen_config:
-            # Use exact transforms from dc gs template (lane 6 - above game)
-            screen_transforms = {
-                'crop': [2.02365, 1.18815, 90.863, 51.1176],
-                'crop_mode': 'trim',
-                'transform': {
-                    'position': [15.8684, -9.95576],
-                    'scale': 1.17903
+            # Determine which asset and transforms to use
+            if screen_asset_id:
+                # Use individual screen video - NO CROPPING, only position/scale
+                screen_video_asset = screen_asset_id
+                screen_name_for_clip = screen_name
+                screen_transforms = {
+                    'crop': None,
+                    'crop_mode': None,
+                    'transform': {
+                        'position': [-36.481, 19.722],  # -394 / 10.8, 213 / 10.8
+                        'scale': 0.563  # 56.3%
+                    }
                 }
-            }
+                print(f"DC GS: Using screen video with scale-only transform")
+            else:
+                # Use master video - WITH CROPPING
+                screen_video_asset = original_asset_id
+                screen_name_for_clip = f"{original_name} - Screen"
+                screen_transforms = {
+                    'crop': [2.02365, 1.18815, 90.863, 51.1176],
+                    'crop_mode': 'trim',
+                    'transform': {
+                        'position': [15.8684, -9.95576],
+                        'scale': 1.17903
+                    }
+                }
+                print(f"DC GS: Using master video for screen with crop")
 
             screen_clip = self.xml_utils.create_video_clip(
-                f"{original_name} - Screen",
-                original_asset_id,
+                screen_name_for_clip,
+                screen_video_asset,
                 "6",
                 "0s",
                 original_duration,
@@ -329,22 +405,40 @@ class DCGSGenerator:
             else:
                 print(f"Warning: Screen border path not found for gs_dc.top_left")
         
-        # Add camera 1 video (bottom left) - cropped from master using exact template values
+        # Add camera 1 video (bottom left)
         camera_config = layout_config.get('camera', {})
         if camera_config:
-            # Use exact transforms from dc gs template (lane 4)
-            camera_transforms = {
-                'crop': [2.45, 51.7584, 91.1816, 1.37531],
-                'crop_mode': 'trim',
-                'transform': {
-                    'position': [-17.5288, -8.90442],
-                    'scale': 0.800813
+            # Determine which asset and transforms to use
+            if cam1_asset_id:
+                # Use individual cam1 video - NO CROPPING, only position/scale
+                camera1_asset = cam1_asset_id
+                camera1_name_for_clip = cam1_name
+                camera_transforms = {
+                    'crop': None,
+                    'crop_mode': None,
+                    'transform': {
+                        'position': [-53.148, -29.074],  # -574 / 10.8, -314 / 10.8
+                        'scale': 0.38  # 38%
+                    }
                 }
-            }
-            
+                print(f"DC GS: Using cam1 video with scale-only transform")
+            else:
+                # Use master video - WITH CROPPING
+                camera1_asset = original_asset_id
+                camera1_name_for_clip = f"{original_name} - Camera 1"
+                camera_transforms = {
+                    'crop': [2.45, 51.7584, 91.1816, 1.37531],
+                    'crop_mode': 'trim',
+                    'transform': {
+                        'position': [-17.5288, -8.90442],
+                        'scale': 0.800813
+                    }
+                }
+                print(f"DC GS: Using master video for cam1 with crop")
+
             camera_clip = self.xml_utils.create_video_clip(
-                f"{original_name} - Camera 1",
-                original_asset_id,
+                camera1_name_for_clip,
+                camera1_asset,
                 "4",
                 "0s",
                 original_duration,
@@ -383,19 +477,37 @@ class DCGSGenerator:
         # Add game video (bottom right) - cropped from master using exact template values
         game_config = layout_config.get('game', {})
         if game_config:
-            # Use exact transforms from dc gs template (lane 2 - below screen)
-            game_transforms = {
-                'crop': [91.1158, 51.1409, 1.77082, 1.1649],
-                'crop_mode': 'trim',
-                'transform': {
-                    'position': [-20.324, 12.126],
-                    'scale': 1.23
+            # Determine which asset and transforms to use
+            if game_asset_id:
+                # Use individual game video - NO CROPPING
+                game_video_asset = game_asset_id
+                game_name_for_clip = game_name
+                game_transforms = {
+                    'crop': None,
+                    'crop_mode': None,
+                    'transform': {
+                        'position': [34.537, -18.75],  # 373 / 10.8, -202.5 / 10.8
+                        'scale': 0.5843  # 58.43%
+                    }
                 }
-            }
+                print(f"DC GS: Using game video with scale-only")
+            else:
+                # Use master video - WITH CROPPING
+                game_video_asset = original_asset_id
+                game_name_for_clip = f"{original_name} - Game"
+                game_transforms = {
+                    'crop': [91.1158, 51.1409, 1.77082, 1.1649],
+                    'crop_mode': 'trim',
+                    'transform': {
+                        'position': [-20.324, 12.126],
+                        'scale': 1.23
+                    }
+                }
+                print(f"DC GS: Using master video for game with crop")
 
             game_clip = self.xml_utils.create_video_clip(
-                f"{original_name} - Game",
-                original_asset_id,
+                game_name_for_clip,
+                game_video_asset,
                 "2",
                 "0s",
                 original_duration,
@@ -431,22 +543,40 @@ class DCGSGenerator:
                 )
                 gap.append(border_clip)
         
-        # Add camera 2 video (top right) - cropped from master using exact template values
+        # Add camera 2 video (top right)
         cam2_config = layout_config.get('cam2', {})
         if cam2_config:
-            # Use exact transforms from dc gs template (lane 8)
-            cam2_transforms = {
-                'crop': [91.0021, 1.30642, 2.11625, 51.5982],
-                'crop_mode': 'trim',
-                'transform': {
-                    'position': [13.8642, 11.07],
-                    'scale': 0.755554
+            # Determine which asset and transforms to use
+            if cam2_asset_id:
+                # Use individual cam2 video - NO CROPPING, only position/scale
+                camera2_asset = cam2_asset_id
+                camera2_name_for_clip = cam2_name
+                cam2_transforms = {
+                    'crop': None,
+                    'crop_mode': None,
+                    'transform': {
+                        'position': [47.407, 30],  # 512 / 10.8, 324 / 10.8
+                        'scale': 0.358  # 35.8%
+                    }
                 }
-            }
-            
+                print(f"DC GS: Using cam2 video with scale-only transform")
+            else:
+                # Use master video - WITH CROPPING
+                camera2_asset = original_asset_id
+                camera2_name_for_clip = f"{original_name} - Camera 2"
+                cam2_transforms = {
+                    'crop': [91.0021, 1.30642, 2.11625, 51.5982],
+                    'crop_mode': 'trim',
+                    'transform': {
+                        'position': [13.8642, 11.07],
+                        'scale': 0.755554
+                    }
+                }
+                print(f"DC GS: Using master video for cam2 with crop")
+
             cam2_clip = self.xml_utils.create_video_clip(
-                f"{original_name} - Camera 2",
-                original_asset_id,
+                camera2_name_for_clip,
+                camera2_asset,
                 "8",
                 "0s",
                 original_duration,

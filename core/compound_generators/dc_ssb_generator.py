@@ -19,15 +19,17 @@ class DCSSBGenerator:
     
     def generate_dc_ssb_compound(self, compound_xml_path: str, audio_sources: Dict[str, str],
                                 output_path: Optional[str] = None,
-                                apply_audio_sync: bool = False) -> str:
+                                apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None) -> str:
         """Generate dc ssb compound clip from existing compound clip XML.
-        
+
         Args:
             compound_xml_path: Path to existing compound XML file
             audio_sources: Dictionary mapping audio types to file paths (e.g., {'screen': '/path/to/screen.mp3'})
             output_path: Optional custom output path
             apply_audio_sync: Whether to apply 29.97fps sync correction
+            video_sources: Optional dictionary of video source paths (e.g., {'cam1': '/path/to/cam.mp4', 'cam2': '/path/to/cam2.mp4', 'screen': '/path/to/screen.mp4'})
         """
+        video_sources = video_sources or {}
         
         # Load the original compound clip XML
         tree = self.xml_utils.parse_fcpxml(compound_xml_path)
@@ -156,7 +158,47 @@ class DCSSBGenerator:
             has_video=True
         )
         resources.append(original_video_asset)
-        
+
+        # Check if optional video sources are provided
+        cam1_asset_id = None
+        cam1_name = None
+        if 'cam1' in video_sources and video_sources['cam1']:
+            cam1_path = video_sources['cam1']
+            cam1_asset_id = "r_cam1_video"
+            cam1_name = Path(cam1_path).stem
+            print(f"DC SSB: Using individual camera 1 video: {cam1_path}")
+            cam1_asset = self.xml_utils.create_asset_element(
+                cam1_asset_id, cam1_name, cam1_path, original_duration,
+                'r1_dc_ssb', has_audio=False, has_video=True
+            )
+            resources.append(cam1_asset)
+
+        cam2_asset_id = None
+        cam2_name = None
+        if 'cam2' in video_sources and video_sources['cam2']:
+            cam2_path = video_sources['cam2']
+            cam2_asset_id = "r_cam2_video"
+            cam2_name = Path(cam2_path).stem
+            print(f"DC SSB: Using individual camera 2 video: {cam2_path}")
+            cam2_asset = self.xml_utils.create_asset_element(
+                cam2_asset_id, cam2_name, cam2_path, original_duration,
+                'r1_dc_ssb', has_audio=False, has_video=True
+            )
+            resources.append(cam2_asset)
+
+        screen_asset_id = None
+        screen_name = None
+        if 'screen' in video_sources and video_sources['screen']:
+            screen_path = video_sources['screen']
+            screen_asset_id = "r_screen_video"
+            screen_name = Path(screen_path).stem
+            print(f"DC SSB: Using individual screen video: {screen_path}")
+            screen_asset = self.xml_utils.create_asset_element(
+                screen_asset_id, screen_name, screen_path, original_duration,
+                'r1_dc_ssb', has_audio=False, has_video=True
+            )
+            resources.append(screen_asset)
+
         # Create dc ssb compound media element
         dc_ssb_media = self.xml_utils.create_media_compound(
             dc_ssb_compound_id,
@@ -235,24 +277,18 @@ class DCSSBGenerator:
         # Add camera 1 video (top left, small) - cropped from master using exact template values
         cam1_config = layout_config.get('cam1', {})
         if cam1_config:
-            # Use exact transforms from dc ssb template (lane 2)
-            cam1_transforms = {
-                'crop': [2.77778, 51.7584, 91.1816, 1.37531],
-                'crop_mode': 'trim',
-                'transform': {
-                    'position': [16.7616, 49.9968],
-                    'scale': 1.2026
-                }
-            }
-            
-            cam1_clip = self.xml_utils.create_video_clip(
-                f"{original_name} - Camera 1",
-                original_asset_id,
-                "2",  # Lane 2 to match template
-                "0s",
-                original_duration,
-                cam1_transforms
-            )
+            if cam1_asset_id:
+                camera1_asset = cam1_asset_id
+                camera1_name = cam1_name
+                cam1_transforms = {'crop': None, 'crop_mode': None, 'transform': {'position': [-36.481, 19.63], 'scale': 0.565}}  # -394 / 10.8, 212 / 10.8
+                print(f"DC SSB: Using cam1 video with scale-only")
+            else:
+                camera1_asset = original_asset_id
+                camera1_name = f"{original_name} - Camera 1"
+                cam1_transforms = {'crop': [2.77778, 51.7584, 91.1816, 1.37531], 'crop_mode': 'trim', 'transform': {'position': [16.7616, 49.9968], 'scale': 1.2026}}
+                print(f"DC SSB: Using master for cam1 with crop")
+
+            cam1_clip = self.xml_utils.create_video_clip(camera1_name, camera1_asset, "2", "0s", original_duration, cam1_transforms)
             gap.append(cam1_clip)
             
             # Add camera 1 border if specified (lane 3 - immediately above camera 1)
@@ -285,27 +321,21 @@ class DCSSBGenerator:
                     )
                     gap.append(border_clip)
         
-        # Add screen video (bottom right, large) - cropped from master using exact template values
+        # Add screen video (bottom right, large)
         screen_config = layout_config.get('screen', {})
         if screen_config:
-            # Use exact transforms from dc ssb template (lane 4)
-            screen_transforms = {
-                'crop': [2.02365, 1.18815, 90.863, 51.1176],
-                'crop_mode': 'trim',
-                'transform': {
-                    'position': [89.3201, -49.442],
-                    'scale': 1.23001
-                }
-            }
-            
-            screen_clip = self.xml_utils.create_video_clip(
-                f"{original_name} - Screen",
-                original_asset_id,
-                "4",  # Lane 4 to match template
-                "0s",
-                original_duration,
-                screen_transforms
-            )
+            if screen_asset_id:
+                screen_video_asset = screen_asset_id
+                screen_video_name = screen_name
+                screen_transforms = {'crop': None, 'crop_mode': None, 'transform': {'position': [34.63, -18.75], 'scale': 0.5843}}  # 374 / 10.8, -202.5 / 10.8
+                print(f"DC SSB: Using screen video with scale-only")
+            else:
+                screen_video_asset = original_asset_id
+                screen_video_name = f"{original_name} - Screen"
+                screen_transforms = {'crop': [2.02365, 1.18815, 90.863, 51.1176], 'crop_mode': 'trim', 'transform': {'position': [89.3201, -49.442], 'scale': 1.23001}}
+                print(f"DC SSB: Using master for screen with crop")
+
+            screen_clip = self.xml_utils.create_video_clip(screen_video_name, screen_video_asset, "4", "0s", original_duration, screen_transforms)
             gap.append(screen_clip)
             
             # Add screen border if specified (lane 5 - immediately above screen)
@@ -338,27 +368,21 @@ class DCSSBGenerator:
                     )
                     gap.append(border_clip)
         
-        # Add camera 2 video (bottom left) - cropped from master using exact template values
+        # Add camera 2 video (bottom left)
         cam2_config = layout_config.get('cam2', {})
         if cam2_config:
-            # Use exact transforms from dc ssb template (lane 6)
-            cam2_transforms = {
-                'crop': [91.3865, 1.12389, 2.04329, 51.3326],
-                'crop_mode': 'trim',
-                'transform': {
-                    'position': [-88.6903, -49.2458],
-                    'scale': 0.801898
-                }
-            }
-            
-            cam2_clip = self.xml_utils.create_video_clip(
-                f"{original_name} - Camera 2",
-                original_asset_id,
-                "6",  # Lane 6 to match template
-                "0s",
-                original_duration,
-                cam2_transforms
-            )
+            if cam2_asset_id:
+                camera2_asset = cam2_asset_id
+                camera2_name = cam2_name
+                cam2_transforms = {'crop': None, 'crop_mode': None, 'transform': {'position': [-52.963, -29.074], 'scale': 0.38}}  # -572 / 10.8, -314 / 10.8
+                print(f"DC SSB: Using cam2 video with scale-only")
+            else:
+                camera2_asset = original_asset_id
+                camera2_name = f"{original_name} - Camera 2"
+                cam2_transforms = {'crop': [91.3865, 1.12389, 2.04329, 51.3326], 'crop_mode': 'trim', 'transform': {'position': [-88.6903, -49.2458], 'scale': 0.801898}}
+                print(f"DC SSB: Using master for cam2 with crop")
+
+            cam2_clip = self.xml_utils.create_video_clip(camera2_name, camera2_asset, "6", "0s", original_duration, cam2_transforms)
             gap.append(cam2_clip)
             
             # Add camera 2 border if specified (lane 7 - immediately above camera 2)
