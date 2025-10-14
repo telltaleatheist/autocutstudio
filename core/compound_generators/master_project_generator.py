@@ -740,7 +740,10 @@ class MasterProjectGenerator:
         return best_index
 
     def _split_clips_into_segments(self, ref_clips: List[ET.Element], segment_hours: float = 2.0) -> List[List[ET.Element]]:
-        """Split ref_clips into segments of approximately segment_hours duration."""
+        """Split ref_clips into segments by dividing total duration by number of hours.
+
+        For example, a 5h25m project will be split into 5 segments of ~1h5m each.
+        """
         if not ref_clips:
             return []
 
@@ -750,11 +753,15 @@ class MasterProjectGenerator:
         last_duration = self._parse_time_to_seconds(last_clip.get('duration', '0s'))
         total_seconds = last_offset + last_duration
 
-        segment_seconds = segment_hours * 3600  # Convert hours to seconds
+        # Calculate number of hours (rounded down)
+        total_hours = int(total_seconds / 3600)
 
-        # If project is shorter than one segment, return as single segment
-        if total_seconds <= segment_seconds:
+        # If less than 1 hour or no cuts, return as single segment
+        if total_hours < 1:
             return [ref_clips]
+
+        # Divide total duration by number of hours to get segment size
+        segment_seconds = total_seconds / total_hours
 
         segments = []
         current_segment_start = 0
