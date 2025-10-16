@@ -35,8 +35,9 @@ class AudioProcessor:
         input_path = Path(input_path)
         
         # Calculate correction factor
+        # Positive drift = expand audio (slower/longer), Negative drift = shrink audio (faster/shorter)
         total_frames = video_duration * fps
-        correction_factor = 1 - (drift_frames / total_frames)
+        correction_factor = 1 + (drift_frames / total_frames)
         
         if output_path is None:
             # Generate output filename with drift information
