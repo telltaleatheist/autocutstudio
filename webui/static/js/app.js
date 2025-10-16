@@ -216,29 +216,20 @@ function updateProjectAudioList() {
                     </select>
                     
                     <div class="audio-corrections-group">
-                        <label class="checkbox-label" title="Apply corrections to this file">
-                            <input type="checkbox" id="${applyCorrectionsId}" 
-                                   onchange="updateApplyCorrections('${id}', this.checked)"
-                                   ${source.applyCorrections ? 'checked' : ''}
-                                   ${!source.type ? 'disabled' : ''}>
-                            <span class="checkbox-custom"></span>
-                            Apply
-                        </label>
-                        
                         <label class="checkbox-label" title="29.97fps sync correction">
-                            <input type="checkbox" id="${syncCheckboxId}" 
+                            <input type="checkbox" id="${syncCheckboxId}"
                                    onchange="updateAudioSyncSetting('${id}', this.checked)"
-                                   ${source.syncFix ? 'checked' : ''} 
-                                   ${!source.type || !source.applyCorrections ? 'disabled' : ''}>
+                                   ${source.syncFix ? 'checked' : ''}
+                                   ${!source.type ? 'disabled' : ''}>
                             <span class="checkbox-custom"></span>
                             29.97
                         </label>
-                        
+
                         <label class="checkbox-label" title="Apply drift correction">
-                            <input type="checkbox" id="${driftCheckboxId}" 
+                            <input type="checkbox" id="${driftCheckboxId}"
                                    onchange="updateAudioDriftSetting('${id}', this.checked)"
                                    ${source.applyDrift ? 'checked' : ''}
-                                   ${!source.type || !source.applyCorrections ? 'disabled' : ''}>
+                                   ${!source.type ? 'disabled' : ''}>
                             <span class="checkbox-custom"></span>
                             Drift
                         </label>
@@ -334,16 +325,16 @@ function updateGlobalDrift() {
 function updateCorrectionsStatus() {
     const statusEl = document.getElementById('correctionsStatus');
     const applyBtn = document.getElementById('applyCorrectionsBtn');
-    
-    // Count files marked for corrections
+
+    // Count files marked for corrections (either syncFix OR applyDrift)
     const filesForCorrection = Object.values(projectAudioSources)
-        .filter(s => s.type && s.applyCorrections);
-    
+        .filter(s => s.type && (s.syncFix || s.applyDrift));
+
     const syncCount = filesForCorrection.filter(s => s.syncFix).length;
     const driftCount = filesForCorrection.filter(s => s.applyDrift).length;
-    
+
     if (filesForCorrection.length === 0) {
-        statusEl.textContent = 'Select files and corrections to apply';
+        statusEl.textContent = 'Check "29.97" or "Drift" on files to enable';
         applyBtn.disabled = true;
     } else {
         let status = `Ready to process ${filesForCorrection.length} file(s)`;
@@ -359,11 +350,11 @@ function updateCorrectionsStatus() {
 }
 
 async function applyAudioCorrections() {
-    // Get files marked for correction
+    // Get files marked for correction (either syncFix OR applyDrift)
     const filesToProcess = [];
-    
+
     for (const [id, source] of Object.entries(projectAudioSources)) {
-        if (source.type && source.applyCorrections) {
+        if (source.type && (source.syncFix || source.applyDrift)) {
             filesToProcess.push({
                 id: id,
                 path: source.path,
@@ -420,7 +411,6 @@ async function applyAudioCorrections() {
                 if (projectAudioSources[file.id]) {
                     projectAudioSources[file.id].path = file.newPath;
                     // Reset correction flags since file is now corrected
-                    projectAudioSources[file.id].applyCorrections = false;
                     projectAudioSources[file.id].syncFix = false;
                     projectAudioSources[file.id].applyDrift = false;
                 }
