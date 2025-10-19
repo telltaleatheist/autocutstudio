@@ -1,0 +1,129 @@
+{
+  "name": "autocutstudio",
+  "version": "1.0.0",
+  "description": "Automated multi-camera video editing workflow for YouTube content creators",
+  "asar": true,
+  "main": "./dist-electron/main/electron/main.js",
+  "scripts": {
+    "install:all": "npm install && npm run install:frontend && npm run install:electron",
+    "install:frontend": "cd frontend && npm install",
+    "install:electron": "cd electron && [ -f package.json ] && npm install || echo 'No electron/package.json found, skipping...'",
+    "clean": "rm -rf dist-electron mac-arm64 mac-arm64* *.dmg *.dmg.blockmap",
+    "clean:all": "npm run clean && rm -rf frontend/dist",
+    "build:all": "npm run build:frontend && npm run build:electron && npm run build:preload",
+    "build:frontend": "cd frontend && npm run build",
+    "build:electron": "tsc -p electron/tsconfig.electron.json",
+    "build:preload": "tsc -p electron/tsconfig.preload.json",
+    "dev": "npm run build:all && cross-env NODE_ENV=development electron .",
+    "start": "npm run build:all && electron .",
+    "package": "npm run clean && npm run build:all && electron-builder build",
+    "package:mac": "npm run clean && npm run build:all && electron-builder --mac"
+  },
+  "keywords": [
+    "video",
+    "editing",
+    "fcpx",
+    "final-cut-pro",
+    "youtube",
+    "automation",
+    "typescript",
+    "angular"
+  ],
+  "author": "AutoCutStudio",
+  "license": "MIT",
+  "devDependencies": {
+    "@electron/typescript-definitions": "^9.1.2",
+    "@types/electron": "^1.6.12",
+    "@types/node": "^22.15.3",
+    "cross-env": "^7.0.3",
+    "electron": "^36.0.1",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "@angular/core": "^19.2.9",
+    "electron-log": "^5.3.3",
+    "electron-updater": "^6.6.2"
+  },
+  "build": {
+    "appId": "com.autocutstudio.app",
+    "productName": "AutoCutStudio",
+    "asar": true,
+    "compression": "maximum",
+    "directories": {
+      "output": "dist-electron",
+      "buildResources": "assets"
+    },
+    "extraResources": [
+      {
+        "from": "core",
+        "to": "core"
+      },
+      {
+        "from": "config",
+        "to": "config"
+      },
+      {
+        "from": "cli",
+        "to": "cli"
+      }
+    ],
+    "files": [
+      "dist-electron/main/**/*",
+      "!dist-electron/main/**/*.map",
+      "frontend/dist/autocutstudio-frontend/**/*",
+      "core/**/*.py",
+      "cli/**/*.py",
+      "config/**/*.yaml",
+      "node_modules/**/*",
+      "!**/node_modules/**/test/**",
+      "!**/node_modules/**/tests/**",
+      "!**/node_modules/**/*.md",
+      "!**/node_modules/**/*.d.ts",
+      "!**/node_modules/**/*.map"
+    ],
+    "asarUnpack": [
+      "core/**",
+      "cli/**",
+      "config/**"
+    ],
+    "mac": {
+      "category": "public.app-category.video",
+      "target": [
+        "dmg"
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "LSUIElement": false
+      }
+    },
+    "dmg": {
+      "format": "ULFO",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Video"
+    }
+  }
+}

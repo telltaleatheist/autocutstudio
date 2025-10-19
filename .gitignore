@@ -11,3 +11,10 @@ xml/template master_ALTERED_COMPOUND_GS.fcpxml
 xml/template master_ALTERED_COMPOUND_SSB.fcpxml
 xml/template master.fcpxml
 webui/__pycache__/*
+node_modules/@angular/core/schematics/bundles/
+*.cjs
+node_modules/*
+.*
+dist-electron/mac-arm64/AutoCutStudio.app/Contents/Frameworks/
+*.plist
+dist-electron/*

@@ -1,0 +1,28 @@
+<!-- Navigation -->
+<nav class="navbar">
+  <div class="container">
+    <div class="nav-content">
+      <a href="#" class="logo">AutoCutStudio</a>
+      <div class="flex gap-2">
+        <button class="theme-toggle" (click)="toggleTheme()">
+          {{ currentTheme === 'dark' ? '☀️' : '🌙' }}
+        </button>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<!-- Hero Section -->
+<section class="hero">
+  <div class="container">
+    <h1 class="hero-title">Video Processing</h1>
+    <p class="hero-subtitle">Automated multi-camera video editing workflow for YouTube content creators</p>
+  </div>
+</section>
+
+<!-- Main Content -->
+<section class="section">
+  <div class="container">
+    <router-outlet></router-outlet>
+  </div>
+</section>

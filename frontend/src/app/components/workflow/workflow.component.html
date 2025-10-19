@@ -1,0 +1,101 @@
+<div class="workflow-container">
+  <div class="panel">
+    <div class="panel-header">
+      <h4 class="panel-title">🎬 Video Configuration</h4>
+    </div>
+    <div class="panel-content">
+      
+      <!-- Master Video -->
+      <div class="form-group">
+        <label>Master Video File *</label>
+        <div class="file-selector">
+          <input type="text" [(ngModel)]="masterVideoPath" readonly placeholder="Click Browse to select" />
+          <button type="button" class="btn btn-secondary" (click)="selectMasterVideo()">📁 Browse</button>
+        </div>
+        <small class="form-help">Main recording file</small>
+      </div>
+
+      <!-- Audio Sources -->
+      <div class="form-group">
+        <label>Audio Sources</label>
+        <div class="project-audio-list">
+          <p *ngIf="audioSources.length === 0" class="form-help">No audio sources. Click Add below.</p>
+          
+          <div *ngFor="let source of audioSources" class="project-audio-item">
+            <div class="audio-item-info">
+              <div class="audio-item-path">{{ source.name }}</div>
+            </div>
+            <div class="audio-item-controls">
+              <select class="audio-type-select" [(ngModel)]="source.type" [name]="'type_' + source.id">
+                <option value="">Select Type...</option>
+                <option *ngFor="let type of getAvailableAudioTypes(source.type)" [value]="type">
+                  {{ audioSourceLabels[type] }}
+                </option>
+              </select>
+              <label class="checkbox-label">
+                <input type="checkbox" [(ngModel)]="source.syncFix" />
+                <span class="checkbox-custom"></span>
+                29.97
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" [(ngModel)]="source.applyDrift" />
+                <span class="checkbox-custom"></span>
+                Drift
+              </label>
+              <button type="button" class="btn btn-small btn-danger" (click)="removeAudioSource(source.id)">✕</button>
+            </div>
+          </div>
+        </div>
+        <button type="button" class="btn btn-secondary mt-2" (click)="addAudioSource()">➕ Add Audio</button>
+      </div>
+
+      <!-- XML Options -->
+      <div class="form-group">
+        <label>XML Options</label>
+        <div class="xml-options-actions mb-2">
+          <button type="button" class="btn btn-small btn-secondary" (click)="selectAllXmlOptions()">All</button>
+          <button type="button" class="btn btn-small btn-secondary" (click)="deselectAllXmlOptions()">None</button>
+        </div>
+        <div class="xml-options-container">
+          <div *ngFor="let opt of xmlOptions" class="xml-option-item">
+            <label class="checkbox-label">
+              <input type="checkbox" [checked]="selectedXmlOptions.includes(opt.value)" (change)="toggleXmlOption(opt.value)" />
+              <span class="checkbox-custom"></span>
+              <div class="xml-option-info">
+                <span class="xml-option-name">{{ opt.label }}</span>
+                <span class="xml-option-desc">{{ opt.description }}</span>
+              </div>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Process Button -->
+      <div class="action-buttons-group">
+        <button class="btn btn-primary" (click)="processWorkflow()" [disabled]="isProcessing || !masterVideoPath || audioSources.length === 0">
+          🎬 Process
+        </button>
+        <button *ngIf="isProcessing" class="btn btn-danger" (click)="cancelJob()">⏹ Cancel</button>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Console Modal -->
+<div *ngIf="showConsole" class="modal-overlay" (click)="closeConsole()">
+  <div class="modal" (click)="$event.stopPropagation()">
+    <div class="modal-header">
+      <h3 class="modal-title">Console Output</h3>
+      <button class="modal-close" (click)="closeConsole()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="console-output">
+        <pre>{{ consoleOutput.join('') }}</pre>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" (click)="closeConsole()">Close</button>
+    </div>
+  </div>
+</div>
