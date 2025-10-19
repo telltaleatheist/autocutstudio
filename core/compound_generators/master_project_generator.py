@@ -232,8 +232,8 @@ class MasterProjectGenerator:
         print(f"Found compounds: CAM={cam_id}, GS={gs_id}, SSB={ssb_id}")
         print(f"Found {len(cam_cuts)} cuts in CAM timeline")
 
-        # Split cuts into 1-hour segments
-        segments = self._split_clips_into_segments(cam_cuts, segment_hours=1.0)
+        # Split cuts into segments (automatically determined by total duration)
+        segments = self._split_clips_into_segments(cam_cuts)
         print(f"Split into {len(segments)} segments")
 
         # Extract all resources from all three XMLs
@@ -739,10 +739,25 @@ class MasterProjectGenerator:
 
         return best_index
 
-    def _split_clips_into_segments(self, ref_clips: List[ET.Element], segment_hours: float = 2.0) -> List[List[ET.Element]]:
-        """Split ref_clips into segments by dividing total duration by number of hours.
+    def _split_clips_into_segments(self, ref_clips: List[ET.Element]) -> List[List[ET.Element]]:
+        """Split ref_clips into equal segments based on total duration.
 
-        For example, a 5h25m project will be split into 5 segments of ~1h5m each.
+        Logic:
+        - Calculate total hours (rounded down to nearest whole hour)
+        - Split into that many equal segments
+        - Each segment will be ~1 hour or less (max 1.5 hours for short videos)
+
+        Examples:
+        - 3h15m → 3 segments of ~1h5m each
+        - 15h23m → 15 segments of ~1h1m each
+        - 2h30m → 2 segments of ~1h15m each
+        - 45m → 1 segment (under 1 hour, no split)
+
+        Args:
+            ref_clips: List of ref-clip elements to split
+
+        Returns:
+            List of segment lists, each containing ref-clips for that segment
         """
         if not ref_clips:
             return []
@@ -752,38 +767,61 @@ class MasterProjectGenerator:
         last_offset = self._parse_time_to_seconds(last_clip.get('offset', '0s'))
         last_duration = self._parse_time_to_seconds(last_clip.get('duration', '0s'))
         total_seconds = last_offset + last_duration
+        total_hours = total_seconds / 3600
 
-        # Calculate number of hours (rounded down)
-        total_hours = int(total_seconds / 3600)
+        print(f"Total duration: {total_hours:.2f} hours ({total_seconds:.1f} seconds)")
 
-        # If less than 1 hour or no cuts, return as single segment
-        if total_hours < 1:
+        # Calculate number of segments based on total hours (rounded down)
+        num_segments = int(total_hours)
+
+        # If less than 1 hour, don't split
+        if num_segments < 1:
+            print(f"Duration < 1 hour, returning single segment")
             return [ref_clips]
 
-        # Divide total duration by number of hours to get segment size
-        segment_seconds = total_seconds / total_hours
+        # Calculate segment duration (divide total by number of segments for equal parts)
+        segment_seconds = total_seconds / num_segments
+
+        print(f"Splitting into {num_segments} equal segments of ~{segment_seconds/3600:.2f}h each")
 
         segments = []
         current_segment_start = 0
 
-        while current_segment_start < len(ref_clips):
-            # Find target time for next split
-            target_time = (len(segments) + 1) * segment_seconds
+        for segment_num in range(num_segments):
+            # Calculate target end time for this segment
+            target_time = (segment_num + 1) * segment_seconds
 
-            # If we're near the end, just take remaining clips
-            if target_time >= total_seconds:
-                segments.append(ref_clips[current_segment_start:])
+            # If this is the last segment, take all remaining clips
+            if segment_num == num_segments - 1:
+                segment_clips = ref_clips[current_segment_start:]
+                segments.append(segment_clips)
+
+                # Log segment info
+                segment_start_time = self._parse_time_to_seconds(segment_clips[0].get('offset', '0s'))
+                segment_end_time = self._parse_time_to_seconds(segment_clips[-1].get('offset', '0s')) + \
+                                  self._parse_time_to_seconds(segment_clips[-1].get('duration', '0s'))
+                segment_duration = segment_end_time - segment_start_time
+                print(f"  Part {segment_num + 1}: {len(segment_clips)} clips, {segment_duration/3600:.2f}h ({segment_duration/60:.0f}m)")
                 break
 
-            # Find nearest cut point
+            # Find nearest cut point to target_time
             split_index = self._find_nearest_cut_for_split(ref_clips, target_time)
 
-            # Make sure we're making progress
+            # Make sure we're making progress (at least 1 clip per segment)
             if split_index <= current_segment_start:
                 split_index = current_segment_start + 1
 
             # Add this segment
-            segments.append(ref_clips[current_segment_start:split_index])
+            segment_clips = ref_clips[current_segment_start:split_index]
+            segments.append(segment_clips)
+
+            # Log segment info
+            segment_start_time = self._parse_time_to_seconds(segment_clips[0].get('offset', '0s'))
+            segment_end_time = self._parse_time_to_seconds(segment_clips[-1].get('offset', '0s')) + \
+                              self._parse_time_to_seconds(segment_clips[-1].get('duration', '0s'))
+            segment_duration = segment_end_time - segment_start_time
+            print(f"  Part {segment_num + 1}: {len(segment_clips)} clips, {segment_duration/3600:.2f}h ({segment_duration/60:.0f}m)")
+
             current_segment_start = split_index
 
         return segments

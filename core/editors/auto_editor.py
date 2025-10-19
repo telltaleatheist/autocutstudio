@@ -17,16 +17,23 @@ class AutoEditor(BaseEditor):
         self.config = config
         self.xml_utils = FCPXMLUtils()
     
-    def cut_silence(self, input_file: str, threshold: str = None, 
-                   output_format: str = "final-cut-pro") -> str:
-        """Run auto-editor on input file and return path to XML output."""
+    def cut_silence(self, input_file: str, threshold: str = None,
+                   output_format: str = "final-cut-pro", auto_fix_errors: bool = True) -> str:
+        """Run auto-editor on input file and return path to XML output.
+
+        Args:
+            input_file: Path to video file
+            threshold: Audio threshold (e.g. '-40dB')
+            output_format: Export format (default: 'final-cut-pro')
+            auto_fix_errors: If True, attempt to fix corrupted video files
+        """
         input_path = Path(input_file)
-        
+
         if threshold is None:
             threshold = self.config.default_threshold
-        
+
         print(f"Running auto-editor on: {input_path}")
-        
+
         try:
             result = subprocess.run([
                 'auto-editor',
@@ -34,23 +41,89 @@ class AutoEditor(BaseEditor):
                 '--edit', f'audio:{threshold}',
                 '--export', output_format
             ], capture_output=True, text=True, check=True)
-            
+
             # Auto-editor creates XML with _ALTERED suffix
             xml_output = input_path.with_name(f"{input_path.stem}_ALTERED.fcpxml")
-            
+
             if not xml_output.exists():
                 raise FileNotFoundError(f"Expected auto-editor output not found: {xml_output}")
-            
+
             print(f"Auto-editor completed: {xml_output}")
             return str(xml_output)
-            
+
         except subprocess.CalledProcessError as e:
             print(f"Error running auto-editor on {input_file}: {e}")
-            print(f"stderr: {e.stderr}")
+
+            # Check if it's a corrupted video error
+            if 'Invalid data found when processing input' in e.stderr or \
+               'InvalidDataError' in e.stderr or \
+               'bv.error' in e.stderr:
+                print("\nDetected corrupted video file. This usually happens when:")
+                print("  - Video encoding was interrupted")
+                print("  - File contains damaged frames")
+                print("  - Codec errors during recording")
+
+                if auto_fix_errors:
+                    print("\nAttempting to fix by re-encoding video...")
+                    fixed_file = self._reencode_video(input_file)
+                    if fixed_file:
+                        print(f"Re-encoded video saved to: {fixed_file}")
+                        print("Retrying auto-editor with fixed video...")
+                        # Retry with fixed file
+                        return self.cut_silence(fixed_file, threshold, output_format, auto_fix_errors=False)
+                else:
+                    print("\nTo fix this issue, try re-encoding the video:")
+                    print(f"  ffmpeg -i \"{input_file}\" -c:v libx264 -crf 23 -c:a aac -b:a 192k \"fixed_{Path(input_file).name}\"")
+            else:
+                print(f"stderr: {e.stderr}")
+
             raise
         except FileNotFoundError:
             print("Error: auto-editor not found. Please install auto-editor first.")
             raise
+
+    def _reencode_video(self, input_file: str) -> str:
+        """Re-encode video to fix corruption issues.
+
+        Args:
+            input_file: Path to corrupted video file
+
+        Returns:
+            Path to re-encoded video file, or None if re-encoding failed
+        """
+        input_path = Path(input_file)
+        output_path = input_path.with_name(f"{input_path.stem}_fixed{input_path.suffix}")
+
+        print(f"Re-encoding video with error correction...")
+        print(f"  Input: {input_file}")
+        print(f"  Output: {output_path}")
+
+        try:
+            # Use ffmpeg with error concealment to fix corrupted frames
+            result = subprocess.run([
+                'ffmpeg',
+                '-err_detect', 'ignore_err',  # Ignore decoding errors
+                '-i', str(input_path),
+                '-c:v', 'libx264',  # Re-encode video
+                '-crf', '23',  # Quality level (lower = better quality)
+                '-preset', 'medium',  # Encoding speed
+                '-c:a', 'aac',  # Re-encode audio
+                '-b:a', '192k',  # Audio bitrate
+                '-y',  # Overwrite output
+                str(output_path)
+            ], capture_output=True, text=True)
+
+            if output_path.exists():
+                print("Re-encoding completed successfully")
+                return str(output_path)
+            else:
+                print("Re-encoding failed: output file not created")
+                print(f"ffmpeg stderr: {result.stderr}")
+                return None
+
+        except Exception as e:
+            print(f"Error during re-encoding: {e}")
+            return None
     
     def get_video_info(self, file_path: str) -> Tuple[str, str, int, int]:
         """Get video duration, frame duration, width, height using ffprobe."""

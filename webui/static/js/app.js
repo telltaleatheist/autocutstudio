@@ -12,6 +12,11 @@ let browserMode = 'master';
 let masterVideoDuration = null;
 let audioChangesInProgress = false;
 
+// Queue management
+let processingQueue = [];
+let isQueueProcessing = false;
+let currentQueueIndex = -1;
+
 // Theme management
 function toggleTheme() {
     const body = document.body;
@@ -1225,3 +1230,498 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 });
+
+// ============================================================================
+// QUEUE MANAGEMENT FUNCTIONS
+// ============================================================================
+
+function addToQueue() {
+    // Validate form
+    const masterVideo = document.getElementById('masterVideoPath').value;
+    if (!masterVideo) {
+        showAlert('warning', 'Please select a master video file');
+        return;
+    }
+
+    // Collect current form data
+    const queueItem = {
+        id: 'queue_' + Date.now(),
+        type: 'processing', // vs 'audio-corrections'
+        masterVideo: masterVideo,
+        audioSources: JSON.parse(JSON.stringify(projectAudioSources)), // Deep copy
+        videoSources: JSON.parse(JSON.stringify(projectVideoSources)), // Deep copy
+        threshold: document.getElementById('threshold').value,
+        xmlOptions: getSelectedXmlOptions(),
+        status: 'pending',
+        progress: 0,
+        message: 'Waiting in queue',
+        jobId: null
+    };
+
+    // Add to queue
+    processingQueue.push(queueItem);
+
+    // Update UI
+    updateQueueDisplay();
+    showAlert('success', `Added to queue: ${masterVideo.split('/').pop()}`);
+
+    // Clear form for next item
+    clearForm();
+}
+
+function addAudioCorrectionsToQueue() {
+    // Validate that we have audio files
+    if (Object.keys(projectAudioSources).length === 0) {
+        showAlert('warning', 'Please add audio files first');
+        return;
+    }
+
+    // Get drift correction value
+    const globalDriftFrames = parseFloat(document.getElementById('globalDriftFrames').value) || 0;
+
+    // Collect files that need corrections
+    const filesToCorrect = {};
+    let hasCorrections = false;
+
+    for (const [id, source] of Object.entries(projectAudioSources)) {
+        if (source.type) { // Only include assigned files
+            const applyCheckbox = document.getElementById(`apply_${id}`);
+            const syncCheckbox = document.getElementById(`sync_${id}`);
+            const driftCheckbox = document.getElementById(`drift_${id}`);
+
+            if (applyCheckbox && applyCheckbox.checked) {
+                filesToCorrect[id] = {
+                    path: source.path,
+                    type: source.type,
+                    syncFix: syncCheckbox ? syncCheckbox.checked : false,
+                    applyDrift: driftCheckbox ? driftCheckbox.checked : false
+                };
+                hasCorrections = true;
+            }
+        }
+    }
+
+    if (!hasCorrections) {
+        showAlert('warning', 'Please check "Apply" on at least one audio file');
+        return;
+    }
+
+    // Get master video for duration calculation
+    const masterVideo = document.getElementById('masterVideoPath').value;
+    if (!masterVideo && globalDriftFrames !== 0) {
+        showAlert('warning', 'Please select a master video for drift correction calculations');
+        return;
+    }
+
+    // Create queue item for audio corrections
+    const queueItem = {
+        id: 'queue_' + Date.now(),
+        type: 'audio-corrections',
+        filesToCorrect: filesToCorrect,
+        globalDriftFrames: globalDriftFrames,
+        masterVideo: masterVideo,
+        status: 'pending',
+        progress: 0,
+        message: 'Waiting in queue',
+        jobId: null
+    };
+
+    // Add to queue
+    processingQueue.push(queueItem);
+
+    // Update UI
+    updateQueueDisplay();
+    showAlert('success', `Added ${Object.keys(filesToCorrect).length} file(s) to audio corrections queue`);
+}
+
+function clearForm() {
+    // Clear master video
+    document.getElementById('masterVideoPath').value = '';
+
+    // Clear optional video sources
+    ['cam1', 'cam2', 'screen', 'game'].forEach(type => {
+        clearVideoSource(type);
+    });
+
+    // Clear audio sources
+    projectAudioSources = {};
+    projectVideoSources = {};
+    updateProjectAudioList();
+
+    // Reset threshold to default
+    document.getElementById('threshold').value = '-40dB';
+
+    // Deselect all XML options
+    deselectAllXmlOptions();
+}
+
+function updateQueueDisplay() {
+    const queueContent = document.getElementById('queueContent');
+    const queueCount = document.getElementById('queueCount');
+    const queueStatus = document.getElementById('queueStatus');
+    const startQueueBtn = document.getElementById('startQueueBtn');
+    const clearQueueBtn = document.getElementById('clearQueueBtn');
+
+    if (processingQueue.length === 0) {
+        queueContent.innerHTML = `
+            <div class="queue-empty">
+                <p>No items in queue</p>
+                <small>Click "Add to Queue" to add items</small>
+            </div>
+        `;
+        queueCount.textContent = '0 items';
+        queueStatus.textContent = 'Ready';
+        startQueueBtn.disabled = true;
+        clearQueueBtn.disabled = true;
+        return;
+    }
+
+    // Update stats
+    queueCount.textContent = `${processingQueue.length} item${processingQueue.length !== 1 ? 's' : ''}`;
+    startQueueBtn.disabled = isQueueProcessing;
+    clearQueueBtn.disabled = isQueueProcessing;
+
+    if (isQueueProcessing) {
+        const completed = processingQueue.filter(item => item.status === 'completed').length;
+        queueStatus.textContent = `Processing (${completed}/${processingQueue.length})`;
+    } else {
+        queueStatus.textContent = 'Ready';
+    }
+
+    // Render queue items
+    let html = '';
+    processingQueue.forEach((item, index) => {
+        const statusClass = item.status === 'processing' ? 'processing' :
+                           item.status === 'completed' ? 'completed' :
+                           item.status === 'error' ? 'error' : '';
+
+        const statusBadge = item.status === 'processing' ? 'badge-info' :
+                           item.status === 'completed' ? 'badge-success' :
+                           item.status === 'error' ? 'badge-danger' : 'badge-warning';
+
+        // Different display for audio corrections vs processing
+        if (item.type === 'audio-corrections') {
+            const fileCount = Object.keys(item.filesToCorrect).length;
+            const hasSync = Object.values(item.filesToCorrect).some(f => f.syncFix);
+            const hasDrift = Object.values(item.filesToCorrect).some(f => f.applyDrift);
+
+            html += `
+                <div class="queue-item ${statusClass}" data-queue-id="${item.id}">
+                    <div class="queue-item-header">
+                        <div style="display: flex; align-items: center; flex: 1;">
+                            <span class="queue-item-number">#${index + 1}</span>
+                            <span class="queue-item-title">🎵 Audio Corrections</span>
+                        </div>
+                        <div class="queue-item-actions">
+                            ${item.status === 'pending' ? `
+                                <button onclick="moveQueueItem(${index}, -1)" ${index === 0 ? 'disabled' : ''} title="Move Up">▲</button>
+                                <button onclick="moveQueueItem(${index}, 1)" ${index === processingQueue.length - 1 ? 'disabled' : ''} title="Move Down">▼</button>
+                                <button onclick="removeQueueItem(${index})" title="Remove">✕</button>
+                            ` : ''}
+                        </div>
+                    </div>
+                    <div class="queue-item-details">
+                        <div><strong>Files:</strong> ${fileCount} audio file${fileCount !== 1 ? 's' : ''}</div>
+                        <div><strong>Corrections:</strong> ${hasSync ? '29.97 Sync' : ''}${hasSync && hasDrift ? ', ' : ''}${hasDrift ? `Drift (${item.globalDriftFrames}f)` : ''}</div>
+                    </div>
+                    ${item.status !== 'pending' ? `
+                        <div class="queue-item-status">
+                            <span class="badge ${statusBadge}">${item.status.toUpperCase()}</span>
+                            <span>${item.message}</span>
+                        </div>
+                    ` : ''}
+                    ${item.status === 'processing' && item.progress > 0 ? `
+                        <div class="queue-item-progress">
+                            <div class="progress">
+                                <div class="progress-fill" style="width: ${item.progress}%"></div>
+                            </div>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        } else {
+            // Processing item
+            const fileName = item.masterVideo.split('/').pop();
+            const audioCount = Object.keys(item.audioSources).length;
+            const videoCount = Object.keys(item.videoSources).length;
+
+            html += `
+                <div class="queue-item ${statusClass}" data-queue-id="${item.id}">
+                    <div class="queue-item-header">
+                        <div style="display: flex; align-items: center; flex: 1;">
+                            <span class="queue-item-number">#${index + 1}</span>
+                            <span class="queue-item-title">${fileName}</span>
+                        </div>
+                        <div class="queue-item-actions">
+                            ${item.status === 'pending' ? `
+                                <button onclick="moveQueueItem(${index}, -1)" ${index === 0 ? 'disabled' : ''} title="Move Up">▲</button>
+                                <button onclick="moveQueueItem(${index}, 1)" ${index === processingQueue.length - 1 ? 'disabled' : ''} title="Move Down">▼</button>
+                                <button onclick="removeQueueItem(${index})" title="Remove">✕</button>
+                            ` : ''}
+                        </div>
+                    </div>
+                    <div class="queue-item-details">
+                        <div><strong>Audio:</strong> ${audioCount} source${audioCount !== 1 ? 's' : ''}</div>
+                        ${videoCount > 0 ? `<div><strong>Video:</strong> ${videoCount} source${videoCount !== 1 ? 's' : ''}</div>` : ''}
+                        <div><strong>Threshold:</strong> ${item.threshold}</div>
+                    </div>
+                    ${item.status !== 'pending' ? `
+                        <div class="queue-item-status">
+                            <span class="badge ${statusBadge}">${item.status.toUpperCase()}</span>
+                            <span>${item.message}</span>
+                        </div>
+                    ` : ''}
+                    ${item.status === 'processing' && item.progress > 0 ? `
+                        <div class="queue-item-progress">
+                            <div class="progress">
+                                <div class="progress-fill" style="width: ${item.progress}%"></div>
+                            </div>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }
+    });
+
+    queueContent.innerHTML = html;
+}
+
+function moveQueueItem(index, direction) {
+    if (isQueueProcessing) return;
+
+    const newIndex = index + direction;
+    if (newIndex < 0 || newIndex >= processingQueue.length) return;
+
+    // Swap items
+    [processingQueue[index], processingQueue[newIndex]] = [processingQueue[newIndex], processingQueue[index]];
+    updateQueueDisplay();
+}
+
+function removeQueueItem(index) {
+    if (isQueueProcessing) return;
+
+    const item = processingQueue[index];
+    const fileName = item.masterVideo.split('/').pop();
+
+    processingQueue.splice(index, 1);
+    updateQueueDisplay();
+    showAlert('info', `Removed from queue: ${fileName}`);
+}
+
+function clearQueue() {
+    if (isQueueProcessing) {
+        showAlert('warning', 'Cannot clear queue while processing');
+        return;
+    }
+
+    if (processingQueue.length === 0) return;
+
+    if (confirm(`Clear all ${processingQueue.length} items from queue?`)) {
+        processingQueue = [];
+        updateQueueDisplay();
+        showAlert('info', 'Queue cleared');
+    }
+}
+
+async function startQueue() {
+    if (isQueueProcessing) return;
+    if (processingQueue.length === 0) {
+        showAlert('warning', 'Queue is empty');
+        return;
+    }
+
+    isQueueProcessing = true;
+    currentQueueIndex = 0;
+    updateQueueDisplay();
+
+    // Process items sequentially
+    for (let i = 0; i < processingQueue.length; i++) {
+        currentQueueIndex = i;
+        const item = processingQueue[i];
+
+        // Skip if already completed or errored
+        if (item.status === 'completed' || item.status === 'error') {
+            continue;
+        }
+
+        // Process this item
+        await processQueueItem(item);
+    }
+
+    // Queue completed
+    isQueueProcessing = false;
+    currentQueueIndex = -1;
+    updateQueueDisplay();
+
+    const completed = processingQueue.filter(item => item.status === 'completed').length;
+    const errors = processingQueue.filter(item => item.status === 'error').length;
+
+    if (errors === 0) {
+        showAlert('success', `Queue completed! Processed ${completed} items successfully.`);
+    } else {
+        showAlert('warning', `Queue completed with ${errors} error(s). ${completed} items processed successfully.`);
+    }
+}
+
+async function processQueueItem(item) {
+    item.status = 'processing';
+    item.progress = 0;
+    item.message = 'Starting processing...';
+    updateQueueDisplay();
+
+    try {
+        if (item.type === 'audio-corrections') {
+            // Process audio corrections
+            await processAudioCorrectionsQueueItem(item);
+        } else {
+            // Process video (original behavior)
+            await processVideoQueueItem(item);
+        }
+    } catch (error) {
+        console.error('Error processing queue item:', error);
+        item.status = 'error';
+        item.message = error.message;
+        updateQueueDisplay();
+    }
+}
+
+async function processAudioCorrectionsQueueItem(item) {
+    item.message = 'Applying audio corrections...';
+    updateQueueDisplay();
+
+    // Get video duration if needed for drift correction
+    let videoDuration = null;
+    if (item.masterVideo && item.globalDriftFrames !== 0) {
+        const durationResponse = await fetch('/api/video-duration', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ videoPath: item.masterVideo })
+        });
+
+        const durationResult = await durationResponse.json();
+        if (durationResult.success) {
+            videoDuration = durationResult.duration;
+        }
+    }
+
+    // Prepare files for correction
+    const filesToProcess = [];
+    for (const [id, fileData] of Object.entries(item.filesToCorrect)) {
+        filesToProcess.push({
+            id: id,
+            path: fileData.path,
+            type: fileData.type,
+            syncFix: fileData.syncFix,
+            applyDrift: fileData.applyDrift,
+            driftFrames: item.globalDriftFrames
+        });
+    }
+
+    // Call the audio corrections API
+    const response = await fetch('/api/apply-audio-corrections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            files: filesToProcess,
+            globalDriftFrames: item.globalDriftFrames,
+            videoDuration: videoDuration
+        })
+    });
+
+    const result = await response.json();
+
+    if (result.success) {
+        item.status = 'completed';
+        item.progress = 100;
+        item.message = `Corrected ${result.processedFiles.length} audio files`;
+        updateQueueDisplay();
+    } else {
+        throw new Error(result.error || 'Failed to apply audio corrections');
+    }
+}
+
+async function processVideoQueueItem(item) {
+    // Prepare data in the same format as startProcessing()
+    const audioSyncSettings = {};
+    const audioFiles = {};
+
+    // Convert audio sources to expected format
+    for (const [id, source] of Object.entries(item.audioSources)) {
+        if (source.type && source.path) {
+            const audioKey = source.type + 'Audio';
+            audioFiles[audioKey] = source.path;
+            audioSyncSettings[source.type] = source.syncFix || false;
+        }
+    }
+
+    // Prepare video sources
+    const videoSources = {};
+    for (const [type, path] of Object.entries(item.videoSources)) {
+        videoSources[type] = path;
+    }
+
+    const requestData = {
+        masterVideo: item.masterVideo,
+        ...audioFiles,
+        videoSources: videoSources,
+        audioSyncSettings: audioSyncSettings,
+        threshold: item.threshold,
+        xmlOptions: item.xmlOptions
+    };
+
+    // Start processing
+    const response = await fetch('/api/process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestData)
+    });
+
+    const result = await response.json();
+
+    if (!result.success) {
+        throw new Error(result.error || 'Failed to start processing');
+    }
+
+    item.jobId = result.jobId;
+
+    // Poll for progress
+    await pollQueueItemProgress(item);
+}
+
+async function pollQueueItemProgress(item) {
+    return new Promise((resolve) => {
+        const pollInterval = setInterval(async () => {
+            try {
+                const response = await fetch(`/api/job/${item.jobId}`);
+                const job = await response.json();
+
+                item.progress = job.progress;
+                item.message = job.message;
+
+                if (job.status === 'completed') {
+                    item.status = 'completed';
+                    item.progress = 100;
+                    updateQueueDisplay();
+                    clearInterval(pollInterval);
+                    resolve();
+                } else if (job.status === 'error') {
+                    item.status = 'error';
+                    item.message = job.error || 'Processing failed';
+                    updateQueueDisplay();
+                    clearInterval(pollInterval);
+                    resolve();
+                } else {
+                    updateQueueDisplay();
+                }
+
+            } catch (error) {
+                console.error('Error polling job status:', error);
+                item.status = 'error';
+                item.message = 'Failed to get job status';
+                updateQueueDisplay();
+                clearInterval(pollInterval);
+                resolve();
+            }
+        }, 1000); // Poll every second
+    });
+}

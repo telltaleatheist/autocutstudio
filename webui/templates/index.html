@@ -30,7 +30,7 @@
 
     <!-- Main Content -->
     <section class="section">
-        <div class="container">
+        <div class="container main-layout">
             <!-- Configuration Panel -->
             <div class="panel">
                 <div class="panel-header">
@@ -163,10 +163,13 @@
                                 
                                 <!-- Apply Corrections Button -->
                                 <div class="audio-corrections-actions">
-                                    <button type="button" class="btn btn-primary" onclick="applyAudioCorrections()" id="applyCorrectionsBtn">
-                                        🎵 Apply Audio Corrections Now
+                                    <button type="button" class="btn btn-secondary" onclick="addAudioCorrectionsToQueue()" id="addCorrectionsQueueBtn">
+                                        ➕ Add Audio Corrections to Queue
                                     </button>
-                                    <small class="form-help" id="correctionsStatus">Select files and corrections to apply</small>
+                                    <button type="button" class="btn btn-primary" onclick="applyAudioCorrections()" id="applyCorrectionsBtn">
+                                        🎵 Apply Now
+                                    </button>
+                                    <small class="form-help" id="correctionsStatus">Add to queue for batch processing or apply now</small>
                                 </div>
                             </div>
                         </div>
@@ -298,18 +301,48 @@
                             <input type="text" id="threshold" name="threshold" value="-40dB" placeholder="-40dB">
                             <small class="form-help">Silence detection threshold for auto-editor (e.g., -40dB, -30dB, -20dB)</small>
                         </div>
+
+                        <!-- Action Buttons -->
+                        <div class="form-group action-buttons-group">
+                            <button type="button" class="btn btn-secondary" onclick="addToQueue()" id="addQueueBtn">
+                                ➕ Add to Queue
+                            </button>
+                            <button type="button" class="btn btn-primary" onclick="startProcessing()" id="processBtn">
+                                🚀 Start Processing
+                            </button>
+                            <button type="button" class="btn btn-secondary" onclick="testConfig()" id="testBtn">
+                                🧪 Test Configuration
+                            </button>
+                        </div>
                     </form>
                 </div>
             </div>
 
-            <!-- Action Buttons -->
-            <div class="text-center mt-2">
-                <button type="button" class="btn btn-primary" onclick="startProcessing()" id="processBtn">
-                    🚀 Start Processing
-                </button>
-                <button type="button" class="btn btn-secondary" onclick="testConfig()" id="testBtn">
-                    🧪 Test Configuration
-                </button>
+            <!-- Queue Panel -->
+            <div class="queue-panel" id="queuePanel">
+                <div class="queue-header">
+                    <h4 class="queue-title">📋 Processing Queue</h4>
+                    <div class="queue-actions">
+                        <button type="button" class="btn btn-small btn-primary" onclick="startQueue()" id="startQueueBtn" disabled>
+                            ▶️ Start Queue
+                        </button>
+                        <button type="button" class="btn btn-small btn-danger" onclick="clearQueue()" id="clearQueueBtn" disabled>
+                            🗑️ Clear
+                        </button>
+                    </div>
+                </div>
+                <div class="queue-content" id="queueContent">
+                    <div class="queue-empty">
+                        <p>No items in queue</p>
+                        <small>Click "Add to Queue" to add items</small>
+                    </div>
+                </div>
+                <div class="queue-footer">
+                    <div class="queue-stats">
+                        <span id="queueCount">0 items</span>
+                        <span id="queueStatus">Ready</span>
+                    </div>
+                </div>
             </div>
         </div>
     </section>
