@@ -12,6 +12,14 @@ export interface PythonExecutionOptions {
   onComplete?: (code: number) => void;
 }
 
+export interface WorkflowExecutionOptions {
+  inputData: any;
+  onOutput?: (data: string) => void;
+  onError?: (data: string) => void;
+  onProgress?: (progress: number, message: string) => void;
+  onComplete?: (code: number, result?: any) => void;
+}
+
 // Common installation paths
 const COMMON_PATHS = [
   '/usr/local/bin',
@@ -129,5 +137,93 @@ export class PythonService {
    */
   getRunningProcessCount(): number {
     return this.runningProcesses.size;
+  }
+
+  /**
+   * Execute the electron workflow script with JSON input
+   */
+  executeWorkflow(jobId: string, options: WorkflowExecutionOptions): ChildProcess {
+    log.info(`Executing workflow [${jobId}]`);
+
+    const pythonPath = 'python3';
+    const scriptPath = path.join(AppConfig.cliPath, 'electron_workflow.py');
+
+    // Set environment variables with enhanced PATH
+    const env = {
+      ...process.env,
+      PATH: `${COMMON_PATHS}:${process.env.PATH || ''}`,
+      PYTHONPATH: AppConfig.appPath,
+      PYTHONUNBUFFERED: '1'
+    };
+
+    // Spawn the Python process
+    const pythonProcess = spawn(pythonPath, [scriptPath], {
+      env,
+      cwd: AppConfig.appPath
+    });
+
+    // Store the process
+    this.runningProcesses.set(jobId, pythonProcess);
+
+    // Send input data as JSON to stdin
+    pythonProcess.stdin.write(JSON.stringify(options.inputData));
+    pythonProcess.stdin.end();
+
+    let finalResult: any = null;
+
+    // Handle stdout - parse JSON messages
+    pythonProcess.stdout.on('data', (data) => {
+      const output = data.toString();
+
+      // Try to parse each line as JSON
+      const lines = output.split('\n').filter(line => line.trim());
+      for (const line of lines) {
+        try {
+          const message = JSON.parse(line);
+
+          if (message.type === 'progress' && options.onProgress) {
+            options.onProgress(message.progress, message.message);
+          } else if (message.type === 'error' && options.onError) {
+            options.onError(message.error);
+          } else if (message.type === 'success') {
+            finalResult = message.result;
+          }
+        } catch (e) {
+          // Not JSON, treat as regular output
+          if (options.onOutput) {
+            options.onOutput(line);
+          }
+        }
+      }
+    });
+
+    // Handle stderr
+    pythonProcess.stderr.on('data', (data) => {
+      const error = data.toString();
+      log.error(`[${jobId}] stderr:`, error);
+      if (options.onError) {
+        options.onError(error);
+      }
+    });
+
+    // Handle process completion
+    pythonProcess.on('close', (code) => {
+      log.info(`[${jobId}] Workflow process exited with code ${code}`);
+      this.runningProcesses.delete(jobId);
+      if (options.onComplete) {
+        options.onComplete(code || 0, finalResult);
+      }
+    });
+
+    // Handle process errors
+    pythonProcess.on('error', (error) => {
+      log.error(`[${jobId}] Workflow process error:`, error);
+      this.runningProcesses.delete(jobId);
+      if (options.onError) {
+        options.onError(`Process error: ${error.message}`);
+      }
+    });
+
+    return pythonProcess;
   }
 }

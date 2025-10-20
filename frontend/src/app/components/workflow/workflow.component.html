@@ -19,8 +19,8 @@
       <div class="form-group">
         <label>Audio Sources</label>
         <div class="project-audio-list">
-          <p *ngIf="audioSources.length === 0" class="form-help">No audio sources. Click Add below.</p>
-          
+          <p *ngIf="audioSources.length === 0" class="form-help">No audio sources. Click Add or Auto-detect below.</p>
+
           <div *ngFor="let source of audioSources" class="project-audio-item">
             <div class="audio-item-info">
               <div class="audio-item-path">{{ source.name }}</div>
@@ -46,27 +46,63 @@
             </div>
           </div>
         </div>
-        <button type="button" class="btn btn-secondary mt-2" (click)="addAudioSource()">➕ Add Audio</button>
+        <div class="button-row mt-2">
+          <button type="button" class="btn btn-secondary" (click)="addAudioSource()">➕ Add Audio</button>
+          <button type="button" class="btn btn-secondary" (click)="autoDetectAudioFiles()" [disabled]="!masterVideoPath">🔍 Auto-detect</button>
+        </div>
+      </div>
+
+      <!-- Master Projects -->
+      <div class="form-group">
+        <label>Master Projects</label>
+        <div class="master-projects-container">
+          <label class="checkbox-label">
+            <input type="checkbox" [(ngModel)]="masterSolo" (ngModelChange)="onMasterSoloChange($event)" />
+            <span class="checkbox-custom"></span>
+            <span class="master-project-label">Master SOLO</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" [(ngModel)]="masterDc" (ngModelChange)="onMasterDcChange($event)" />
+            <span class="checkbox-custom"></span>
+            <span class="master-project-label">Master DC</span>
+          </label>
+        </div>
       </div>
 
       <!-- XML Options -->
       <div class="form-group">
-        <label>XML Options</label>
-        <div class="xml-options-actions mb-2">
-          <button type="button" class="btn btn-small btn-secondary" (click)="selectAllXmlOptions()">All</button>
-          <button type="button" class="btn btn-small btn-secondary" (click)="deselectAllXmlOptions()">None</button>
+        <div class="accordion-header" (click)="toggleXmlAccordion()">
+          <label>Compound Clip Options</label>
+          <span class="accordion-icon">{{ xmlAccordionOpen ? '▼' : '▶' }}</span>
         </div>
-        <div class="xml-options-container">
-          <div *ngFor="let opt of xmlOptions" class="xml-option-item">
-            <label class="checkbox-label">
-              <input type="checkbox" [checked]="selectedXmlOptions.includes(opt.value)" (change)="toggleXmlOption(opt.value)" />
-              <span class="checkbox-custom"></span>
-              <div class="xml-option-info">
-                <span class="xml-option-name">{{ opt.label }}</span>
-                <span class="xml-option-desc">{{ opt.description }}</span>
-              </div>
-            </label>
+        <div class="accordion-content" [class.open]="xmlAccordionOpen">
+          <div class="xml-options-actions mb-2">
+            <button type="button" class="btn btn-small btn-secondary" (click)="selectAllXmlOptions()">All</button>
+            <button type="button" class="btn btn-small btn-secondary" (click)="deselectAllXmlOptions()">None</button>
           </div>
+          <div class="xml-options-container">
+            <div *ngFor="let opt of xmlOptions" class="xml-option-item">
+              <label class="checkbox-label">
+                <input type="checkbox" [checked]="selectedXmlOptions.includes(opt.value)" (change)="toggleXmlOption(opt.value)" />
+                <span class="checkbox-custom"></span>
+                <div class="xml-option-info">
+                  <span class="xml-option-name">{{ opt.label }}</span>
+                  <span class="xml-option-desc">{{ opt.description }}</span>
+                </div>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Progress Bar (always visible, disabled when not processing) -->
+      <div class="form-group">
+        <div class="inline-progress-container" [class.active]="isProcessing">
+          <div class="inline-progress-message">{{ currentMessage || 'Ready to process' }}</div>
+          <div class="inline-progress-bar-outer">
+            <div class="inline-progress-bar-inner" [style.width.%]="currentProgress"></div>
+          </div>
+          <div class="inline-progress-percent">{{ currentProgress }}%</div>
         </div>
       </div>
 
@@ -78,24 +114,6 @@
         <button *ngIf="isProcessing" class="btn btn-danger" (click)="cancelJob()">⏹ Cancel</button>
       </div>
 
-    </div>
-  </div>
-</div>
-
-<!-- Console Modal -->
-<div *ngIf="showConsole" class="modal-overlay" (click)="closeConsole()">
-  <div class="modal" (click)="$event.stopPropagation()">
-    <div class="modal-header">
-      <h3 class="modal-title">Console Output</h3>
-      <button class="modal-close" (click)="closeConsole()">✕</button>
-    </div>
-    <div class="modal-body">
-      <div class="console-output">
-        <pre>{{ consoleOutput.join('') }}</pre>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-secondary" (click)="closeConsole()">Close</button>
     </div>
   </div>
 </div>

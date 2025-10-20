@@ -103,10 +103,22 @@ export class ProcessingService {
   /**
    * Handle workflow output
    */
-  private handleWorkflowOutput(data: { jobId: string; type: string; data: string }): void {
+  private handleWorkflowOutput(data: { jobId: string; type: string; data: string; progress?: number }): void {
     const currentJob = this.currentJob$.value;
     if (!currentJob || currentJob.id !== data.jobId) return;
 
+    // Handle progress updates
+    if (data.type === 'progress' && data.progress !== undefined) {
+      const updatedJob = {
+        ...currentJob,
+        progress: data.progress,
+        message: data.data
+      };
+      this.currentJob$.next(updatedJob);
+      return;
+    }
+
+    // Handle regular output
     const output = [...currentJob.output, data.data];
     const updatedJob = {
       ...currentJob,

@@ -32,12 +32,18 @@ export class WorkflowComponent implements OnInit {
   // XML options
   xmlOptions = XML_OPTIONS;
   selectedXmlOptions: string[] = [];
+  xmlAccordionOpen = false;
+
+  // Master projects
+  masterSolo = false;
+  masterDc = false;
 
   // Processing
   isProcessing = false;
-  showConsole = false;
   consoleOutput: string[] = [];
   currentJobId = '';
+  currentProgress = 0;
+  currentMessage = '';
 
   // File browser
   showFileBrowser = false;
@@ -56,11 +62,8 @@ export class WorkflowComponent implements OnInit {
         this.isProcessing = job.status === 'running';
         this.consoleOutput = job.output;
         this.currentJobId = job.id;
-
-        // Auto-open console when job starts
-        if (job.status === 'running' && !this.showConsole) {
-          this.showConsole = true;
-        }
+        this.currentProgress = job.progress;
+        this.currentMessage = job.message;
       } else {
         this.isProcessing = false;
       }
@@ -122,6 +125,55 @@ export class WorkflowComponent implements OnInit {
     this.audioSources = this.audioSources.filter(s => s.id !== id);
   }
 
+  // Auto-detect audio files
+  async autoDetectAudioFiles() {
+    if (!this.masterVideoPath) {
+      return;
+    }
+
+    try {
+      const result = await this.electronService.autoDetectAudio(this.masterVideoPath);
+
+      if (result.success && result.audioFiles) {
+        const audioFiles = result.audioFiles;
+        const audioTypeMap: { [key: string]: AudioSourceType } = {
+          'mic-1': 'mic1',
+          'mic-2': 'mic2',
+          'mic-3': 'mic3',
+          'mic-4': 'mic4',
+          'screen': 'screen',
+          'game': 'game',
+          'sound-effects': 'soundEffects',
+          'bluetooth': 'bluetooth'
+        };
+
+        // Clear existing audio sources
+        this.audioSources = [];
+
+        // Add detected audio files
+        for (const [audioType, audioPath] of Object.entries(audioFiles)) {
+          const fileName = audioPath.split('/').pop() || '';
+          const mappedType = audioTypeMap[audioType];
+
+          if (mappedType) {
+            const audioSource: AudioSource = {
+              id: `audio_${Date.now()}_${audioType}`,
+              path: audioPath,
+              name: fileName,
+              type: mappedType,
+              syncFix: false,
+              applyDrift: false
+            };
+
+            this.audioSources.push(audioSource);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error auto-detecting audio:', error);
+    }
+  }
+
   getAvailableAudioTypes(currentType: string): AudioSourceType[] {
     const usedTypes = this.audioSources
       .filter(s => s.type && s.type !== currentType)
@@ -170,23 +222,59 @@ export class WorkflowComponent implements OnInit {
     this.selectedXmlOptions = [];
   }
 
+  toggleXmlAccordion() {
+    this.xmlAccordionOpen = !this.xmlAccordionOpen;
+  }
+
+  // Master project handlers
+  onMasterSoloChange(checked: boolean) {
+    this.masterSolo = checked;
+
+    // Auto-select required XML options
+    const soloOptions = ['camSolo', 'gsSolo', 'ssbSolo'];
+
+    if (checked) {
+      // Add SOLO options if not already selected
+      soloOptions.forEach(opt => {
+        if (!this.selectedXmlOptions.includes(opt)) {
+          this.selectedXmlOptions.push(opt);
+        }
+      });
+    } else {
+      // Remove SOLO options
+      this.selectedXmlOptions = this.selectedXmlOptions.filter(opt => !soloOptions.includes(opt));
+    }
+  }
+
+  onMasterDcChange(checked: boolean) {
+    this.masterDc = checked;
+
+    // Auto-select required XML options
+    const dcOptions = ['camDual', 'gsDual', 'ssbDual'];
+
+    if (checked) {
+      // Add DC options if not already selected
+      dcOptions.forEach(opt => {
+        if (!this.selectedXmlOptions.includes(opt)) {
+          this.selectedXmlOptions.push(opt);
+        }
+      });
+    } else {
+      // Remove DC options
+      this.selectedXmlOptions = this.selectedXmlOptions.filter(opt => !dcOptions.includes(opt));
+    }
+  }
+
   // Process workflow
   async processWorkflow() {
-    // Validation
-    if (!this.masterVideoPath) {
-      alert('Please select a master video file');
-      return;
-    }
-
-    if (this.audioSources.length === 0) {
-      alert('Please add at least one audio source');
+    // Validation - just return silently, button is disabled when invalid
+    if (!this.masterVideoPath || this.audioSources.length === 0) {
       return;
     }
 
     // Check if all audio sources have types assigned
     const unassignedAudio = this.audioSources.filter(s => !s.type);
     if (unassignedAudio.length > 0) {
-      alert('Please assign types to all audio sources');
       return;
     }
 
@@ -202,21 +290,28 @@ export class WorkflowComponent implements OnInit {
         }
       });
 
+      // Add master project options to xmlOptions if checked
+      const xmlOptionsToSend = [...this.selectedXmlOptions];
+      if (this.masterSolo && !xmlOptionsToSend.includes('masterSolo')) {
+        xmlOptionsToSend.push('masterSolo');
+      }
+      if (this.masterDc && !xmlOptionsToSend.includes('masterDc')) {
+        xmlOptionsToSend.push('masterDc');
+      }
+
       // Build options
       const options = {
         masterVideo: this.masterVideoPath,
         audioSources: audioSourcesObj,
         audioSyncSettings,
         videoSources: this.videoSources,
-        xmlOptions: this.selectedXmlOptions.length > 0 ? this.selectedXmlOptions : undefined
+        xmlOptions: xmlOptionsToSend.length > 0 ? xmlOptionsToSend : undefined
       };
 
       // Start workflow
       await this.processingService.startWorkflow(options);
-      this.showConsole = true;
     } catch (error) {
       console.error('Error starting workflow:', error);
-      alert('Error starting workflow: ' + error);
     }
   }
 
@@ -225,10 +320,5 @@ export class WorkflowComponent implements OnInit {
     if (confirm('Are you sure you want to cancel the current job?')) {
       await this.processingService.cancelJob();
     }
-  }
-
-  // Console control
-  closeConsole() {
-    this.showConsole = false;
   }
 }

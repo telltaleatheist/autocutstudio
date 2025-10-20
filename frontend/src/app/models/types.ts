@@ -81,7 +81,5 @@ export const XML_OPTIONS = [
   { value: 'gsSolo', label: 'GS Solo', description: 'Game share with single camera' },
   { value: 'gsDual', label: 'GS Dual', description: 'Game share with dual camera' },
   { value: 'ssbSolo', label: 'SSB Solo', description: 'Screen share big with single camera' },
-  { value: 'ssbDual', label: 'SSB Dual', description: 'Screen share big with dual camera' },
-  { value: 'masterSolo', label: 'Master SOLO', description: 'Complete solo project' },
-  { value: 'masterDC', label: 'Master DC', description: 'Complete dual camera project' }
+  { value: 'ssbDual', label: 'SSB Dual', description: 'Screen share big with dual camera' }
 ];

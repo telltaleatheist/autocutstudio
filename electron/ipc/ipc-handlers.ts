@@ -124,6 +124,64 @@ function setupFileSystemHandlers(windowService: WindowService): void {
       return { exists: false, error: error.message };
     }
   });
+
+  // Auto-detect audio files from master video directory
+  ipcMain.handle('auto-detect-audio', async (event, masterVideoPath: string) => {
+    try {
+      if (!masterVideoPath || !fs.existsSync(masterVideoPath)) {
+        return { success: false, error: 'Master video path is invalid' };
+      }
+
+      const dirPath = path.dirname(masterVideoPath);
+      const masterFilename = path.basename(masterVideoPath, path.extname(masterVideoPath));
+
+      // Extract session from master video filename
+      // Pattern 1: YYYY-MM-DD-N (e.g., 2024-01-15-1)
+      // Pattern 2: YYYY-MM-DD-label (e.g., 2024-01-15-morning)
+      const sessionMatch = masterFilename.match(/^(\d{4}-\d{2}-\d{2}(?:-\d+|-[a-zA-Z0-9]+)?)/);
+      if (!sessionMatch) {
+        return { success: false, error: 'Could not extract session from master video filename' };
+      }
+      const session = sessionMatch[1];
+      log.info(`Extracted session: ${session} from master video: ${masterFilename}`);
+
+      // Audio file patterns to match
+      const audioPatterns: { [key: string]: RegExp } = {
+        'mic-1': new RegExp(`^${session}.*(?:mic\\s*1|mic_1|mic1).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'mic-2': new RegExp(`^${session}.*(?:mic\\s*2|mic_2|mic2).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'mic-3': new RegExp(`^${session}.*(?:mic\\s*3|mic_3|mic3).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'mic-4': new RegExp(`^${session}.*(?:mic\\s*4|mic_4|mic4).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'screen': new RegExp(`^${session}.*(?:screen|desktop).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'game': new RegExp(`^${session}.*(?:game|gameplay).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'sound-effects': new RegExp(`^${session}.*(?:sound[\\s_-]?effects?|sfx).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'bluetooth': new RegExp(`^${session}.*(?:bluetooth|bt).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i')
+      };
+
+      // Scan directory for matching audio files
+      const items = fs.readdirSync(dirPath);
+      const detectedAudio: { [key: string]: string } = {};
+
+      for (const item of items) {
+        const itemPath = path.join(dirPath, item);
+        const stats = fs.statSync(itemPath);
+
+        if (stats.isFile()) {
+          for (const [audioType, pattern] of Object.entries(audioPatterns)) {
+            if (pattern.test(item) && !detectedAudio[audioType]) {
+              detectedAudio[audioType] = itemPath;
+              log.info(`Detected ${audioType}: ${item}`);
+              break; // Only match first occurrence of each type
+            }
+          }
+        }
+      }
+
+      return { success: true, audioFiles: detectedAudio };
+    } catch (error: any) {
+      log.error('Error auto-detecting audio:', error);
+      return { success: false, error: error.message };
+    }
+  });
 }
 
 /**
@@ -151,35 +209,24 @@ function setupPythonHandlers(): void {
       const jobId = `job_${Date.now()}`;
       log.info(`Starting workflow job: ${jobId}`, options);
 
-      // Build arguments for Python CLI
-      const args: string[] = [
-        '--master', options.masterVideo
-      ];
-
-      // Add audio sources
-      if (options.micAudio) args.push('--mic-audio', options.micAudio);
-
-      // Add optional parameters
-      if (options.threshold) args.push('--threshold', options.threshold);
-      if (options.mode) args.push('--mode', options.mode);
-      if (options.syncAudio) args.push('--sync-audio');
-      if (options.outputDir) args.push('--output-dir', options.outputDir);
-
-      // Execute the Python command
-      const process = pythonService.executePythonCommand(jobId, {
-        command: 'workflow',
-        args,
+      // Execute the workflow using the new electron_workflow.py script
+      const process = pythonService.executeWorkflow(jobId, {
+        inputData: options,
         onOutput: (data) => {
-          // Send output to renderer
+          // Send regular output to renderer
           event.sender.send('workflow-output', { jobId, type: 'stdout', data });
         },
         onError: (data) => {
           // Send error to renderer
           event.sender.send('workflow-output', { jobId, type: 'stderr', data });
         },
-        onComplete: (code) => {
+        onProgress: (progress, message) => {
+          // Send progress updates to renderer
+          event.sender.send('workflow-output', { jobId, type: 'progress', data: message, progress });
+        },
+        onComplete: (code, result) => {
           // Send completion to renderer
-          event.sender.send('workflow-complete', { jobId, exitCode: code });
+          event.sender.send('workflow-complete', { jobId, exitCode: code, result });
         }
       });
 

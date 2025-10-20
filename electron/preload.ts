@@ -12,6 +12,7 @@ export interface ElectronAPI {
   showInFolder: (filePath: string) => Promise<any>;
   openFile: (filePath: string) => Promise<any>;
   checkFileExists: (filePath: string) => Promise<{ exists: boolean }>;
+  autoDetectAudio: (masterVideoPath: string) => Promise<{ success: boolean; audioFiles?: { [key: string]: string }; error?: string }>;
 
   // Dependency checking
   checkDependencies: () => Promise<any>;
@@ -39,6 +40,7 @@ const electronAPI: ElectronAPI = {
   showInFolder: (filePath) => ipcRenderer.invoke('show-in-folder', filePath),
   openFile: (filePath) => ipcRenderer.invoke('open-file', filePath),
   checkFileExists: (filePath) => ipcRenderer.invoke('check-file-exists', filePath),
+  autoDetectAudio: (masterVideoPath) => ipcRenderer.invoke('auto-detect-audio', masterVideoPath),
 
   // Dependencies
   checkDependencies: () => ipcRenderer.invoke('check-dependencies'),

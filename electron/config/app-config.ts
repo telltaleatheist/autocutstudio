@@ -16,7 +16,7 @@ export class AppConfig {
   // Preload script path
   static preloadPath = AppConfig.isDevelopment
     ? path.join(AppConfig.appPath, 'dist-electron', 'preload', 'preload.js')
-    : path.join(AppConfig.appPath, 'dist-electron', 'preload', 'preload.js');
+    : path.join(AppConfig.appPath, 'dist-electron', 'main', 'electron', 'preload.js');
 
   // Frontend URL
   static frontendPath = AppConfig.isDevelopment
