@@ -89,6 +89,7 @@
     ],
     "mac": {
       "category": "public.app-category.video",
+      "icon": "build/icons/icon.icns",
       "target": [
         "dmg"
       ],
