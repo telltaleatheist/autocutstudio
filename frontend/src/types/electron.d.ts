@@ -11,6 +11,12 @@ export interface ElectronAPI {
   checkDependencies: () => Promise<any>;
   executeWorkflow: (options: any) => Promise<any>;
   cancelJob: (jobId: string) => Promise<any>;
+  applyAudioDrift: (options: {
+    inputPath: string;
+    driftFrames: number;
+    videoDuration: number;
+    fps: number;
+  }) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
   onWorkflowOutput: (callback: (data: any) => void) => void;
   onWorkflowComplete: (callback: (data: any) => void) => void;
   removeWorkflowListeners: () => void;

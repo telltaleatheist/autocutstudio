@@ -21,6 +21,14 @@ export interface ElectronAPI {
   executeWorkflow: (options: any) => Promise<any>;
   cancelJob: (jobId: string) => Promise<any>;
 
+  // Audio processing
+  applyAudioDrift: (options: {
+    inputPath: string;
+    driftFrames: number;
+    videoDuration: number;
+    fps: number;
+  }) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
+
   // Workflow events
   onWorkflowOutput: (callback: (data: any) => void) => void;
   onWorkflowComplete: (callback: (data: any) => void) => void;
@@ -48,6 +56,9 @@ const electronAPI: ElectronAPI = {
   // Python execution
   executeWorkflow: (options) => ipcRenderer.invoke('execute-workflow', options),
   cancelJob: (jobId) => ipcRenderer.invoke('cancel-job', jobId),
+
+  // Audio processing
+  applyAudioDrift: (options) => ipcRenderer.invoke('apply-audio-drift', options),
 
   // Workflow events
   onWorkflowOutput: (callback) => {

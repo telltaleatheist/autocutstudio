@@ -1,0 +1,32 @@
+.tabs-section {
+  background: var(--panel-bg);
+  border-bottom: 2px solid var(--border-color);
+  padding: 0;
+  margin-bottom: 2rem;
+}
+
+.tabs {
+  display: flex;
+  gap: 0;
+}
+
+.tab-link {
+  padding: 1rem 1.5rem;
+  text-decoration: none;
+  color: var(--text-secondary);
+  border-bottom: 3px solid transparent;
+  transition: all 0.2s ease;
+  font-weight: 500;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--primary-color);
+    background: var(--bg-hover);
+  }
+
+  &.active {
+    color: var(--primary-color);
+    border-bottom-color: var(--primary-color);
+    background: var(--bg-active);
+  }
+}

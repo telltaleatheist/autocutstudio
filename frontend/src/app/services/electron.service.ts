@@ -129,4 +129,17 @@ export class ElectronService {
       return window.electron.log(level, ...args);
     }
   }
+
+  // Audio drift correction
+  async applyAudioDrift(options: {
+    inputPath: string;
+    driftFrames: number;
+    videoDuration: number;
+    fps: number;
+  }): Promise<{ success: boolean; outputPath?: string; error?: string }> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return window.electron.applyAudioDrift(options);
+  }
 }

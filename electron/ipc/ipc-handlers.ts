@@ -1,5 +1,6 @@
 // electron/ipc/ipc-handlers.ts
 import { ipcMain, dialog, shell } from 'electron';
+import { spawn } from 'child_process';
 import * as log from 'electron-log';
 import { WindowService } from '../services/window-service';
 import { PythonService } from '../services/python-service';
@@ -19,6 +20,7 @@ export function setupIpcHandlers(windowService: WindowService, pythonSvc: Python
 
   setupFileSystemHandlers(windowService);
   setupDependencyHandlers();
+  setupAudioHandlers();
   setupPythonHandlers();
   setupUtilityHandlers();
 }
@@ -194,6 +196,95 @@ function setupDependencyHandlers(): void {
       return { success: true, dependencies: result };
     } catch (error: any) {
       log.error('Error checking dependencies:', error);
+      return { success: false, error: error.message };
+    }
+  });
+}
+
+/**
+ * Audio processing handlers
+ */
+function setupAudioHandlers(): void {
+  // Apply audio drift correction
+  ipcMain.handle('apply-audio-drift', async (event, options: {
+    inputPath: string;
+    driftFrames: number;
+    videoDuration: number;
+    fps: number;
+  }) => {
+    try {
+      log.info('Applying audio drift correction:', options);
+
+      const { inputPath, driftFrames, videoDuration, fps } = options;
+
+      // Validate inputs
+      if (!inputPath || !fs.existsSync(inputPath)) {
+        return { success: false, error: 'Input file does not exist' };
+      }
+
+      // Generate output path
+      const inputFile = path.parse(inputPath);
+      const driftSuffix = driftFrames < 0
+        ? `_drift_minus${Math.abs(driftFrames)}f`
+        : `_drift_plus${driftFrames}f`;
+      const outputPath = path.join(inputFile.dir, `${inputFile.name}${driftSuffix}${inputFile.ext}`);
+
+      // Execute Python script to apply drift correction
+      const jobId = `drift_${Date.now()}`;
+
+      return new Promise((resolve) => {
+        let outputData = '';
+        let errorData = '';
+
+        // Execute Python script directly
+        const pythonProcess = spawn('python3', [
+          path.join(__dirname, '../../cli/apply_audio_drift.py'),
+          '--input', inputPath,
+          '--drift-frames', driftFrames.toString(),
+          '--duration', videoDuration.toString(),
+          '--fps', fps.toString(),
+          '--output', outputPath
+        ]);
+
+        // Handle stdout
+        pythonProcess.stdout.on('data', (data: Buffer) => {
+          const output = data.toString();
+          outputData += output;
+          log.info('Drift correction output:', output);
+        });
+
+        // Handle stderr
+        pythonProcess.stderr.on('data', (data: Buffer) => {
+          const error = data.toString();
+          errorData += error;
+          log.error('Drift correction error:', error);
+        });
+
+        // Handle process completion
+        pythonProcess.on('close', (code: number | null) => {
+          if (code === 0 && fs.existsSync(outputPath)) {
+            log.info('Drift correction completed successfully:', outputPath);
+            resolve({ success: true, outputPath });
+          } else {
+            log.error('Drift correction failed with code:', code);
+            resolve({ success: false, error: errorData || 'Failed to apply drift correction' });
+          }
+        });
+
+        // Handle process errors
+        pythonProcess.on('error', (error: Error) => {
+          log.error('Drift correction process error:', error);
+          resolve({ success: false, error: error.message });
+        });
+
+        // Timeout after 5 minutes
+        setTimeout(() => {
+          pythonProcess.kill();
+          resolve({ success: false, error: 'Operation timed out after 5 minutes' });
+        }, 5 * 60 * 1000);
+      });
+    } catch (error: any) {
+      log.error('Error applying audio drift:', error);
       return { success: false, error: error.message };
     }
   });

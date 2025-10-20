@@ -1,10 +1,13 @@
 import { NgModule } from '@angular/core';
 import { RouterModule, Routes } from '@angular/router';
 import { WorkflowComponent } from './components/workflow/workflow.component';
+import { AudioEditorComponent } from './components/audio-editor/audio-editor.component';
 
 const routes: Routes = [
-  { path: '', component: WorkflowComponent },
-  { path: '**', redirectTo: '' }
+  { path: '', redirectTo: '/workflow', pathMatch: 'full' },
+  { path: 'workflow', component: WorkflowComponent },
+  { path: 'audio-editor', component: AudioEditorComponent },
+  { path: '**', redirectTo: '/workflow' }
 ];
 
 @NgModule({

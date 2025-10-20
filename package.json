@@ -17,7 +17,14 @@
     "dev": "npm run build:all && cross-env NODE_ENV=development electron .",
     "start": "npm run build:all && electron .",
     "package": "npm run clean && npm run build:all && electron-builder build",
-    "package:mac": "npm run clean && npm run build:all && electron-builder --mac"
+    "package:mac": "npm run clean && npm run build:all && electron-builder --mac",
+    "package:mac:arm64": "npm run clean && npm run build:all && electron-builder --mac --arm64",
+    "package:mac:x64": "npm run clean && npm run build:all && electron-builder --mac --x64",
+    "package:mac:universal": "npm run clean && npm run build:all && electron-builder --mac --universal",
+    "package:win": "npm run clean && npm run build:all && electron-builder --win",
+    "package:win:x64": "npm run clean && npm run build:all && electron-builder --win --x64",
+    "package:linux": "npm run clean && npm run build:all && electron-builder --linux",
+    "package:all": "npm run clean && npm run build:all && electron-builder --mac --win --linux"
   },
   "keywords": [
     "video",
@@ -91,7 +98,10 @@
       "category": "public.app-category.video",
       "icon": "build/icons/icon.icns",
       "target": [
-        "dmg"
+        {
+          "target": "dmg",
+          "arch": ["arm64"]
+        }
       ],
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
@@ -116,8 +126,34 @@
     },
     "win": {
       "target": [
-        "nsis"
-      ]
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icons/icon.ico",
+      "publisherName": "AutoCutStudio",
+      "verifyUpdateCodeSignature": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AutoCutStudio",
+      "perMachine": false,
+      "runAfterFinish": true
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
     },
     "linux": {
       "target": [

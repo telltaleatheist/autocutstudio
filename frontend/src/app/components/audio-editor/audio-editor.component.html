@@ -1,0 +1,120 @@
+<div class="audio-editor-container">
+  <div class="panel">
+    <div class="panel-header">
+      <h4 class="panel-title">🎵 Audio Speed Adjustment</h4>
+    </div>
+    <div class="panel-content">
+
+      <div class="form-group">
+        <label>Audio Files</label>
+        <p class="form-help">
+          Adjust audio speed to compensate for clock drift between recording devices.
+          Negative drift values speed up (shrink) audio, positive values slow down (expand) audio.
+        </p>
+
+        <div class="audio-files-list">
+          <p *ngIf="audioFiles.length === 0" class="form-help">No audio files. Click Add Audio below.</p>
+
+          <div *ngFor="let file of audioFiles" class="audio-file-item">
+            <div class="audio-file-header">
+              <div class="audio-file-name">{{ file.name }}</div>
+              <button type="button" class="btn btn-small btn-danger" (click)="removeAudioFile(file.id)">✕</button>
+            </div>
+
+            <div class="audio-file-controls">
+              <div class="control-row">
+                <div class="control-group">
+                  <label class="control-label">Drift (frames):</label>
+                  <input
+                    type="number"
+                    [(ngModel)]="file.driftFrames"
+                    [name]="'drift_' + file.id"
+                    class="input-small"
+                    step="1"
+                    [disabled]="file.processing"
+                  />
+                </div>
+
+                <div class="control-group">
+                  <label class="control-label">Duration (sec):</label>
+                  <input
+                    type="number"
+                    [(ngModel)]="file.videoDuration"
+                    [name]="'duration_' + file.id"
+                    class="input-small"
+                    step="0.1"
+                    [disabled]="file.processing"
+                  />
+                </div>
+
+                <div class="control-group">
+                  <label class="control-label">FPS:</label>
+                  <input
+                    type="number"
+                    [(ngModel)]="file.fps"
+                    [name]="'fps_' + file.id"
+                    class="input-small"
+                    step="0.01"
+                    [disabled]="file.processing"
+                  />
+                </div>
+              </div>
+
+              <div class="info-row">
+                <div class="info-item">
+                  <span class="info-label">Speed:</span>
+                  <span class="info-value">{{ getSpeedDescription(file) }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Factor:</span>
+                  <span class="info-value">{{ getCorrectionFactor(file) }}</span>
+                </div>
+              </div>
+
+              <div class="action-row">
+                <button
+                  type="button"
+                  class="btn btn-primary btn-small"
+                  (click)="applyDriftCorrection(file)"
+                  [disabled]="file.processing || file.driftFrames === 0"
+                >
+                  {{ file.processing ? '⏳ Processing...' : '🎯 Apply Correction' }}
+                </button>
+
+                <button
+                  *ngIf="file.completed && file.outputPath"
+                  type="button"
+                  class="btn btn-secondary btn-small"
+                  (click)="showInFolder(file)"
+                >
+                  📁 Show Output
+                </button>
+              </div>
+
+              <div *ngIf="file.error" class="error-message">
+                ⚠️ {{ file.error }}
+              </div>
+
+              <div *ngIf="file.completed && !file.error" class="success-message">
+                ✓ Saved to: {{ file.outputPath }}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="button-row mt-2">
+          <button type="button" class="btn btn-secondary" (click)="addAudioFile()">➕ Add Audio</button>
+          <button
+            type="button"
+            class="btn btn-primary"
+            (click)="applyDriftCorrectionToAll()"
+            [disabled]="audioFiles.length === 0"
+          >
+            🎯 Process All
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>

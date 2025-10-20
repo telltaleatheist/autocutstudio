@@ -9,6 +9,7 @@ import { FileBrowserComponent } from './components/file-browser/file-browser.com
 import { AudioSourcesComponent } from './components/audio-sources/audio-sources.component';
 import { ConsoleOutputComponent } from './components/console-output/console-output.component';
 import { ResultsComponent } from './components/results/results.component';
+import { AudioEditorComponent } from './components/audio-editor/audio-editor.component';
 
 @NgModule({
   declarations: [
@@ -17,7 +18,8 @@ import { ResultsComponent } from './components/results/results.component';
     FileBrowserComponent,
     AudioSourcesComponent,
     ConsoleOutputComponent,
-    ResultsComponent
+    ResultsComponent,
+    AudioEditorComponent
   ],
   imports: [
     BrowserModule,
