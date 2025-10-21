@@ -7,6 +7,7 @@ import uuid
 import datetime
 import subprocess
 import json
+import sys
 
 from ..xml_utils import FCPXMLUtils
 
@@ -52,11 +53,11 @@ class MasterProjectGenerator:
                 else:
                     self.detected_framerate = "29.97"  # Default fallback
                 
-                print(f"Detected framerate: {self.detected_framerate} fps")
+                print(f"Detected framerate: {self.detected_framerate} fps", file=sys.stderr)
                 return self.detected_framerate
-                
+
         except Exception as e:
-            print(f"Could not detect framerate, defaulting to 29.97: {e}")
+            print(f"Could not detect framerate, defaulting to 29.97: {e}", file=sys.stderr)
             self.detected_framerate = "29.97"
             return self.detected_framerate
     
@@ -150,10 +151,11 @@ class MasterProjectGenerator:
         numerator = int(parts[0])
         denominator = int(parts[1])
 
+        # Convert to seconds first
+        time_in_seconds = numerator / denominator
+
         if self.detected_framerate == "29.97":
             # For 29.97fps, frame duration is 1001/30000s
-            # Convert to seconds, round to nearest frame, convert back
-            time_in_seconds = numerator / denominator
             frame_duration = 1001 / 30000  # 29.97fps frame duration
 
             # Round to nearest frame
@@ -163,12 +165,10 @@ class MasterProjectGenerator:
             aligned_numerator = frame_number * 1001
             aligned_denominator = 30000
 
-            # Do NOT simplify the fraction - keep consistent denominator
             return f"{aligned_numerator}/{aligned_denominator}s"
 
         elif self.detected_framerate == "30":
             # For 30fps, frame duration is 1/30s
-            time_in_seconds = numerator / denominator
             frame_duration = 1 / 30
 
             # Round to nearest frame
@@ -177,8 +177,34 @@ class MasterProjectGenerator:
             # Convert back to fractional format
             return f"{frame_number}/30s"
 
-        # For other framerates, return as-is
-        return time_str
+        elif self.detected_framerate == "23.976":
+            # For 23.976fps, frame duration is 1001/24000s
+            frame_duration = 1001 / 24000
+
+            # Round to nearest frame
+            frame_number = round(time_in_seconds / frame_duration)
+
+            # Convert back to fractional format
+            aligned_numerator = frame_number * 1001
+            aligned_denominator = 24000
+
+            return f"{aligned_numerator}/{aligned_denominator}s"
+
+        elif self.detected_framerate == "24":
+            # For 24fps, frame duration is 1/24s
+            frame_duration = 1 / 24
+
+            # Round to nearest frame
+            frame_number = round(time_in_seconds / frame_duration)
+
+            return f"{frame_number}/24s"
+
+        # For other framerates, convert to 30000 denominator as fallback
+        frame_duration = 1001 / 30000
+        frame_number = round(time_in_seconds / frame_duration)
+        aligned_numerator = frame_number * 1001
+        aligned_denominator = 30000
+        return f"{aligned_numerator}/{aligned_denominator}s"
     
     def _convert_time_format(self, time_str: str) -> str:
         """Convert and align time format based on detected framerate."""
@@ -219,22 +245,16 @@ class MasterProjectGenerator:
             List of paths to generated project files (may be multiple if split into parts)
         """
 
-        print(f"Generating {project_type} master project...")
-        print(f"CAM: {cam_xml_path}")
-        print(f"GS: {gs_xml_path}")
-        print(f"SSB: {ssb_xml_path}")
+        # Only print the essential first line - details go to stderr
+        print(f"Generating {project_type} master project...", file=sys.stderr)
 
         # Extract compound info from each XML
         cam_id, cam_media, cam_cuts = self._extract_compound_info(cam_xml_path)
         gs_id, gs_media, _ = self._extract_compound_info(gs_xml_path)
         ssb_id, ssb_media, _ = self._extract_compound_info(ssb_xml_path)
-        
-        print(f"Found compounds: CAM={cam_id}, GS={gs_id}, SSB={ssb_id}")
-        print(f"Found {len(cam_cuts)} cuts in CAM timeline")
 
         # Split cuts into segments (automatically determined by total duration)
         segments = self._split_clips_into_segments(cam_cuts)
-        print(f"Split into {len(segments)} segments")
 
         # Extract all resources from all three XMLs
         all_resources = {}
@@ -258,8 +278,6 @@ class MasterProjectGenerator:
             part_num = segment_idx + 1
             part_suffix = f" part {part_num}" if len(segments) > 1 else ""
 
-            print(f"\nGenerating part {part_num}/{len(segments)} ({len(segment_cuts)} cuts)...")
-
             output_path_for_segment = self._generate_project_segment(
                 cam_media, gs_media, ssb_media,
                 segment_cuts, all_resources,
@@ -268,12 +286,11 @@ class MasterProjectGenerator:
             )
             output_paths.append(output_path_for_segment)
 
+        # Only log to stderr, not stdout (to avoid interfering with progress bar)
         if len(output_paths) == 1:
-            print(f"\nMaster project saved: {output_paths[0]}")
+            print(f"Master project saved: {output_paths[0]}", file=sys.stderr)
         else:
-            print(f"\nMaster project split into {len(output_paths)} parts:")
-            for path in output_paths:
-                print(f"  - {path}")
+            print(f"Master project split into {len(output_paths)} parts", file=sys.stderr)
 
         return output_paths  # Return all paths
 
@@ -563,8 +580,6 @@ class MasterProjectGenerator:
 
             # Calculate next expected offset to maintain continuity
             expected_offset = self._add_time_fractions(converted_offset, converted_duration)
-
-        print(f"Created timeline with {len(cam_cuts)} cuts")
         
         # Add smart collections
         self._add_smart_collections(library)
@@ -740,18 +755,20 @@ class MasterProjectGenerator:
         return best_index
 
     def _split_clips_into_segments(self, ref_clips: List[ET.Element]) -> List[List[ET.Element]]:
-        """Split ref_clips into equal segments based on total duration.
+        """Split ref_clips into roughly equal ~1 hour segments based on total duration.
 
         Logic:
-        - Calculate total hours (rounded down to nearest whole hour)
-        - Split into that many equal segments
-        - Each segment will be ~1 hour or less (max 1.5 hours for short videos)
+        - Calculate total hours
+        - Determine number of segments: round(total_hours) with minimum of 1
+        - Split into that many equal segments at nearest cut points
+        - Each segment will be approximately 1 hour (or total/segments if < 1 hour)
 
         Examples:
-        - 3h15m → 3 segments of ~1h5m each
-        - 15h23m → 15 segments of ~1h1m each
-        - 2h30m → 2 segments of ~1h15m each
-        - 45m → 1 segment (under 1 hour, no split)
+        - 1h45m → 2 segments of ~52m each (round(1.75) = 2)
+        - 5h15m → 5 segments of ~1h3m each (round(5.25) = 5)
+        - 3h15m → 3 segments of ~1h5m each (round(3.25) = 3)
+        - 2h30m → 3 segments of ~50m each (round(2.5) = 3)
+        - 45m → 1 segment (round(0.75) = 1, under 1 hour, no split)
 
         Args:
             ref_clips: List of ref-clip elements to split
@@ -769,20 +786,15 @@ class MasterProjectGenerator:
         total_seconds = last_offset + last_duration
         total_hours = total_seconds / 3600
 
-        print(f"Total duration: {total_hours:.2f} hours ({total_seconds:.1f} seconds)")
+        # Calculate number of segments based on total hours (rounded to nearest)
+        num_segments = max(1, round(total_hours))
 
-        # Calculate number of segments based on total hours (rounded down)
-        num_segments = int(total_hours)
-
-        # If less than 1 hour, don't split
-        if num_segments < 1:
-            print(f"Duration < 1 hour, returning single segment")
+        # If less than 1 hour (rounds to 1), don't split
+        if num_segments == 1:
             return [ref_clips]
 
         # Calculate segment duration (divide total by number of segments for equal parts)
         segment_seconds = total_seconds / num_segments
-
-        print(f"Splitting into {num_segments} equal segments of ~{segment_seconds/3600:.2f}h each")
 
         segments = []
         current_segment_start = 0
@@ -795,13 +807,6 @@ class MasterProjectGenerator:
             if segment_num == num_segments - 1:
                 segment_clips = ref_clips[current_segment_start:]
                 segments.append(segment_clips)
-
-                # Log segment info
-                segment_start_time = self._parse_time_to_seconds(segment_clips[0].get('offset', '0s'))
-                segment_end_time = self._parse_time_to_seconds(segment_clips[-1].get('offset', '0s')) + \
-                                  self._parse_time_to_seconds(segment_clips[-1].get('duration', '0s'))
-                segment_duration = segment_end_time - segment_start_time
-                print(f"  Part {segment_num + 1}: {len(segment_clips)} clips, {segment_duration/3600:.2f}h ({segment_duration/60:.0f}m)")
                 break
 
             # Find nearest cut point to target_time
@@ -814,13 +819,6 @@ class MasterProjectGenerator:
             # Add this segment
             segment_clips = ref_clips[current_segment_start:split_index]
             segments.append(segment_clips)
-
-            # Log segment info
-            segment_start_time = self._parse_time_to_seconds(segment_clips[0].get('offset', '0s'))
-            segment_end_time = self._parse_time_to_seconds(segment_clips[-1].get('offset', '0s')) + \
-                              self._parse_time_to_seconds(segment_clips[-1].get('duration', '0s'))
-            segment_duration = segment_end_time - segment_start_time
-            print(f"  Part {segment_num + 1}: {len(segment_clips)} clips, {segment_duration/3600:.2f}h ({segment_duration/60:.0f}m)")
 
             current_segment_start = split_index
 

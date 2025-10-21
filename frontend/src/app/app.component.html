@@ -1,42 +1,41 @@
-<!-- Navigation -->
-<nav class="navbar">
-  <div class="container">
-    <div class="nav-content">
-      <a href="#" class="logo">AutoCutStudio</a>
-      <div class="flex gap-2">
-        <button class="theme-toggle" (click)="toggleTheme()">
-          {{ currentTheme === 'dark' ? '☀️' : '🌙' }}
+<!-- App Layout with Top Header -->
+<div class="app-layout">
+  <!-- Content Area with Sidebar -->
+  <div class="content-wrapper">
+    <!-- Left Sidebar Navigation -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-logo">
+          <div class="logo-icon">🎬</div>
+          <div class="logo-text">
+            <div class="logo-title">AutoCutStudio</div>
+            <div class="logo-subtitle">Video Processor</div>
+          </div>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <a routerLink="/workflow" routerLinkActive="active" class="sidebar-link">
+          <div class="link-icon">🎬</div>
+          <div class="link-text">Workflow</div>
+        </a>
+        <a routerLink="/audio-editor" routerLinkActive="active" class="sidebar-link">
+          <div class="link-icon">🎵</div>
+          <div class="link-text">Audio Editor</div>
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <button class="theme-toggle-btn" (click)="toggleTheme()" title="Toggle theme">
+          <span class="toggle-icon">{{ currentTheme === 'dark' ? '☀️' : '🌙' }}</span>
+          <span class="toggle-text">{{ currentTheme === 'dark' ? 'Light' : 'Dark' }} Mode</span>
         </button>
       </div>
-    </div>
-  </div>
-</nav>
+    </aside>
 
-<!-- Hero Section -->
-<section class="hero">
-  <div class="container">
-    <h1 class="hero-title">Video Processing</h1>
-    <p class="hero-subtitle">Automated multi-camera video editing workflow for YouTube content creators</p>
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <router-outlet></router-outlet>
+    </main>
   </div>
-</section>
-
-<!-- Tab Navigation -->
-<section class="tabs-section">
-  <div class="container">
-    <div class="tabs">
-      <a routerLink="/workflow" routerLinkActive="active" class="tab-link">
-        🎬 Workflow
-      </a>
-      <a routerLink="/audio-editor" routerLinkActive="active" class="tab-link">
-        🎵 Audio Editor
-      </a>
-    </div>
-  </div>
-</section>
-
-<!-- Main Content -->
-<section class="section">
-  <div class="container">
-    <router-outlet></router-outlet>
-  </div>
-</section>
+</div>

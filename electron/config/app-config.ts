@@ -36,7 +36,12 @@ export class AppConfig {
     // In development, app.getAppPath() may return the Electron.app path
     // We need to use process.cwd() to get the actual project directory
     const rawAppPath = app.getAppPath();
-    AppConfig.appPath = AppConfig.isDevelopment ? process.cwd() : rawAppPath;
+
+    // Detect if we're running from the Electron.app bundle in node_modules
+    const isElectronApp = rawAppPath.includes('node_modules/electron/dist/Electron.app');
+
+    // Use process.cwd() if running from Electron.app or in dev mode
+    AppConfig.appPath = (AppConfig.isDevelopment || isElectronApp) ? process.cwd() : rawAppPath;
     AppConfig.resourcesPath = process.resourcesPath || AppConfig.appPath;
 
     // Preload script path

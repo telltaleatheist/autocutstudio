@@ -34,9 +34,9 @@ export class WorkflowComponent implements OnInit {
   selectedXmlOptions: string[] = [];
   xmlAccordionOpen = false;
 
-  // Master projects
-  masterSolo = false;
-  masterDc = false;
+  // Master projects (both checked by default)
+  masterSolo = true;
+  masterDc = true;
 
   // Processing
   isProcessing = false;

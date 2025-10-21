@@ -1,19 +1,32 @@
-<div class="audio-editor-container">
-  <div class="panel">
-    <div class="panel-header">
-      <h4 class="panel-title">🎵 Audio Speed Adjustment</h4>
+<div class="workflow-container">
+  <div class="workflow-header">
+    <div class="workflow-header-content">
+      <div class="workflow-icon">🎵</div>
+      <div class="workflow-header-text">
+        <h2 class="workflow-title">Audio Speed Adjustment</h2>
+        <p class="workflow-subtitle">Adjust audio speed to compensate for clock drift between recording devices</p>
+      </div>
     </div>
-    <div class="panel-content">
+  </div>
+  <div class="workflow-card">
+    <div class="workflow-body">
 
-      <div class="form-group">
-        <label>Audio Files</label>
-        <p class="form-help">
-          Adjust audio speed to compensate for clock drift between recording devices.
+      <!-- Audio Files Section -->
+      <div class="form-section">
+        <div class="form-section-header">
+          <div class="section-icon">🎤</div>
+          <label class="section-label">Audio Files</label>
+        </div>
+        <small class="input-hint" style="display: block; margin-bottom: 1rem;">
           Negative drift values speed up (shrink) audio, positive values slow down (expand) audio.
-        </p>
+        </small>
 
         <div class="audio-files-list">
-          <p *ngIf="audioFiles.length === 0" class="form-help">No audio files. Click Add Audio below.</p>
+          <div *ngIf="audioFiles.length === 0" class="empty-state">
+            <div class="empty-icon">🎤</div>
+            <p class="empty-text">No audio files added yet</p>
+            <p class="empty-hint">Click "Add Audio" below to get started</p>
+          </div>
 
           <div *ngFor="let file of audioFiles" class="audio-file-item">
             <div class="audio-file-header">
@@ -102,15 +115,19 @@
           </div>
         </div>
 
-        <div class="button-row mt-2">
-          <button type="button" class="btn btn-secondary" (click)="addAudioFile()">➕ Add Audio</button>
+        <div class="action-row">
+          <button type="button" class="btn-secondary-outline" (click)="addAudioFile()">
+            <span class="btn-icon">➕</span>
+            <span class="btn-text">Add Audio</span>
+          </button>
           <button
             type="button"
-            class="btn btn-primary"
+            class="btn-secondary-outline"
             (click)="applyDriftCorrectionToAll()"
             [disabled]="audioFiles.length === 0"
           >
-            🎯 Process All
+            <span class="btn-icon">🎯</span>
+            <span class="btn-text">Process All</span>
           </button>
         </div>
       </div>
