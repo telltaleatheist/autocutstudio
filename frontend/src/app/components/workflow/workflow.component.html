@@ -21,29 +21,17 @@
         <div class="project-audio-list">
           <p *ngIf="audioSources.length === 0" class="form-help">No audio sources. Click Add or Auto-detect below.</p>
 
-          <div *ngFor="let source of audioSources" class="project-audio-item">
-            <div class="audio-item-info">
-              <div class="audio-item-path">{{ source.name }}</div>
-            </div>
-            <div class="audio-item-controls">
-              <select class="audio-type-select" [(ngModel)]="source.type" [name]="'type_' + source.id">
-                <option value="">Select Type...</option>
-                <option *ngFor="let type of getAvailableAudioTypes(source.type)" [value]="type">
-                  {{ audioSourceLabels[type] }}
-                </option>
-              </select>
-              <label class="checkbox-label">
-                <input type="checkbox" [(ngModel)]="source.syncFix" />
-                <span class="checkbox-custom"></span>
-                29.97
-              </label>
-              <label class="checkbox-label">
-                <input type="checkbox" [(ngModel)]="source.applyDrift" />
-                <span class="checkbox-custom"></span>
-                Drift
-              </label>
-              <button type="button" class="btn btn-small btn-danger" (click)="removeAudioSource(source.id)">✕</button>
-            </div>
+          <div *ngFor="let source of audioSources" class="project-audio-item-compact">
+            <span class="audio-filename">{{ source.name }}</span>
+            <select class="audio-type-select-compact" [(ngModel)]="source.type" [name]="'type_' + source.id">
+              <option value="">Select Type...</option>
+              <option *ngFor="let type of getAvailableAudioTypes(source.type)" [value]="type">
+                {{ audioSourceLabels[type] }}
+              </option>
+            </select>
+            <button type="button" class="btn-remove-compact" (click)="removeAudioSource(source.id)" title="Remove">
+              <span class="remove-icon">✕</span>
+            </button>
           </div>
         </div>
         <div class="button-row mt-2">

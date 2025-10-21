@@ -319,27 +319,60 @@ class AutoEditor(BaseEditor):
             
             # Replace main timeline with ref-clips that reference the compound
             spine.clear()
-            
+
+            # Extract the correct denominator from frame_duration
+            # e.g., "1001/30000s" -> 30000
+            frame_dur_num, frame_dur_den = parse_time(frame_duration)
+            correct_denominator = frame_dur_den
+
+            print(f"Using correct time denominator: /{correct_denominator}s (from frame duration: {frame_duration})")
+
+            # Helper function to convert time values to correct denominator
+            def normalize_time(time_str, target_den):
+                """Convert time string to use target denominator."""
+                if time_str.endswith('s'):
+                    time_str = time_str[:-1]
+                if time_str == '0':
+                    return '0s'
+                if '/' in time_str:
+                    num, den = time_str.split('/')
+                    num, den = int(num), int(den)
+                    # Convert to target denominator: (num/den) * target_den
+                    new_num = int((num * target_den) / den)
+                    return f"{new_num}/{target_den}s"
+                else:
+                    # Simple number - multiply by target denominator
+                    return f"{int(time_str) * target_den}/{target_den}s"
+
             # Convert each original cut to a ref-clip
             cumulative_offset = 0
-            
+
             for i, clip in enumerate(clips):
                 ref_clip = ET.SubElement(spine, 'ref-clip')
                 ref_clip.set('ref', 'compound1')
                 ref_clip.set('name', compound_name)
-                
-                # Get duration and start
+
+                # Get duration and start from auto-editor's XML
                 clip_duration = clip.get('duration')
                 start = clip.get('start', '0s')
-                
-                # Parse duration
-                dur_num, dur_den = parse_time(clip_duration)
-                offset = f"{cumulative_offset}/{dur_den}s"
-                
+
+                # Normalize to correct denominator
+                normalized_duration = normalize_time(clip_duration, correct_denominator)
+                normalized_start = normalize_time(start, correct_denominator)
+
+                # Parse normalized duration to get numerator for offset calculation
+                dur_num, _ = parse_time(normalized_duration)
+                offset = f"{cumulative_offset}/{correct_denominator}s"
+
+                # Debug logging for first 3 clips
+                if i < 3:
+                    print(f"Clip {i}: Original duration={clip_duration}, start={start}")
+                    print(f"Clip {i}: Normalized duration={normalized_duration}, start={normalized_start}, offset={offset}")
+
                 ref_clip.set('offset', offset)  # Timeline position
-                ref_clip.set('duration', clip_duration)  # Duration of this segment
-                ref_clip.set('start', start)  # Which part of the compound to show
-                
+                ref_clip.set('duration', normalized_duration)  # Duration of this segment
+                ref_clip.set('start', normalized_start)  # Which part of the compound to show
+
                 # Update cumulative offset for next clip
                 cumulative_offset += dur_num
             

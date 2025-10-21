@@ -174,22 +174,28 @@ export class PythonService {
     // Handle stdout - parse JSON messages
     pythonProcess.stdout.on('data', (data) => {
       const output = data.toString();
+      log.info(`[${jobId}] Raw stdout:`, output);
 
       // Try to parse each line as JSON
       const lines = output.split('\n').filter(line => line.trim());
       for (const line of lines) {
         try {
           const message = JSON.parse(line);
+          log.info(`[${jobId}] Parsed JSON message:`, message);
 
           if (message.type === 'progress' && options.onProgress) {
+            log.info(`[${jobId}] Emitting progress: ${message.progress}% - ${message.message}`);
             options.onProgress(message.progress, message.message);
           } else if (message.type === 'error' && options.onError) {
+            log.error(`[${jobId}] Emitting error:`, message.error);
             options.onError(message.error);
           } else if (message.type === 'success') {
+            log.info(`[${jobId}] Workflow success:`, message.result);
             finalResult = message.result;
           }
         } catch (e) {
           // Not JSON, treat as regular output
+          log.info(`[${jobId}] Non-JSON output:`, line);
           if (options.onOutput) {
             options.onOutput(line);
           }

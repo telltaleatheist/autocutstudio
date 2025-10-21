@@ -1,5 +1,5 @@
 // src/app/services/electron.service.ts
-import { Injectable } from '@angular/core';
+import { Injectable, NgZone } from '@angular/core';
 import { Observable, Subject } from 'rxjs';
 
 @Injectable({
@@ -9,15 +9,23 @@ export class ElectronService {
   private workflowOutput$ = new Subject<{ jobId: string; type: string; data: string }>();
   private workflowComplete$ = new Subject<{ jobId: string; exitCode: number }>();
 
-  constructor() {
+  constructor(private ngZone: NgZone) {
     // Set up event listeners
     if (this.isElectron()) {
       window.electron.onWorkflowOutput((data) => {
-        this.workflowOutput$.next(data);
+        // Run inside Angular zone to trigger change detection
+        this.ngZone.run(() => {
+          console.log('[ElectronService] Received workflow-output, emitting to subscribers:', data);
+          this.workflowOutput$.next(data);
+        });
       });
 
       window.electron.onWorkflowComplete((data) => {
-        this.workflowComplete$.next(data);
+        // Run inside Angular zone to trigger change detection
+        this.ngZone.run(() => {
+          console.log('[ElectronService] Received workflow-complete, emitting to subscribers:', data);
+          this.workflowComplete$.next(data);
+        });
       });
     }
   }

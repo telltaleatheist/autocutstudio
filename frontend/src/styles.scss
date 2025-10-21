@@ -619,13 +619,102 @@ body {
 .audio-item-controls {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.audio-item-controls .btn-danger {
+    flex-shrink: 0;
+    min-width: 32px;
+    padding: 0.4rem 0.6rem;
+    font-size: 0.85rem;
 }
 
 .audio-source-actions {
     display: flex;
     gap: 8px;
     margin-top: 8px;
+}
+
+/* Compact Audio Items */
+.project-audio-item-compact {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+    background: transparent;
+    transition: background-color 0.2s ease;
+}
+
+.project-audio-item-compact:hover {
+    background: var(--bg-hover);
+}
+
+.project-audio-item-compact:last-child {
+    border-bottom: none;
+}
+
+.audio-filename {
+    flex: 1;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+
+.audio-type-select-compact {
+    flex-shrink: 0;
+    padding: 0.35rem 0.5rem;
+    font-size: 0.85rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    cursor: pointer;
+    min-width: 140px;
+    max-width: 180px;
+}
+
+.audio-type-select-compact:focus {
+    outline: none;
+    border-color: var(--primary-orange);
+    box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.1);
+}
+
+.btn-remove-compact {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border-color);
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    padding: 0;
+}
+
+.btn-remove-compact:hover {
+    background: #fee2e2;
+    border-color: #ef4444;
+    color: #dc2626;
+}
+
+[data-theme="dark"] .btn-remove-compact:hover {
+    background: rgba(239, 68, 68, 0.2);
+    border-color: #ef4444;
+    color: #f87171;
+}
+
+.btn-remove-compact .remove-icon {
+    font-size: 1rem;
+    line-height: 1;
 }
 
 /* Results */
@@ -1181,13 +1270,6 @@ body {
 .project-audio-item.unassigned {
     background: linear-gradient(135deg, var(--bg-card), rgba(255, 107, 53, 0.05));
     border-left: 3px solid var(--primary-orange);
-}
-
-.audio-item-controls {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    flex-wrap: wrap;
 }
 
 /* Corrections Status */
@@ -1781,22 +1863,21 @@ body {
 /* Inline Progress Bar */
 .inline-progress-container {
   padding: 0.75rem 1rem;
-  background: var(--bg-tertiary);
+  background: var(--bg-secondary);
   border-radius: var(--border-radius);
-  border: 1px solid var(--border-color);
-  opacity: 0.5;
+  border: 1px dashed var(--border-color);
   transition: all 0.3s ease;
 }
 
 .inline-progress-container.active {
-  opacity: 1;
   background: var(--bg-secondary);
-  border-color: var(--primary-orange);
+  border: 1px solid var(--primary-orange);
+  box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.1);
 }
 
 .inline-progress-message {
   font-size: 0.9rem;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   margin-bottom: 0.5rem;
   font-weight: 500;
   transition: color 0.3s ease;
@@ -1809,7 +1890,7 @@ body {
 .inline-progress-bar-outer {
   width: 100%;
   height: 8px;
-  background: var(--bg-primary);
+  background: var(--bg-tertiary);
   border-radius: 4px;
   overflow: hidden;
   margin-bottom: 0.35rem;
@@ -1820,6 +1901,7 @@ body {
   background: linear-gradient(90deg, var(--primary-orange), var(--light-orange));
   transition: width 0.3s ease;
   border-radius: 4px;
+  box-shadow: 0 0 8px rgba(255, 107, 53, 0.4);
 }
 
 .inline-progress-percent {

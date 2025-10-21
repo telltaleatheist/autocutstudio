@@ -19,28 +19,19 @@ let dependencyService: DependencyService;
 log.transports.console.level = 'info';
 log.transports.file.level = 'debug';
 
-// Single instance lock
-const gotTheLock = app.requestSingleInstanceLock();
-
-if (!gotTheLock) {
-  log.info('Another instance is already running. Exiting.');
-  app.quit();
-  process.exit(0);
-}
-
-// Handle second instance attempt
-app.on('second-instance', () => {
-  log.info('Second instance detected. Focusing main window.');
-  if (windowService) {
-    windowService.focusWindow();
-  }
-});
-
 // App is ready - start initialization
 app.whenReady().then(async () => {
   try {
-    // Initialize AppConfig
+    // Initialize AppConfig (includes single instance lock)
     AppConfig.initialize();
+
+    // Handle second instance attempt
+    app.on('second-instance', () => {
+      log.info('Second instance detected. Focusing main window.');
+      if (windowService) {
+        windowService.focusWindow();
+      }
+    });
     log.info('AutoCutStudio starting...');
     log.info(`App path: ${AppConfig.appPath}`);
     log.info(`Resources path: ${AppConfig.resourcesPath}`);

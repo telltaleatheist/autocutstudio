@@ -104,11 +104,18 @@ export class ProcessingService {
    * Handle workflow output
    */
   private handleWorkflowOutput(data: { jobId: string; type: string; data: string; progress?: number }): void {
+    console.log('[ProcessingService] Received workflow-output event:', data);
     const currentJob = this.currentJob$.value;
-    if (!currentJob || currentJob.id !== data.jobId) return;
+    console.log('[ProcessingService] Current job:', currentJob);
+
+    if (!currentJob || currentJob.id !== data.jobId) {
+      console.warn('[ProcessingService] Ignoring output - no matching job', { currentJobId: currentJob?.id, dataJobId: data.jobId });
+      return;
+    }
 
     // Handle progress updates
     if (data.type === 'progress' && data.progress !== undefined) {
+      console.log(`[ProcessingService] Updating progress: ${data.progress}% - ${data.data}`);
       const updatedJob = {
         ...currentJob,
         progress: data.progress,
@@ -119,6 +126,7 @@ export class ProcessingService {
     }
 
     // Handle regular output
+    console.log('[ProcessingService] Handling regular output:', data.data);
     const output = [...currentJob.output, data.data];
     const updatedJob = {
       ...currentJob,
@@ -133,9 +141,16 @@ export class ProcessingService {
    * Handle workflow completion
    */
   private handleWorkflowComplete(data: { jobId: string; exitCode: number }): void {
+    console.log('[ProcessingService] Received workflow-complete event:', data);
     const currentJob = this.currentJob$.value;
-    if (!currentJob || currentJob.id !== data.jobId) return;
+    console.log('[ProcessingService] Current job at completion:', currentJob);
 
+    if (!currentJob || currentJob.id !== data.jobId) {
+      console.warn('[ProcessingService] Ignoring completion - no matching job', { currentJobId: currentJob?.id, dataJobId: data.jobId });
+      return;
+    }
+
+    console.log(`[ProcessingService] Marking job as ${data.exitCode === 0 ? 'completed' : 'error'}`);
     const updatedJob = {
       ...currentJob,
       status: data.exitCode === 0 ? 'completed' as const : 'error' as const,
@@ -147,6 +162,7 @@ export class ProcessingService {
 
     this.currentJob$.next(updatedJob);
     this.addToHistory(updatedJob);
+    console.log('[ProcessingService] Job marked as complete and added to history');
   }
 
   /**

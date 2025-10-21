@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, ChangeDetectorRef } from '@angular/core';
 import { ElectronService } from '../../services/electron.service';
 import { ProcessingService } from '../../services/processing.service';
 import { AudioSource, AudioSourceType, AUDIO_SOURCE_LABELS, XML_OPTIONS } from '../../models/types';
@@ -52,21 +52,27 @@ export class WorkflowComponent implements OnInit {
 
   constructor(
     private electronService: ElectronService,
-    private processingService: ProcessingService
+    private processingService: ProcessingService,
+    private cdr: ChangeDetectorRef
   ) {}
 
   ngOnInit() {
     // Subscribe to processing updates
     this.processingService.getCurrentJob().subscribe(job => {
+      console.log('[WorkflowComponent] Received job update:', job);
       if (job) {
         this.isProcessing = job.status === 'running';
         this.consoleOutput = job.output;
         this.currentJobId = job.id;
         this.currentProgress = job.progress;
         this.currentMessage = job.message;
+        console.log(`[WorkflowComponent] Updated: progress=${this.currentProgress}%, message=${this.currentMessage}, isProcessing=${this.isProcessing}`);
       } else {
         this.isProcessing = false;
+        console.log('[WorkflowComponent] No active job');
       }
+      // Force change detection for updates from outside Angular zone (Electron IPC)
+      this.cdr.detectChanges();
     });
   }
 
@@ -267,18 +273,26 @@ export class WorkflowComponent implements OnInit {
 
   // Process workflow
   async processWorkflow() {
+    console.log('Process button clicked!');
+
     // Validation - just return silently, button is disabled when invalid
     if (!this.masterVideoPath || this.audioSources.length === 0) {
+      console.log('Validation failed: missing master video or audio sources');
+      alert('Please select a master video and add at least one audio source.');
       return;
     }
 
     // Check if all audio sources have types assigned
     const unassignedAudio = this.audioSources.filter(s => !s.type);
     if (unassignedAudio.length > 0) {
+      console.log('Validation failed: unassigned audio sources', unassignedAudio);
+      alert('Please assign types to all audio sources.');
       return;
     }
 
     try {
+      console.log('Building workflow options...');
+
       // Build audio sources object
       const audioSourcesObj: { [key: string]: string } = {};
       const audioSyncSettings: { [key: string]: boolean } = {};
@@ -308,10 +322,16 @@ export class WorkflowComponent implements OnInit {
         xmlOptions: xmlOptionsToSend.length > 0 ? xmlOptionsToSend : undefined
       };
 
+      console.log('Workflow options:', options);
+      console.log('Starting workflow...');
+
       // Start workflow
       await this.processingService.startWorkflow(options);
+
+      console.log('Workflow started successfully!');
     } catch (error) {
       console.error('Error starting workflow:', error);
+      alert('Error starting workflow: ' + error);
     }
   }
 

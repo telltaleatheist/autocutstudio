@@ -14,10 +14,11 @@
     "build:frontend": "cd frontend && npm run build",
     "build:electron": "tsc -p electron/tsconfig.electron.json",
     "build:preload": "tsc -p electron/tsconfig.preload.json",
-    "dev": "npm run build:all && cross-env NODE_ENV=development electron .",
+    "electron:dev": "npm run build:all && cross-env NODE_ENV=development electron .",
+    "dev": "npm run electron:dev",
     "start": "npm run build:all && electron .",
     "package": "npm run clean && npm run build:all && electron-builder build",
-    "package:mac": "npm run clean && npm run build:all && electron-builder --mac",
+    "package:mac": "npm run clean && npm run build:all && electron-builder --mac --arm64",
     "package:mac:arm64": "npm run clean && npm run build:all && electron-builder --mac --arm64",
     "package:mac:x64": "npm run clean && npm run build:all && electron-builder --mac --x64",
     "package:mac:universal": "npm run clean && npm run build:all && electron-builder --mac --universal",
@@ -43,7 +44,7 @@
     "@types/electron": "^1.6.12",
     "@types/node": "^22.15.3",
     "cross-env": "^7.0.3",
-    "electron": "^36.0.1",
+    "electron": "^32.3.3",
     "electron-builder": "^24.13.3",
     "typescript": "^5.8.3"
   },
@@ -100,7 +101,9 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["arm64"]
+          "arch": [
+            "arm64"
+          ]
         }
       ],
       "hardenedRuntime": true,
@@ -128,15 +131,21 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "portable",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "zip",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "build/icons/icon.ico",

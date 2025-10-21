@@ -163,19 +163,42 @@ function setupFileSystemHandlers(windowService: WindowService): void {
       const items = fs.readdirSync(dirPath);
       const detectedAudio: { [key: string]: string } = {};
 
+      // First pass: collect all matching files for each type
+      const candidatesByType: { [key: string]: string[] } = {};
+
+      for (const [audioType] of Object.entries(audioPatterns)) {
+        candidatesByType[audioType] = [];
+      }
+
       for (const item of items) {
         const itemPath = path.join(dirPath, item);
         const stats = fs.statSync(itemPath);
 
         if (stats.isFile()) {
           for (const [audioType, pattern] of Object.entries(audioPatterns)) {
-            if (pattern.test(item) && !detectedAudio[audioType]) {
-              detectedAudio[audioType] = itemPath;
-              log.info(`Detected ${audioType}: ${item}`);
-              break; // Only match first occurrence of each type
+            if (pattern.test(item)) {
+              candidatesByType[audioType].push(itemPath);
             }
           }
         }
+      }
+
+      // Second pass: prefer non-sb files, fall back to sb files
+      for (const [audioType, candidates] of Object.entries(candidatesByType)) {
+        if (candidates.length === 0) continue;
+
+        // Filter out files with " sb" or "_sb" in the name (case insensitive)
+        const nonSbFiles = candidates.filter(file => {
+          const basename = path.basename(file);
+          return !basename.match(/[\s_-]sb[\s_.-]/i) && !basename.match(/[\s_-]sb\.(wav|mp3|aac|flac|ogg|m4a)$/i);
+        });
+
+        // Use non-sb file if available, otherwise use first sb file
+        const selectedFile = nonSbFiles.length > 0 ? nonSbFiles[0] : candidates[0];
+        detectedAudio[audioType] = selectedFile;
+
+        const fileType = nonSbFiles.length > 0 ? 'non-sb' : 'sb';
+        log.info(`Detected ${audioType} (${fileType}): ${path.basename(selectedFile)}`);
       }
 
       return { success: true, audioFiles: detectedAudio };
@@ -305,18 +328,22 @@ function setupPythonHandlers(): void {
         inputData: options,
         onOutput: (data) => {
           // Send regular output to renderer
+          log.info(`[${jobId}] Sending workflow-output (stdout) to renderer:`, data);
           event.sender.send('workflow-output', { jobId, type: 'stdout', data });
         },
         onError: (data) => {
           // Send error to renderer
+          log.info(`[${jobId}] Sending workflow-output (stderr) to renderer:`, data);
           event.sender.send('workflow-output', { jobId, type: 'stderr', data });
         },
         onProgress: (progress, message) => {
           // Send progress updates to renderer
+          log.info(`[${jobId}] Sending workflow-output (progress) to renderer: ${progress}% - ${message}`);
           event.sender.send('workflow-output', { jobId, type: 'progress', data: message, progress });
         },
         onComplete: (code, result) => {
           // Send completion to renderer
+          log.info(`[${jobId}] Sending workflow-complete to renderer: exitCode=${code}`);
           event.sender.send('workflow-complete', { jobId, exitCode: code, result });
         }
       });
