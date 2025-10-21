@@ -1,233 +1,216 @@
-# Build & Package Instructions - Apple Silicon Mac
+# Building AutoCutStudio
 
-This document explains how to build and package AutoCutStudio for Apple Silicon Mac computers (M1/M2/M3/M4).
+This guide explains how to build self-contained distributable versions of AutoCutStudio for macOS.
+
+## Overview
+
+AutoCutStudio can be built as a **completely self-contained application** that includes:
+- ✅ Electron app with Angular frontend
+- ✅ Python 3.9 runtime
+- ✅ All Python dependencies (auto-editor, ffmpeg, etc.)
+- ✅ Complete conda environment
+
+The packaged app **does not require** users to install:
+- Python
+- Conda
+- ffmpeg
+- auto-editor
+- Any other dependencies
 
 ## Prerequisites
 
-### System Requirements
-- **macOS**: 11.0 (Big Sur) or later
-- **Apple Silicon**: M1, M2, M3, M4, or M1/M2 Ultra/Max (arm64 architecture)
+### For Building on Apple Silicon (M1/M2/M3)
 
-### Build Requirements (Developer Machine)
-- **Xcode Command Line Tools**: `xcode-select --install`
-- **Node.js**: 18+ (LTS recommended, avoid odd-numbered versions for production)
-- **npm**: 10+
+1. **macOS** (Apple Silicon)
+2. **Node.js** 18+ ([Download](https://nodejs.org/))
+3. **Miniconda** (arm64 version)
+   \`\`\`bash
+   # Install Miniconda for Apple Silicon
+   brew install --cask miniconda
+   \`\`\`
+4. **conda-pack** will be installed automatically by the build script
 
-### Runtime Requirements (End User Machine)
-The packaged application requires these tools to be pre-installed:
-- **Python 3.9+**: `brew install python3`
-- **ffmpeg & ffprobe**: `brew install ffmpeg`
-- **auto-editor**: `pip3 install auto-editor`
+### For Building for Intel Mac (x64)
 
-**Important:** All tools must be in the system PATH for the application to work properly.
+If you're on an **Apple Silicon Mac** but want to build for Intel Macs:
 
-## Installation (Developer Setup)
+1. Install **x64 version of Miniconda** using Rosetta:
+   \`\`\`bash
+   # Download and install x64 Miniconda
+   arch -x86_64 /bin/bash -c "\$(curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh)" -b -p /usr/local/Caskroom/miniconda/base
+   \`\`\`
 
-1. Clone the repository
-2. Install all dependencies:
-```bash
-npm run install:all
-```
+2. Create the environment using x64 conda:
+   \`\`\`bash
+   arch -x86_64 /usr/local/Caskroom/miniconda/base/bin/conda env create -f environment.yml
+   \`\`\`
 
-## Building the Application
+## Quick Start
 
-### Build Everything
-```bash
+### Build for Apple Silicon
+
+\`\`\`bash
+chmod +x build-apple-silicon.sh
+./build-apple-silicon.sh
+\`\`\`
+
+This will:
+1. Check all prerequisites
+2. Install npm dependencies
+3. Build the Electron app
+4. Bundle the Python environment
+5. Create a DMG installer in \`dist-electron/\`
+
+### Build for Intel Mac
+
+\`\`\`bash
+chmod +x build-intel-mac.sh
+./build-intel-mac.sh
+\`\`\`
+
+## Manual Build Process
+
+If you prefer to build manually:
+
+### 1. Install Dependencies
+
+\`\`\`bash
+# Install npm dependencies
+npm install
+
+# Create conda environment (if not already created)
+conda env create -f environment.yml
+\`\`\`
+
+### 2. Build for Apple Silicon (arm64)
+
+\`\`\`bash
+# Clean previous builds
+npm run clean
+
+# Build frontend and electron code
 npm run build:all
-```
 
-This command builds:
-- Frontend (Angular app)
-- Electron main process
-- Electron preload script
+# Bundle Python environment for arm64
+npm run bundle:python:arm64
 
-### Build Individual Components
-```bash
-npm run build:frontend  # Build Angular frontend only
-npm run build:electron  # Build Electron main process only
-npm run build:preload   # Build Electron preload script only
-```
-
-## Packaging for Apple Silicon Mac
-
-### Quick Package (Recommended)
-```bash
-npm run package:mac
-```
-
-This creates: `dist-electron/AutoCutStudio-1.0.0-arm64.dmg`
-
-### Alternative: Explicitly Specify arm64
-```bash
+# Package the app
 npm run package:mac:arm64
-```
+\`\`\`
 
-Both commands create a native Apple Silicon DMG optimized for M1/M2/M3/M4 chips.
+### 3. Build for Intel Mac (x64)
 
-### Build for Intel Mac (if needed)
-```bash
+\`\`\`bash
+# Clean previous builds
+npm run clean
+
+# Build frontend and electron code
+npm run build:all
+
+# Bundle Python environment for x64
+npm run bundle:python:x64
+
+# Package the app
 npm run package:mac:x64
-```
+\`\`\`
 
-Creates: `dist-electron/AutoCutStudio-1.0.0-x64.dmg` (runs via Rosetta 2 on Apple Silicon)
+### 4. Build for Both Architectures
 
-## Development
+\`\`\`bash
+npm run package:mac:both
+\`\`\`
 
-### Run in Development Mode
-```bash
-npm run dev
-```
+This creates separate DMG files for each architecture.
 
-This builds everything and launches the app with developer tools enabled.
+## Available Scripts
 
-### Run Built Application
-```bash
-npm start
-```
+### Build Scripts
+- \`npm run build:all\` - Build frontend and Electron code
+- \`npm run build:frontend\` - Build Angular frontend only
+- \`npm run build:electron\` - Build Electron main process only
 
-This builds and runs the production version locally (without packaging).
+### Python Bundling
+- \`npm run bundle:python\` - Bundle Python for current arch (arm64 default)
+- \`npm run bundle:python:arm64\` - Bundle Python for Apple Silicon
+- \`npm run bundle:python:x64\` - Bundle Python for Intel Mac
 
-## Clean Build Artifacts
+### Packaging
+- \`npm run package:mac:arm64\` - Package for Apple Silicon
+- \`npm run package:mac:x64\` - Package for Intel Mac
+- \`npm run package:mac:both\` - Package for both architectures
 
-```bash
-npm run clean      # Remove build artifacts
-npm run clean:all  # Remove all build artifacts including frontend dist
-```
+### Development
+- \`npm start\` - Run in development mode
+- \`npm run dev\` - Same as npm start
+- \`npm run clean\` - Clean build artifacts
+
+## Output
+
+After building, you'll find the DMG installer in:
+\`\`\`
+dist-electron/AutoCutStudio-{version}-{arch}.dmg
+\`\`\`
+
+Where:
+- \`{version}\` is the version from package.json (e.g., \`1.0.0\`)
+- \`{arch}\` is either \`arm64\` or \`x64\`
 
 ## Distribution
 
-### What You Get
-After running `npm run package:mac`, you'll find:
-- **DMG File**: `dist-electron/AutoCutStudio-1.0.0-arm64.dmg`
-  - Drag-and-drop installer
-  - Native performance on Apple Silicon Macs
-  - Works on M1/M2/M3/M4, including Ultra and Max variants
-  - Requires macOS 11.0 (Big Sur) or later
+The generated DMG file is completely self-contained and can be distributed to users who:
+- Have macOS 10.15 (Catalina) or later
+- Don't have Python, conda, or any dependencies installed
+- Just want to drag-and-drop to install
 
-### Installing on User Machine
-1. Double-click the DMG file
-2. Drag AutoCutStudio to the Applications folder
-3. Eject the DMG
-4. Launch AutoCutStudio from Applications
+### File Sizes
 
-**First Launch:** macOS may show a security warning. Users should:
-1. Right-click the app and select "Open"
-2. Click "Open" in the security dialog
-3. Or go to System Settings > Privacy & Security > Allow
-
-## User Requirements
-
-Before distributing, make sure end users have installed:
-
-```bash
-# Install Homebrew (if not already installed)
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# Install Python 3
-brew install python3
-
-# Install ffmpeg (includes ffprobe)
-brew install ffmpeg
-
-# Install auto-editor
-pip3 install auto-editor
-
-# Verify installations
-python3 --version
-ffmpeg -version
-ffprobe -version
-auto-editor --version
-```
+Approximate sizes:
+- **arm64 DMG**: ~500-700 MB (includes Python + all dependencies)
+- **x64 DMG**: ~500-700 MB (includes Python + all dependencies)
 
 ## Troubleshooting
 
-### Build Fails
-1. **Install Xcode Command Line Tools:**
-   ```bash
-   xcode-select --install
-   ```
+### "conda: command not found"
 
-2. **Clear npm cache and rebuild:**
-   ```bash
-   npm run clean:all
-   rm -rf node_modules package-lock.json
-   npm cache clean --force
-   npm run install:all
-   npm run build:all
-   ```
+Make sure conda is in your PATH:
+\`\`\`bash
+# For Apple Silicon
+export PATH="/opt/homebrew/Caskroom/miniconda/base/bin:\$PATH"
 
-3. **Check Node version:**
-   ```bash
-   node --version  # Should be 18.x or higher
-   ```
+# For Intel Mac
+export PATH="/usr/local/Caskroom/miniconda/base/bin:\$PATH"
+\`\`\`
 
-### Python Not Found (Runtime Error)
-Make sure Python 3 is installed and in PATH:
-```bash
-which python3
-python3 --version
-```
+### "Environment 'autocutstudio' not found"
 
-### ffmpeg/ffprobe Not Found (Runtime Error)
-Make sure ffmpeg is installed:
-```bash
-which ffmpeg
-which ffprobe
-ffmpeg -version
-```
+Create the conda environment:
+\`\`\`bash
+# For Apple Silicon
+conda env create -f environment.yml
 
-### auto-editor Not Found (Runtime Error)
-Install or reinstall auto-editor:
-```bash
-pip3 install --upgrade auto-editor
-auto-editor --version
-```
+# For Intel Mac (from Apple Silicon)
+arch -x86_64 /usr/local/Caskroom/miniconda/base/bin/conda env create -f environment.yml
+\`\`\`
 
-### App Runs Slowly on Apple Silicon
-If the app runs slowly, you may have built an Intel (x64) version by mistake:
-1. Check which DMG you're using - should be `arm64.dmg` not `x64.dmg`
-2. Rebuild with: `npm run package:mac` (defaults to arm64)
-3. Make sure `package.json` has `"arch": ["arm64"]` in the mac target config
+### "Python bundling failed"
 
-### DMG Won't Open on User Machine
-- Ensure the Mac is running macOS 11.0 (Big Sur) or later
-- Try right-clicking and selecting "Open" instead of double-clicking
-- Check System Settings > Privacy & Security for blocked apps
+1. Make sure conda-pack is installed:
+   \`\`\`bash
+   conda install -c conda-forge conda-pack
+   \`\`\`
 
-## File Structure
+2. Check that the autocutstudio environment exists:
+   \`\`\`bash
+   conda list -n autocutstudio
+   \`\`\`
 
-After building, your project structure:
-```
-AutoCutStudioApp/
-├── dist-electron/
-│   ├── AutoCutStudio-1.0.0-arm64.dmg  # Distributable DMG (Apple Silicon)
-│   ├── mac/                            # Unpacked app
-│   └── mac-arm64/                      # Build artifacts
-├── frontend/dist/                      # Built Angular app
-├── dist-electron/main/                 # Built Electron code
-└── ...
-```
+## How It Works
 
-## Code Signing (Optional)
+### Python Bundling
 
-For distribution outside of personal use, you may want to sign the app with an Apple Developer certificate:
+1. **conda-pack** creates a portable tarball of the conda environment
+2. The environment is extracted to \`python-dist/darwin-{arch}/env/\`
+3. During app packaging, the **afterPack hook** copies this into the app
+4. At runtime, **PythonService** detects and uses the bundled Python
+5. If bundled Python is missing, it falls back to system Python
 
-1. Get an Apple Developer account ($99/year)
-2. Create a Developer ID Application certificate
-3. Export certificate as .p12 file
-4. Set environment variables:
-```bash
-export CSC_LINK=/path/to/certificate.p12
-export CSC_KEY_PASSWORD=your_password
-npm run package:mac
-```
-
-Signed apps won't show security warnings on first launch.
-
-## Support
-
-For issues or questions, please open an issue on GitHub.
-
----
-
-**Note:** This build configuration is optimized for Apple Silicon (M1/M2/M3/M4) Macs. For Intel Mac builds, use `npm run package:mac:x64` instead.

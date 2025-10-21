@@ -20,7 +20,7 @@ export interface WorkflowExecutionOptions {
   onComplete?: (code: number, result?: any) => void;
 }
 
-// Common installation paths
+// Common installation paths (fallback when bundled Python not found)
 const COMMON_PATHS = [
   '/usr/local/bin',
   '/opt/homebrew/bin',
@@ -39,6 +39,73 @@ const COMMON_PATHS = [
  */
 export class PythonService {
   private runningProcesses: Map<string, ChildProcess> = new Map();
+  private bundledPythonPath: string | null = null;
+
+  constructor() {
+    this.findBundledPython();
+  }
+
+  /**
+   * Find the bundled Python environment
+   */
+  private findBundledPython(): void {
+    const fs = require('fs');
+
+    // Check for bundled Python in the app resources
+    const pythonDir = path.join(AppConfig.resourcesPath, 'python', 'env', 'bin');
+    const pythonExecutable = path.join(pythonDir, 'python3');
+
+    if (fs.existsSync(pythonExecutable)) {
+      this.bundledPythonPath = pythonExecutable;
+      log.info('✅ Found bundled Python:', pythonExecutable);
+    } else {
+      log.warn('⚠️  Bundled Python not found, will use system Python');
+      log.warn('   Expected location:', pythonExecutable);
+    }
+  }
+
+  /**
+   * Get the Python path to use (bundled or system)
+   */
+  private getPythonPath(): string {
+    return this.bundledPythonPath || 'python3';
+  }
+
+  /**
+   * Get the Python environment configuration
+   */
+  private getPythonEnv(): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      PYTHONUNBUFFERED: '1' // Ensure real-time output
+    };
+
+    if (this.bundledPythonPath) {
+      // Use bundled Python environment
+      const pythonDir = path.dirname(this.bundledPythonPath);
+      const pythonHome = path.dirname(pythonDir); // Remove /bin
+
+      env.PATH = `${pythonDir}:${COMMON_PATHS}:${process.env.PATH || ''}`;
+      env.PYTHONHOME = pythonHome;
+      env.PYTHONPATH = AppConfig.appPath;
+      env.CONDA_PREFIX = pythonHome;
+      env.CONDA_DEFAULT_ENV = 'autocutstudio';
+
+      log.info('Using bundled Python environment:', {
+        pythonPath: this.bundledPythonPath,
+        pythonHome: pythonHome,
+        path: env.PATH
+      });
+    } else {
+      // Fallback to system Python
+      env.PATH = `${COMMON_PATHS}:${process.env.PATH || ''}`;
+      env.PYTHONPATH = AppConfig.appPath;
+
+      log.warn('Using system Python (bundled Python not available)');
+    }
+
+    return env;
+  }
 
   /**
    * Execute a Python CLI command
@@ -47,16 +114,11 @@ export class PythonService {
     log.info(`Executing Python command [${jobId}]:`, options.command, options.args);
 
     // Build the full command
-    const pythonPath = 'python3';
+    const pythonPath = this.getPythonPath();
     const scriptPath = path.join(AppConfig.cliPath, 'main.py');
 
-    // Set environment variables with enhanced PATH
-    const env = {
-      ...process.env,
-      PATH: `${COMMON_PATHS}:${process.env.PATH || ''}`,
-      PYTHONPATH: AppConfig.appPath,
-      PYTHONUNBUFFERED: '1' // Ensure real-time output
-    };
+    // Get environment variables
+    const env = this.getPythonEnv();
 
     // Spawn the Python process
     const pythonProcess = spawn(pythonPath, [scriptPath, options.command, ...options.args], {

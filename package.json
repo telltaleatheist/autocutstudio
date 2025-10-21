@@ -8,7 +8,7 @@
     "install:all": "npm install && npm run install:frontend && npm run install:electron",
     "install:frontend": "cd frontend && npm install",
     "install:electron": "cd electron && [ -f package.json ] && npm install || echo 'No electron/package.json found, skipping...'",
-    "clean": "rm -rf dist-electron mac-arm64 mac-arm64* *.dmg *.dmg.blockmap",
+    "clean": "rm -rf dist-electron python-dist *.dmg *.dmg.blockmap",
     "clean:all": "npm run clean && rm -rf frontend/dist",
     "build:all": "npm run build:frontend && npm run build:electron && npm run build:preload",
     "build:frontend": "cd frontend && npm run build",
@@ -17,11 +17,14 @@
     "electron:dev": "npm run build:all && cross-env NODE_ENV=development electron .",
     "dev": "npm run electron:dev",
     "start": "npm run build:all && electron .",
-    "package": "npm run clean && npm run build:all && electron-builder build",
-    "package:mac": "npm run clean && npm run build:all && electron-builder --mac --arm64",
-    "package:mac:arm64": "npm run clean && npm run build:all && electron-builder --mac --arm64",
-    "package:mac:x64": "npm run clean && npm run build:all && electron-builder --mac --x64",
-    "package:mac:universal": "npm run clean && npm run build:all && electron-builder --mac --universal",
+    "bundle:python:arm64": "cross-env BUILD_ARCH=arm64 node scripts/bundle-python.js",
+    "bundle:python:x64": "cross-env BUILD_ARCH=x64 node scripts/bundle-python.js",
+    "bundle:python": "npm run bundle:python:arm64",
+    "package": "npm run clean && npm run build:all && npm run bundle:python && electron-builder build",
+    "package:mac:arm64": "npm run clean && npm run build:all && npm run bundle:python:arm64 && electron-builder --mac --arm64",
+    "package:mac:x64": "npm run clean && npm run build:all && npm run bundle:python:x64 && electron-builder --mac --x64",
+    "package:mac:both": "npm run package:mac:arm64 && npm run package:mac:x64",
+    "package:mac:universal": "npm run clean && npm run build:all && npm run bundle:python:arm64 && npm run bundle:python:x64 && electron-builder --mac --universal",
     "package:win": "npm run clean && npm run build:all && electron-builder --win",
     "package:win:x64": "npm run clean && npm run build:all && electron-builder --win --x64",
     "package:linux": "npm run clean && npm run build:all && electron-builder --linux",
@@ -58,6 +61,7 @@
     "productName": "AutoCutStudio",
     "asar": true,
     "compression": "maximum",
+    "afterPack": "./scripts/afterPack.js",
     "directories": {
       "output": "dist-electron",
       "buildResources": "assets"
@@ -74,6 +78,10 @@
       {
         "from": "cli",
         "to": "cli"
+      },
+      {
+        "from": "environment.yml",
+        "to": "environment.yml"
       }
     ],
     "files": [
@@ -83,6 +91,7 @@
       "core/**/*.py",
       "cli/**/*.py",
       "config/**/*.yaml",
+      "environment.yml",
       "node_modules/**/*",
       "!**/node_modules/**/test/**",
       "!**/node_modules/**/tests/**",
@@ -102,7 +111,8 @@
         {
           "target": "dmg",
           "arch": [
-            "arm64"
+            "arm64",
+            "x64"
           ]
         }
       ],
