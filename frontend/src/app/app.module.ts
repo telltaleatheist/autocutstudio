@@ -10,6 +10,7 @@ import { AudioSourcesComponent } from './components/audio-sources/audio-sources.
 import { ConsoleOutputComponent } from './components/console-output/console-output.component';
 import { ResultsComponent } from './components/results/results.component';
 import { AudioEditorComponent } from './components/audio-editor/audio-editor.component';
+import { RelinkingComponent } from './components/relinking/relinking.component';
 
 @NgModule({
   declarations: [
@@ -19,7 +20,8 @@ import { AudioEditorComponent } from './components/audio-editor/audio-editor.com
     AudioSourcesComponent,
     ConsoleOutputComponent,
     ResultsComponent,
-    AudioEditorComponent
+    AudioEditorComponent,
+    RelinkingComponent
   ],
   imports: [
     BrowserModule,

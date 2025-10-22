@@ -75,12 +75,8 @@ echo "🔨 Building application..."
 npm run build:all
 echo ""
 
-# Bundle Python environment for x64
-echo "🐍 Bundling Python environment for Intel Mac..."
-# Temporarily override BUILD_ARCH for the bundling script
-export BUILD_ARCH=x64
-npm run bundle:python:x64
-echo ""
+# Note: Python files are bundled by electron-builder via extraResources
+# No separate Python bundling step needed
 
 # Package the app
 echo "📦 Creating DMG installer..."

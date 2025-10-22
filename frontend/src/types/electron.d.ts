@@ -22,6 +22,8 @@ export interface ElectronAPI {
   removeWorkflowListeners: () => void;
   getAppVersion: () => Promise<string>;
   log: (level: string, ...args: any[]) => Promise<void>;
+  getAssetConfig: () => Promise<{ success: boolean; assetPaths?: any; error?: string }>;
+  saveAssetConfig: (assetPaths: any) => Promise<{ success: boolean; error?: string }>;
 }
 
 declare global {

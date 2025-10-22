@@ -2,11 +2,13 @@ import { NgModule } from '@angular/core';
 import { RouterModule, Routes } from '@angular/router';
 import { WorkflowComponent } from './components/workflow/workflow.component';
 import { AudioEditorComponent } from './components/audio-editor/audio-editor.component';
+import { RelinkingComponent } from './components/relinking/relinking.component';
 
 const routes: Routes = [
   { path: '', redirectTo: '/workflow', pathMatch: 'full' },
   { path: 'workflow', component: WorkflowComponent },
   { path: 'audio-editor', component: AudioEditorComponent },
+  { path: 'relinking', component: RelinkingComponent },
   { path: '**', redirectTo: '/workflow' }
 ];
 

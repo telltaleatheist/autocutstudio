@@ -50,10 +50,8 @@ echo "🔨 Building application..."
 npm run build:all
 echo ""
 
-# Bundle Python environment for arm64
-echo "🐍 Bundling Python environment for Apple Silicon..."
-npm run bundle:python:arm64
-echo ""
+# Note: Python files are bundled by electron-builder via extraResources
+# No separate Python bundling step needed
 
 # Package the app
 echo "📦 Creating DMG installer..."

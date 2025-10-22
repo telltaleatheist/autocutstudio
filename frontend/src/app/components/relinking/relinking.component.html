@@ -1,0 +1,75 @@
+<div class="relinking-page">
+  <div class="page-header">
+    <h1>Asset Relinking</h1>
+    <p class="subtitle">Link your asset files to their locations on this computer</p>
+  </div>
+
+  <!-- Status Banner -->
+  <div class="status-banner" [class.warning]="invalidCount > 0" [class.success]="allPathsValid">
+    <div class="status-content">
+      <span class="status-icon">{{ allPathsValid ? '✓' : '⚠' }}</span>
+      <span class="status-text">
+        <span *ngIf="allPathsValid">All asset paths are valid</span>
+        <span *ngIf="!allPathsValid">{{ invalidCount }} asset path(s) need to be relinked</span>
+      </span>
+    </div>
+  </div>
+
+  <!-- Folder Selector -->
+  <div class="folder-selector-card">
+    <div class="card-header">
+      <h2>Auto-Detect from Folder</h2>
+      <p>Select a folder containing your assets to automatically match files by name</p>
+    </div>
+    <div class="folder-input-wrapper">
+      <input
+        type="text"
+        class="text-input"
+        [(ngModel)]="assetsFolder"
+        placeholder="No folder selected"
+        readonly>
+      <button class="btn btn-primary" (click)="selectAssetsFolder()">
+        Browse Folder...
+      </button>
+    </div>
+  </div>
+
+  <!-- Assets List -->
+  <div class="assets-card">
+    <div class="card-header">
+      <h2>Individual Asset Files</h2>
+      <p>Select each asset file individually or use the folder picker above to auto-fill</p>
+    </div>
+
+    <div class="assets-list">
+      <div *ngFor="let asset of assets" class="asset-row">
+        <div class="asset-status-indicator" [class.valid]="asset.isValid" [class.invalid]="!asset.isValid">
+          {{ asset.isValid ? '✓' : '✗' }}
+        </div>
+        <div class="asset-info">
+          <div class="asset-label">{{ asset.displayName }}</div>
+          <input
+            type="text"
+            class="text-input asset-path-input"
+            [(ngModel)]="asset.currentPath"
+            [class.invalid]="!asset.isValid"
+            placeholder="Not set"
+            readonly>
+        </div>
+        <button class="btn btn-secondary btn-sm" (click)="selectAssetFile(asset)">
+          Browse...
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Action Buttons -->
+  <div class="action-buttons">
+    <button class="btn btn-secondary" (click)="resetToDefaults()">
+      Reset to Defaults
+    </button>
+    <button class="btn btn-primary" (click)="saveAssetPaths()" [disabled]="!allPathsValid">
+      Save Asset Paths
+    </button>
+  </div>
+</div>

@@ -150,4 +150,19 @@ export class ElectronService {
     }
     return window.electron.applyAudioDrift(options);
   }
+
+  // Configuration
+  async getAssetConfig(): Promise<{ success: boolean; assetPaths?: any; error?: string }> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return window.electron.getAssetConfig();
+  }
+
+  async saveAssetConfig(assetPaths: any): Promise<{ success: boolean; error?: string }> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return window.electron.saveAssetConfig(assetPaths);
+  }
 }

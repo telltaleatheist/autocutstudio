@@ -23,6 +23,7 @@ export function setupIpcHandlers(windowService: WindowService, pythonSvc: Python
   setupAudioHandlers();
   setupPythonHandlers();
   setupUtilityHandlers();
+  setupConfigHandlers();
 }
 
 /**
@@ -34,16 +35,19 @@ function setupFileSystemHandlers(windowService: WindowService): void {
     const window = windowService.getMainWindow();
     if (!window) return { canceled: true, filePaths: [] };
 
+    const defaultFilters = [
+      { name: 'Video Files', extensions: ['mp4', 'mov', 'avi', 'mkv', 'flv', 'wmv', 'mpg', 'mpeg', 'm4v', 'webm'] },
+      { name: 'Audio Files', extensions: ['wav', 'mp3', 'aac', 'flac', 'ogg', 'm4a'] },
+      { name: 'All Files', extensions: ['*'] }
+    ];
+
     const result = await dialog.showOpenDialog(window, {
-      title: options.title || 'Select File',
-      filters: options.filters || [
-        { name: 'Video Files', extensions: ['mp4', 'mov', 'avi', 'mkv', 'flv', 'wmv', 'mpg', 'mpeg', 'm4v', 'webm'] },
-        { name: 'Audio Files', extensions: ['wav', 'mp3', 'aac', 'flac', 'ogg', 'm4a'] },
-        { name: 'All Files', extensions: ['*'] }
-      ],
+      title: options?.title || 'Select File',
+      filters: (options?.filters && options.filters.length > 0) ? options.filters : defaultFilters,
       properties: ['openFile']
     });
 
+    log.info('Select file dialog result:', result);
     return result;
   });
 
@@ -390,6 +394,72 @@ function setupUtilityHandlers(): void {
         break;
       default:
         log.debug(...args);
+    }
+  });
+}
+
+/**
+ * Configuration handlers for asset paths
+ */
+function setupConfigHandlers(): void {
+  const yaml = require('js-yaml');
+  const configPath = path.join(__dirname, '../../config/autostudio_config.yaml');
+
+  // Load asset paths configuration
+  ipcMain.handle('get-asset-config', async () => {
+    try {
+      if (!fs.existsSync(configPath)) {
+        return { success: false, error: 'Config file not found' };
+      }
+
+      const configContent = fs.readFileSync(configPath, 'utf8');
+      const config = yaml.load(configContent);
+
+      // Extract asset paths from config
+      const assetPaths = {
+        backgrounds: config.paths?.assets?.backgrounds || {},
+        borders: config.paths?.assets?.borders || {}
+      };
+
+      log.info('Loaded asset config:', assetPaths);
+      return { success: true, assetPaths };
+    } catch (error: any) {
+      log.error('Error loading asset config:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Save asset paths configuration
+  ipcMain.handle('save-asset-config', async (event, assetPaths: any) => {
+    try {
+      if (!fs.existsSync(configPath)) {
+        return { success: false, error: 'Config file not found' };
+      }
+
+      const configContent = fs.readFileSync(configPath, 'utf8');
+      const config = yaml.load(configContent);
+
+      // Update asset paths in config
+      if (!config.paths) config.paths = {};
+      if (!config.paths.assets) config.paths.assets = {};
+
+      config.paths.assets.backgrounds = assetPaths.backgrounds || {};
+      config.paths.assets.borders = assetPaths.borders || {};
+
+      // Write updated config back to file
+      const updatedYaml = yaml.dump(config, {
+        indent: 2,
+        lineWidth: -1, // Don't wrap lines
+        noRefs: true
+      });
+
+      fs.writeFileSync(configPath, updatedYaml, 'utf8');
+
+      log.info('Saved asset config:', assetPaths);
+      return { success: true };
+    } catch (error: any) {
+      log.error('Error saving asset config:', error);
+      return { success: false, error: error.message };
     }
   });
 }

@@ -37,6 +37,10 @@ export interface ElectronAPI {
   // Utility
   getAppVersion: () => Promise<string>;
   log: (level: string, ...args: any[]) => Promise<void>;
+
+  // Configuration
+  getAssetConfig: () => Promise<{ success: boolean; assetPaths?: any; error?: string }>;
+  saveAssetConfig: (assetPaths: any) => Promise<{ success: boolean; error?: string }>;
 }
 
 // Expose API to renderer
@@ -74,7 +78,11 @@ const electronAPI: ElectronAPI = {
 
   // Utility
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
-  log: (level, ...args) => ipcRenderer.invoke('log', level, ...args)
+  log: (level, ...args) => ipcRenderer.invoke('log', level, ...args),
+
+  // Configuration
+  getAssetConfig: () => ipcRenderer.invoke('get-asset-config'),
+  saveAssetConfig: (assetPaths) => ipcRenderer.invoke('save-asset-config', assetPaths)
 };
 
 contextBridge.exposeInMainWorld('electron', electronAPI);
