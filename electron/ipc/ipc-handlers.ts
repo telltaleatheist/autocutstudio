@@ -403,13 +403,30 @@ function setupUtilityHandlers(): void {
  */
 function setupConfigHandlers(): void {
   const yaml = require('js-yaml');
-  const configPath = path.join(__dirname, '../../config/autostudio_config.yaml');
+  const { app } = require('electron');
+
+  // Determine config path
+  const getConfigPath = () => {
+    if (app.isPackaged) {
+      // In packaged app, use resources path
+      return path.join(process.resourcesPath, 'config/autostudio_config.yaml');
+    } else {
+      // In development, find project root
+      // __dirname is dist-electron/main/electron/ipc
+      const projectRoot = path.join(__dirname, '../../../../');
+      return path.join(projectRoot, 'config/autostudio_config.yaml');
+    }
+  };
 
   // Load asset paths configuration
   ipcMain.handle('get-asset-config', async () => {
     try {
+      const configPath = getConfigPath();
+      log.info('Loading config from:', configPath);
+
       if (!fs.existsSync(configPath)) {
-        return { success: false, error: 'Config file not found' };
+        log.error('Config file not found at:', configPath);
+        return { success: false, error: `Config file not found at: ${configPath}` };
       }
 
       const configContent = fs.readFileSync(configPath, 'utf8');
@@ -432,8 +449,12 @@ function setupConfigHandlers(): void {
   // Save asset paths configuration
   ipcMain.handle('save-asset-config', async (event, assetPaths: any) => {
     try {
+      const configPath = getConfigPath();
+      log.info('Saving config to:', configPath);
+
       if (!fs.existsSync(configPath)) {
-        return { success: false, error: 'Config file not found' };
+        log.error('Config file not found at:', configPath);
+        return { success: false, error: `Config file not found at: ${configPath}` };
       }
 
       const configContent = fs.readFileSync(configPath, 'utf8');

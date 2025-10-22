@@ -28,20 +28,31 @@ export class RelinkingComponent implements OnInit {
   async loadAssetPaths() {
     try {
       // Load current asset paths from backend
-      const result = await this.electronService.getAssetConfig();
+      let backgrounds: any = {};
+      let borders: any = {};
 
-      if (result.success && result.assetPaths) {
-        const { backgrounds, borders } = result.assetPaths;
+      if (this.electronService.isElectron()) {
+        const result = await this.electronService.getAssetConfig();
+        console.log('Asset config result:', result);
 
-        this.assets = [
-          // Backgrounds
-          {
-            key: 'space_background',
-            displayName: 'Space Background',
-            currentPath: backgrounds?.space_background || '',
-            isValid: false,
-            category: 'backgrounds'
-          },
+        if (result.success && result.assetPaths) {
+          backgrounds = result.assetPaths.backgrounds || {};
+          borders = result.assetPaths.borders || {};
+        } else {
+          console.warn('Failed to load asset config from backend:', result.error);
+        }
+      }
+
+      // Always populate the assets list (even if paths are empty)
+      this.assets = [
+        // Backgrounds
+        {
+          key: 'space_background',
+          displayName: 'Space Background',
+          currentPath: backgrounds?.space_background || '',
+          isValid: false,
+          category: 'backgrounds'
+        },
 
           // CAM DC borders
           {
@@ -151,12 +162,16 @@ export class RelinkingComponent implements OnInit {
             category: 'ssb_dc_borders'
           }
         ];
-      }
 
       // Check validity of each path
       await this.validateAllPaths();
     } catch (error) {
       console.error('Error loading asset paths:', error);
+      // Even if there's an error, ensure we have an empty assets array
+      if (this.assets.length === 0) {
+        console.warn('Assets array is empty after error, initializing with empty paths');
+        await this.loadAssetPaths();
+      }
     }
   }
 

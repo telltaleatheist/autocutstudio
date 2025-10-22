@@ -9,55 +9,58 @@
     <div class="status-content">
       <span class="status-icon">{{ allPathsValid ? '✓' : '⚠' }}</span>
       <span class="status-text">
-        <span *ngIf="allPathsValid">All asset paths are valid</span>
-        <span *ngIf="!allPathsValid">{{ invalidCount }} asset path(s) need to be relinked</span>
+        <span *ngIf="allPathsValid">All {{ assets.length }} asset paths are valid</span>
+        <span *ngIf="!allPathsValid">{{ invalidCount }} of {{ assets.length }} assets need to be relinked</span>
       </span>
     </div>
   </div>
 
-  <!-- Folder Selector -->
-  <div class="folder-selector-card">
-    <div class="card-header">
+  <!-- Folder Auto-Detect Section -->
+  <div class="auto-detect-section">
+    <div class="section-header">
       <h2>Auto-Detect from Folder</h2>
-      <p>Select a folder containing your assets to automatically match files by name</p>
+      <p>Select a folder containing your assets to automatically find matching files</p>
     </div>
-    <div class="folder-input-wrapper">
-      <input
-        type="text"
-        class="text-input"
-        [(ngModel)]="assetsFolder"
-        placeholder="No folder selected"
-        readonly>
-      <button class="btn btn-primary" (click)="selectAssetsFolder()">
+    <div class="folder-selector">
+      <button class="btn btn-primary btn-large" (click)="selectAssetsFolder()">
+        <span class="btn-icon">📁</span>
         Browse Folder...
       </button>
+      <div class="folder-path" *ngIf="assetsFolder">
+        <span class="label">Selected folder:</span>
+        <span class="path">{{ assetsFolder }}</span>
+      </div>
     </div>
   </div>
 
   <!-- Assets List -->
-  <div class="assets-card">
-    <div class="card-header">
-      <h2>Individual Asset Files</h2>
-      <p>Select each asset file individually or use the folder picker above to auto-fill</p>
+  <div class="assets-section">
+    <div class="section-header">
+      <h2>Asset Files</h2>
+      <p>Click "Browse" to select each file individually</p>
     </div>
 
     <div class="assets-list">
-      <div *ngFor="let asset of assets" class="asset-row">
-        <div class="asset-status-indicator" [class.valid]="asset.isValid" [class.invalid]="!asset.isValid">
-          {{ asset.isValid ? '✓' : '✗' }}
+      <div *ngFor="let asset of assets"
+           class="asset-row"
+           [class.missing]="!asset.isValid && asset.currentPath === ''"
+           [class.invalid]="!asset.isValid && asset.currentPath !== ''">
+
+        <div class="asset-status">
+          <span class="status-icon" [class.valid]="asset.isValid" [class.invalid]="!asset.isValid">
+            {{ asset.isValid ? '✓' : '✗' }}
+          </span>
         </div>
-        <div class="asset-info">
-          <div class="asset-label">{{ asset.displayName }}</div>
-          <input
-            type="text"
-            class="text-input asset-path-input"
-            [(ngModel)]="asset.currentPath"
-            [class.invalid]="!asset.isValid"
-            placeholder="Not set"
-            readonly>
+
+        <div class="asset-content">
+          <div class="asset-name">{{ asset.displayName }}</div>
+          <div class="asset-path" [class.empty]="!asset.currentPath">
+            {{ asset.currentPath || 'No file selected' }}
+          </div>
         </div>
-        <button class="btn btn-secondary btn-sm" (click)="selectAssetFile(asset)">
-          Browse...
+
+        <button class="btn btn-secondary" (click)="selectAssetFile(asset)">
+          Browse
         </button>
       </div>
     </div>
