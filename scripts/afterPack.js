@@ -11,10 +11,29 @@ const path = require('path');
 exports.default = async function(context) {
   const { electronPlatformName, arch, appOutDir } = context;
 
-  console.log(`\n🔧 afterPack hook: ${electronPlatformName} ${arch}`);
+  // electron-builder arch is an enum: 0=x64, 1=ia32, 2=armv7l, 3=arm64, 4=universal
+  const archMap = {
+    0: 'x64',
+    1: 'ia32',
+    2: 'armv7l',
+    3: 'arm64',
+    4: 'universal'
+  };
+
+  // Determine architecture from appOutDir path if enum doesn't match expectations
+  let archString = archMap[arch] || arch;
+
+  // Override architecture detection based on appOutDir path
+  if (appOutDir.includes('mac-arm64')) {
+    archString = 'arm64';
+  } else if (appOutDir.includes('mac-x64') || (!appOutDir.includes('arm64') && electronPlatformName === 'darwin')) {
+    archString = 'x64';
+  }
+
+  console.log(`\n🔧 afterPack hook: ${electronPlatformName} ${archString} (arch=${arch})`);
   console.log(`   App directory: ${appOutDir}\n`);
 
-  const pythonDistDir = path.join(__dirname, '..', 'python-dist', `${electronPlatformName}-${arch}`);
+  const pythonDistDir = path.join(__dirname, '..', 'python-dist', `${electronPlatformName}-${archString}`);
 
   if (!fs.existsSync(pythonDistDir)) {
     console.warn(`⚠️  Python distribution not found: ${pythonDistDir}`);
@@ -47,25 +66,54 @@ exports.default = async function(context) {
   // Copy the Python environment
   copyRecursiveSync(pythonDistDir, targetDir);
 
-  console.log('✅ Python environment copied successfully!\n');
+  console.log('✅ Python environment copied successfully!');
+
+  // Clean up macOS resource fork files that can cause packaging issues
+  console.log('\n🧹 Cleaning up macOS resource fork files...');
+  const { execSync } = require('child_process');
+  try {
+    execSync(`find "${targetDir}" -name "._*" -type f -delete`, { stdio: 'inherit' });
+    execSync(`find "${path.dirname(targetDir)}" -name "._*" -type f -delete`, { stdio: 'inherit' });
+    console.log('✅ Cleaned up resource fork files\n');
+  } catch (e) {
+    console.log('⚠️  Resource fork cleanup failed (non-fatal)\n');
+  }
 };
 
 function copyRecursiveSync(src, dest) {
-  const exists = fs.existsSync(src);
-  const stats = exists && fs.statSync(src);
-  const isDirectory = exists && stats.isDirectory();
+  try {
+    const exists = fs.existsSync(src);
+    if (!exists) return;
 
-  if (isDirectory) {
-    if (!fs.existsSync(dest)) {
-      fs.mkdirSync(dest, { recursive: true });
+    const stats = fs.lstatSync(src); // Use lstat to detect symlinks
+
+    if (stats.isSymbolicLink()) {
+      // Copy symlink
+      const linkTarget = fs.readlinkSync(src);
+      if (fs.existsSync(dest)) {
+        fs.unlinkSync(dest);
+      }
+      fs.symlinkSync(linkTarget, dest);
+    } else if (stats.isDirectory()) {
+      // Copy directory
+      if (!fs.existsSync(dest)) {
+        fs.mkdirSync(dest, { recursive: true });
+      }
+      fs.readdirSync(src).forEach(childItemName => {
+        copyRecursiveSync(
+          path.join(src, childItemName),
+          path.join(dest, childItemName)
+        );
+      });
+    } else {
+      // Copy file
+      fs.copyFileSync(src, dest);
+      // Preserve executable bit
+      if (stats.mode & 0o111) {
+        fs.chmodSync(dest, stats.mode);
+      }
     }
-    fs.readdirSync(src).forEach(childItemName => {
-      copyRecursiveSync(
-        path.join(src, childItemName),
-        path.join(dest, childItemName)
-      );
-    });
-  } else {
-    fs.copyFileSync(src, dest);
+  } catch (error) {
+    console.warn(`⚠️  Skipping ${src}: ${error.message}`);
   }
 }

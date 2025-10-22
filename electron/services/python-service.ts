@@ -46,22 +46,12 @@ export class PythonService {
   }
 
   /**
-   * Find the bundled Python environment
+   * Find Python - always use system Python
    */
   private findBundledPython(): void {
-    const fs = require('fs');
-
-    // Check for bundled Python in the app resources
-    const pythonDir = path.join(AppConfig.resourcesPath, 'python', 'env', 'bin');
-    const pythonExecutable = path.join(pythonDir, 'python3');
-
-    if (fs.existsSync(pythonExecutable)) {
-      this.bundledPythonPath = pythonExecutable;
-      log.info('✅ Found bundled Python:', pythonExecutable);
-    } else {
-      log.warn('⚠️  Bundled Python not found, will use system Python');
-      log.warn('   Expected location:', pythonExecutable);
-    }
+    // Always use system Python - no bundled Python anymore
+    this.bundledPythonPath = null;
+    log.info('Using system Python from PATH');
   }
 
   /**
@@ -77,32 +67,12 @@ export class PythonService {
   private getPythonEnv(): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
-      PYTHONUNBUFFERED: '1' // Ensure real-time output
+      PYTHONUNBUFFERED: '1', // Ensure real-time output
+      PATH: `${COMMON_PATHS}:${process.env.PATH || ''}`,
+      PYTHONPATH: AppConfig.resourcesPath
     };
 
-    if (this.bundledPythonPath) {
-      // Use bundled Python environment
-      const pythonDir = path.dirname(this.bundledPythonPath);
-      const pythonHome = path.dirname(pythonDir); // Remove /bin
-
-      env.PATH = `${pythonDir}:${COMMON_PATHS}:${process.env.PATH || ''}`;
-      env.PYTHONHOME = pythonHome;
-      env.PYTHONPATH = AppConfig.appPath;
-      env.CONDA_PREFIX = pythonHome;
-      env.CONDA_DEFAULT_ENV = 'autocutstudio';
-
-      log.info('Using bundled Python environment:', {
-        pythonPath: this.bundledPythonPath,
-        pythonHome: pythonHome,
-        path: env.PATH
-      });
-    } else {
-      // Fallback to system Python
-      env.PATH = `${COMMON_PATHS}:${process.env.PATH || ''}`;
-      env.PYTHONPATH = AppConfig.appPath;
-
-      log.warn('Using system Python (bundled Python not available)');
-    }
+    log.info('Using system Python with PATH:', env.PATH);
 
     return env;
   }
@@ -120,10 +90,13 @@ export class PythonService {
     // Get environment variables
     const env = this.getPythonEnv();
 
+    // Use resourcesPath as cwd since appPath may be an .asar file in production
+    const workingDir = AppConfig.resourcesPath;
+
     // Spawn the Python process
     const pythonProcess = spawn(pythonPath, [scriptPath, options.command, ...options.args], {
       env,
-      cwd: AppConfig.appPath
+      cwd: workingDir
     });
 
     // Store the process
@@ -207,21 +180,20 @@ export class PythonService {
   executeWorkflow(jobId: string, options: WorkflowExecutionOptions): ChildProcess {
     log.info(`Executing workflow [${jobId}]`);
 
-    const pythonPath = 'python3';
+    // Use bundled Python if available, otherwise fall back to system python3
+    const pythonPath = this.getPythonPath();
     const scriptPath = path.join(AppConfig.cliPath, 'electron_workflow.py');
 
-    // Set environment variables with enhanced PATH
-    const env = {
-      ...process.env,
-      PATH: `${COMMON_PATHS}:${process.env.PATH || ''}`,
-      PYTHONPATH: AppConfig.appPath,
-      PYTHONUNBUFFERED: '1'
-    };
+    // Get environment variables (includes bundled Python configuration if available)
+    const env = this.getPythonEnv();
+
+    // Use resourcesPath as cwd since appPath may be an .asar file in production
+    const workingDir = AppConfig.resourcesPath;
 
     // Spawn the Python process
     const pythonProcess = spawn(pythonPath, [scriptPath], {
       env,
-      cwd: AppConfig.appPath
+      cwd: workingDir
     });
 
     // Store the process
@@ -239,7 +211,7 @@ export class PythonService {
       log.info(`[${jobId}] Raw stdout:`, output);
 
       // Try to parse each line as JSON
-      const lines = output.split('\n').filter(line => line.trim());
+      const lines = output.split('\n').filter((line: string) => line.trim());
       for (const line of lines) {
         try {
           const message = JSON.parse(line);

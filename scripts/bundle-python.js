@@ -80,7 +80,7 @@ try {
   console.log(`\n📦 Packing environment to: ${packFile}`);
 
   execSync(
-    `${CONDA_BASE}/bin/conda-pack -n ${ENV_NAME} -o ${packFile} --arcroot env`,
+    `${CONDA_BASE}/bin/conda-pack -n ${ENV_NAME} -o ${packFile}`,
     { stdio: 'inherit' }
   );
 
@@ -101,9 +101,32 @@ try {
 
   // Activate the environment (run conda-unpack)
   console.log('\n⚙️  Activating portable environment...');
-  execSync(`${extractDir}/bin/conda-unpack`, {
-    stdio: 'inherit'
-  });
+  // conda-unpack is a shell script that needs python from the extracted env
+  const pythonBin = path.join(extractDir, 'bin', 'python');
+  const condaUnpackScript = path.join(extractDir, 'bin', 'conda-unpack');
+
+  if (fs.existsSync(condaUnpackScript)) {
+    execSync(`${pythonBin} ${condaUnpackScript}`, {
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        PATH: `${path.join(extractDir, 'bin')}:${process.env.PATH}`
+      }
+    });
+  } else {
+    console.log('⚠️  conda-unpack not found, skipping activation step');
+  }
+
+  // Remove macOS resource fork files that cause packaging issues
+  console.log('\n🧹 Removing macOS resource fork files...');
+  try {
+    execSync(`find ${extractDir} -name "._*" -type f -delete`, {
+      stdio: 'inherit'
+    });
+    console.log('✅ Cleaned up resource fork files');
+  } catch (e) {
+    console.log('⚠️  No resource fork files found or cleanup failed (non-fatal)');
+  }
 
   // Create a simple launcher script
   const launcherScript = `#!/bin/bash
