@@ -235,31 +235,148 @@ class FCPXMLUtils:
         return audio
 
     @staticmethod
-    def create_clip_with_audio_effects(name: str, ref: str, lane: str, offset: str, 
+    def create_clip_with_audio_effects(name: str, ref: str, lane: str, offset: str,
                                     duration: str, audio_type: Optional[str] = None,
                                     resources: Optional[ET.Element] = None) -> ET.Element:
-        """Create an audio element with proper volume adjustment."""
-        # Changed from creating a clip to creating a direct audio element
-        audio = ET.Element('audio')
+        """Create an audio clip with Voice Isolation, Compressor, Noise Gate, and Volume effects."""
+        # Create clip element (not audio element) to support complex effects
+        clip = ET.Element('clip')
+        clip.set('lane', lane)
+        clip.set('offset', offset)
+        clip.set('name', name)
+        clip.set('duration', duration)
+        clip.set('tcFormat', 'NDF')
+
+        # Add volume adjustment FIRST (order matters in FCPXML)
+        volume = ET.SubElement(clip, 'adjust-volume')
+        if audio_type in ['mic1', 'mic2', 'mic3', 'mic4']:
+            volume.set('amount', '0.0471005dB')
+        elif audio_type in ['screen', 'game', 'bluetooth']:
+            volume.set('amount', '-6dB')
+        elif audio_type == 'sound_effects':
+            volume.set('amount', '-10dB')
+        else:
+            volume.set('amount', '0dB')  # Default
+
+        # Add gap with audio reference inside (matching template structure)
+        gap = ET.SubElement(clip, 'gap')
+        gap.set('name', 'Gap')
+        gap.set('offset', '0s')
+        gap.set('duration', duration)
+
+        # Add audio element inside gap that references the actual audio asset
+        audio = ET.SubElement(gap, 'audio')
         audio.set('ref', ref)
-        audio.set('lane', lane)
-        audio.set('offset', offset)
-        audio.set('name', name)
+        audio.set('lane', '-1')
+        audio.set('offset', '0s')
         audio.set('duration', duration)
         audio.set('role', 'dialogue.dialogue-1')
         audio.set('srcCh', '1, 2')
-        
-        # Add volume adjustment based on audio type
-        if audio_type:
-            volume = ET.SubElement(audio, 'adjust-volume')
+
+        # Add audio-channel-source with Voice Isolation
+        audio_channel = ET.SubElement(clip, 'audio-channel-source')
+        audio_channel.set('srcCh', '1, 2')
+        audio_channel.set('role', 'dialogue.dialogue-1')
+
+        voice_isolation = ET.SubElement(audio_channel, 'adjust-voiceIsolation')
+        if audio_type in ['mic1', 'mic2', 'mic3', 'mic4']:
+            voice_isolation.set('amount', '75')  # Mic audio gets 75% voice isolation
+        elif audio_type in ['screen', 'game', 'bluetooth']:
+            voice_isolation.set('amount', '50')  # Screen audio gets 50% voice isolation
+        else:
+            voice_isolation.set('amount', '0')  # Sound effects get no voice isolation
+
+        # Add Compressor filter (ensure r4 exists in resources)
+        if audio_type in ['mic1', 'mic2', 'mic3', 'mic4', 'screen', 'game', 'bluetooth']:
+            FCPXMLUtils._ensure_compressor_effect_resource(resources)
+
+            compressor = ET.SubElement(clip, 'filter-audio')
+            compressor.set('ref', 'r4')
+            compressor.set('name', 'Compressor')
+
+            # Add encoded effect state data
+            data = ET.SubElement(compressor, 'data')
+            data.set('key', 'effectState')
+            data.text = 'YnBsaXN0MDDUAQIDBAUGBwpYJHZlcnNpb25ZJGFyY2hpdmVyVCR0b3BYJG9iamVjdHMSAAGGoF8QD05TS2V5ZWRBcmNoaXZlctEICVtlZmZlY3RTdGF0ZYABrxAPCwwfICEiIyQlJicoKSorVSRudWxs0w0ODxAXHldOUy5rZXlzWk5TLm9iamVjdHNWJGNsYXNzphESExQVFoACgAOABIAFgAaAB6YYGRobHB2ACIAJgAqAC4AMgA2ADldzdWJ0eXBlXG1hbnVmYWN0dXJlclRkYXRhVHR5cGVUbmFtZVd2ZXJzaW9uEJoSRU1BR08QlJQAAAABAAAAHwAAAEdBTUVUU1BQmgAAAAAAAAAAAKDBAAAAQAAAAAAAAHpEAAAAAAAAgD8AAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA3EUAAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAMhCAAAAAAAAAAAAAAAAAAAAAAAAAAASYXVmeFhVbnRpdGxlZBAA0iwtLi9aJGNsYXNzbmFtZVgkY2xhc3Nlc1xOU0RpY3Rpb25hcnmiLjBYTlNPYmplY3QACAARABoAJAApADIANwBJAEwAWABaAGwAcgB5AIEAjACTAJoAnACeAKAAogCkAKYArQCvALEAswC1ALcAuQC7AMMA0ADVANoA3wDnAOkA7gGFAYoBkwGVAZoBpQGuAbsBvgAAAAAAAAIBAAAAAAAAADEAAAAAAAAAAAAAAAAAAAHH'
+
+            # Add compressor ratio parameter
+            param = ET.SubElement(compressor, 'param')
+            param.set('name', 'Ratio')
+            param.set('key', '2')
             if audio_type in ['mic1', 'mic2', 'mic3', 'mic4']:
-                volume.set('amount', '0.0471005dB')
-            elif audio_type in ['screen', 'game', 'bluetooth']:
-                volume.set('amount', '-6dB')
-            elif audio_type == 'sound_effects':
-                volume.set('amount', '-10dB')
-        
-        return audio
+                param.set('value', '3.5:1')
+                param.set('auxValue', '31')  # Mic audio: 3.5:1 ratio
+            else:  # screen, game, bluetooth
+                param.set('value', '30.0:1')
+                param.set('auxValue', '85')  # Screen audio: 30:1 ratio
+
+        # Add Noise Gate filter for mic audio only (ensure r5 exists in resources)
+        if audio_type in ['mic1', 'mic2', 'mic3', 'mic4']:
+            FCPXMLUtils._ensure_noise_gate_effect_resource(resources)
+
+            noise_gate = ET.SubElement(clip, 'filter-audio')
+            noise_gate.set('ref', 'r5')
+            noise_gate.set('name', 'Noise Gate')
+
+            # Add encoded effect state data
+            data = ET.SubElement(noise_gate, 'data')
+            data.set('key', 'effectState')
+            data.text = 'YnBsaXN0MDDUAQIDBAUGBwpYJHZlcnNpb25ZJGFyY2hpdmVyVCR0b3BYJG9iamVjdHMSAAGGoF8QD05TS2V5ZWRBcmNoaXZlctEICVtlZmZlY3RTdGF0ZYABrxAPCwwfICEiIyQlJicoKSorVSRudWxs0w0ODxAXHldOUy5rZXlzWk5TLm9iamVjdHNWJGNsYXNzphESExQVFoACgAOABIAFgAaAB6YYGRobHB2ACIAJgAqAC4AMgA2ADlR0eXBlXG1hbnVmYWN0dXJlclRkYXRhVG5hbWVXc3VidHlwZVd2ZXJzaW9uEmF1ZngSRU1BR08QWFgAAAACAAAAEAAAAEdBTUVUU1BQswAAAAAAAAAAAKDBAABAwAAAyMIAAIA/AAAAAP//P0AAQJxGAACgQQAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAoMFYVW50aXRsZWQQsxAA0iwtLi9aJGNsYXNzbmFtZVgkY2xhc3Nlc1xOU0RpY3Rpb25hcnmiLjBYTlNPYmplY3QACAARABoAJAApADIANwBJAEwAWABaAGwAcgB5AIEAjACTAJoAnACeAKAAogCkAKYArQCvALEAswC1ALcAuQC7AMAAzQDSANcA3wDnAOwA8QFMAVUBVwFZAV4BaQFyAX8BggAAAAAAAAIBAAAAAAAAADEAAAAAAAAAAAAAAAAAAAGL'
+
+            # Add noise gate threshold parameter
+            param = ET.SubElement(noise_gate, 'param')
+            param.set('name', 'Threshold [dB]')
+            param.set('key', '1')
+            param.set('value', '-50')
+            param.set('auxValue', '50')
+
+        return clip
+
+    @staticmethod
+    def _ensure_compressor_effect_resource(resources: Optional[ET.Element]) -> None:
+        """Ensure Compressor effect resource (r4) exists in resources section."""
+        print(f"[DEBUG] _ensure_compressor_effect_resource called, resources={'None' if resources is None else 'provided'}")
+        if resources is None:
+            print("[DEBUG] Resources is None, returning")
+            return
+
+        # Check if r4 already exists
+        existing = resources.find('.//effect[@id="r4"]')
+        if existing is not None:
+            print("[DEBUG] r4 already exists, returning")
+            return
+
+        # Create Compressor effect resource
+        print("[DEBUG] Creating Compressor effect r4")
+        effect = ET.Element('effect')
+        effect.set('id', 'r4')
+        effect.set('name', 'Compressor')
+        effect.set('uid', 'AudioUnit: 0x617566780000009a454d4147')
+        resources.append(effect)
+        print(f"[DEBUG] Compressor effect r4 added to resources, total effects: {len(resources.findall('.//effect'))}")
+
+    @staticmethod
+    def _ensure_noise_gate_effect_resource(resources: Optional[ET.Element]) -> None:
+        """Ensure Noise Gate effect resource (r5) exists in resources section."""
+        print(f"[DEBUG] _ensure_noise_gate_effect_resource called, resources={'None' if resources is None else 'provided'}")
+        if resources is None:
+            print("[DEBUG] Resources is None, returning")
+            return
+
+        # Check if r5 already exists
+        existing = resources.find('.//effect[@id="r5"]')
+        if existing is not None:
+            print("[DEBUG] r5 already exists, returning")
+            return
+
+        # Create Noise Gate effect resource
+        print("[DEBUG] Creating Noise Gate effect r5")
+        effect = ET.Element('effect')
+        effect.set('id', 'r5')
+        effect.set('name', 'Noise Gate')
+        effect.set('uid', 'AudioUnit: 0x61756678000000b3454d4147')
+        resources.append(effect)
+        print(f"[DEBUG] Noise Gate effect r5 added to resources, total effects: {len(resources.findall('.//effect'))}")
 
     @staticmethod
     def create_asset_clip(name: str, ref: str, lane: str, offset: str, 

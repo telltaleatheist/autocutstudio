@@ -92,7 +92,21 @@ class CamGenerator:
         new_root.set('version', '1.11')
         
         resources = ET.SubElement(new_root, 'resources')
-        
+
+        # Add effect resources for audio effects (Compressor and Noise Gate)
+        # These must be added to resources BEFORE they're referenced in audio clips
+        compressor_effect = ET.SubElement(resources, 'effect')
+        compressor_effect.set('id', 'r4')
+        compressor_effect.set('name', 'Compressor')
+        compressor_effect.set('uid', 'AudioUnit: 0x617566780000009a454d4147')
+
+        noise_gate_effect = ET.SubElement(resources, 'effect')
+        noise_gate_effect.set('id', 'r5')
+        noise_gate_effect.set('name', 'Noise Gate')
+        noise_gate_effect.set('uid', 'AudioUnit: 0x61756678000000b3454d4147')
+
+        print(f"Added effect resources r4 and r5 to resources")
+
         # Create format elements
         # Get original format from compound XML for timeline compatibility
         original_format = tree.find('.//format')
