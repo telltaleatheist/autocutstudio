@@ -210,9 +210,21 @@ class CamGenerator:
             original_duration  # Span full duration of master clip
         )
         
-        # Add audio sources to gap structure (negative lanes)
-        audio_lane = -2  # Start with lane -2 for first audio source
-        
+        # Add master audio clip FIRST at lane -1 (disabled, for reference)
+        master_audio_clip = self.xml_utils.create_audio_only_clip(
+            original_name,
+            original_asset_id,
+            "-1",  # Always lane -1
+            "0s",  # Start at beginning of gap
+            original_duration,
+            enabled=False  # Disabled by default for Cam
+        )
+        gap.append(master_audio_clip)
+        print(f"Added master audio to lane -1 (disabled)")
+
+        # Add audio sources to gap structure (negative lanes starting at -2)
+        audio_lane = -2  # Start with lane -2 for first audio source (below master at -1)
+
         for audio_type in audio_sources_config:
             if audio_type in audio_assets:
                 audio_info = processed_audio_sources[audio_type]
@@ -228,17 +240,6 @@ class CamGenerator:
                 gap.append(audio_clip)
                 print(f"Added {audio_type} audio to lane {audio_lane}")
                 audio_lane -= 1  # Move to next audio lane
-        
-        # Add master audio clip (disabled, for reference)
-        master_audio_clip = self.xml_utils.create_audio_only_clip(
-            original_name,
-            original_asset_id,
-            str(audio_lane),  # Use next available audio lane
-            "0s",  # Start at beginning of gap
-            original_duration,
-            enabled=False  # Disabled by default for Cam
-        )
-        gap.append(master_audio_clip)
         
         # Add space background if specified (lane 1 - bottom layer)
         background_asset_key = layout_config.get('background')

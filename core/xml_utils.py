@@ -237,7 +237,8 @@ class FCPXMLUtils:
     @staticmethod
     def create_clip_with_audio_effects(name: str, ref: str, lane: str, offset: str,
                                     duration: str, audio_type: Optional[str] = None,
-                                    resources: Optional[ET.Element] = None) -> ET.Element:
+                                    resources: Optional[ET.Element] = None,
+                                    enabled: bool = True) -> ET.Element:
         """Create an audio clip with Voice Isolation, Compressor, Noise Gate, and Volume effects."""
         # Create clip element (not audio element) to support complex effects
         clip = ET.Element('clip')
@@ -246,6 +247,10 @@ class FCPXMLUtils:
         clip.set('name', name)
         clip.set('duration', duration)
         clip.set('tcFormat', 'NDF')
+
+        # Set enabled/disabled state
+        if not enabled:
+            clip.set('enabled', '0')
 
         # Add volume adjustment FIRST (order matters in FCPXML)
         volume = ET.SubElement(clip, 'adjust-volume')

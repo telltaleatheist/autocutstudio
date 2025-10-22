@@ -208,10 +208,25 @@ class GSGenerator:
         )
         
         # Add audio tracks based on available sources
+        # NOTE: For GS compound, ALL audio tracks are DISABLED by default
         audio_config = layout_config.get('audio', {})
-        current_audio_lane = -2  # Start at lane -2 for first audio track
-        
-        # Add mic audio tracks in order (mic1, mic2, mic3, mic4)
+
+        # Add master audio clip FIRST at lane -1 (disabled)
+        master_audio_clip = self.xml_utils.create_audio_only_clip(
+            original_name,
+            original_asset_id,
+            "-1",  # Always lane -1
+            "0s",
+            original_duration,
+            enabled=False  # Disabled for GS
+        )
+        gap.append(master_audio_clip)
+        print(f"Added master audio to lane -1 (disabled)")
+
+        # Start mic audio tracks at lane -2 (below master at -1)
+        current_audio_lane = -2
+
+        # Add mic audio tracks in order (mic1, mic2, mic3, mic4) - all DISABLED
         for mic_num in range(1, 5):
             mic_key = f'mic{mic_num}'
             if mic_key in audio_assets:
@@ -223,12 +238,14 @@ class GSGenerator:
                     "0s",
                     audio_info['duration'],
                     mic_key,     # Pass audio type for effects
-                    resources    # Pass resources for effect creation
+                    resources,   # Pass resources for effect creation
+                    enabled=False  # DISABLED for GS
                 )
                 gap.append(mic_clip)
-                print(f"Added {mic_key} to lane {current_audio_lane}")
+                print(f"Added {mic_key} to lane {current_audio_lane} (disabled)")
                 current_audio_lane -= 1
-        
+
+        # Add screen audio if present - DISABLED
         if 'screen' in audio_assets:
             audio_info = processed_audio_sources['screen']
             screen_clip = self.xml_utils.create_clip_with_audio_effects(
@@ -238,13 +255,14 @@ class GSGenerator:
                 "0s",
                 audio_info['duration'],
                 'screen',    # Pass audio type for effects
-                resources    # Pass resources for effect creation
+                resources,   # Pass resources for effect creation
+                enabled=False  # DISABLED for GS
             )
             gap.append(screen_clip)
-            print(f"Added screen audio to lane {current_audio_lane}")
+            print(f"Added screen audio to lane {current_audio_lane} (disabled)")
             current_audio_lane -= 1
-        
-        # Add game audio if present
+
+        # Add game audio if present - DISABLED
         if 'game' in audio_assets:
             audio_info = processed_audio_sources['game']
             game_clip = self.xml_utils.create_clip_with_audio_effects(
@@ -254,13 +272,14 @@ class GSGenerator:
                 "0s",
                 audio_info['duration'],
                 'game',      # Pass audio type for effects
-                resources    # Pass resources for effect creation
+                resources,   # Pass resources for effect creation
+                enabled=False  # DISABLED for GS
             )
             gap.append(game_clip)
-            print(f"Added game audio to lane {current_audio_lane}")
+            print(f"Added game audio to lane {current_audio_lane} (disabled)")
             current_audio_lane -= 1
-        
-        # Add sound effects if present
+
+        # Add sound effects if present - DISABLED
         if 'sound_effects' in audio_assets:
             audio_info = processed_audio_sources['sound_effects']
             sfx_clip = self.xml_utils.create_clip_with_audio_effects(
@@ -270,22 +289,12 @@ class GSGenerator:
                 "0s",
                 audio_info['duration'],
                 'sound_effects',  # Pass audio type for effects
-                resources         # Pass resources for effect creation
+                resources,        # Pass resources for effect creation
+                enabled=False     # DISABLED for GS
             )
             gap.append(sfx_clip)
-            print(f"Added sound_effects to lane {current_audio_lane}")
+            print(f"Added sound_effects to lane {current_audio_lane} (disabled)")
             current_audio_lane -= 1
-        
-        # Add master audio clip (disabled, for reference)
-        master_audio_clip = self.xml_utils.create_audio_only_clip(
-            original_name,
-            original_asset_id,
-            str(audio_config.get('master_lane', -1)),
-            "0s",
-            original_duration,
-            enabled=audio_config.get('master_enabled', False)
-        )
-        gap.append(master_audio_clip)
         
         # Add space background if specified (lane 1 - bottom layer)
         background_asset_key = layout_config.get('background')

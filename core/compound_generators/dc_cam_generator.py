@@ -86,7 +86,21 @@ class DCCamGenerator:
         new_root.set('version', '1.11')
         
         resources = ET.SubElement(new_root, 'resources')
-        
+
+        # Add effect resources for audio effects (Compressor and Noise Gate)
+        # These must be added to resources BEFORE they're referenced in audio clips
+        compressor_effect = ET.SubElement(resources, 'effect')
+        compressor_effect.set('id', 'r4')
+        compressor_effect.set('name', 'Compressor')
+        compressor_effect.set('uid', 'AudioUnit: 0x617566780000009a454d4147')
+
+        noise_gate_effect = ET.SubElement(resources, 'effect')
+        noise_gate_effect.set('id', 'r5')
+        noise_gate_effect.set('name', 'Noise Gate')
+        noise_gate_effect.set('uid', 'AudioUnit: 0x61756678000000b3454d4147')
+
+        print(f"Added effect resources r4 and r5 to resources")
+
         # Create format elements
         # Get original format from compound XML for timeline compatibility
         original_format = tree.find('.//format')
@@ -195,10 +209,22 @@ class DCCamGenerator:
             original_duration  # Span full duration of master clip
         )
         
-        # Add audio tracks based on available sources
+        # Add master audio clip FIRST at lane -1 (disabled, for reference)
         audio_config = layout_config.get('audio', {})
-        current_audio_lane = -2  # Start at lane -2 for first audio track
-        
+        master_audio_clip = self.xml_utils.create_audio_only_clip(
+            original_name,
+            original_asset_id,
+            "-1",  # Always lane -1
+            "0s",  # Start at beginning of gap
+            original_duration,
+            enabled=False  # Disabled by default for DC Cam
+        )
+        gap.append(master_audio_clip)
+        print(f"Added master audio to lane -1 (disabled)")
+
+        # Add audio tracks based on available sources
+        current_audio_lane = -2  # Start at lane -2 for first audio track (below master at -1)
+
         # Add mic audio tracks in order (mic1, mic2, mic3, mic4)
         for mic_num in range(1, 5):
             mic_key = f'mic{mic_num}'
@@ -216,7 +242,7 @@ class DCCamGenerator:
                 gap.append(mic_clip)
                 print(f"Added {mic_key} to lane {current_audio_lane}")
                 current_audio_lane -= 1  # Move to next lane down
-        
+
         # Add sound effects if present
         if 'sound_effects' in audio_assets:
             audio_info = processed_audio_sources['sound_effects']
@@ -232,17 +258,6 @@ class DCCamGenerator:
             gap.append(sfx_clip)
             print(f"Added sound_effects to lane {current_audio_lane}")
             current_audio_lane -= 1
-        
-        # Add master audio clip (disabled, for reference)
-        master_audio_clip = self.xml_utils.create_audio_only_clip(
-            original_name,
-            original_asset_id,
-            str(audio_config.get('master_lane', -1)),
-            "0s",  # Start at beginning of gap
-            original_duration,
-            enabled=audio_config.get('master_enabled', False)
-        )
-        gap.append(master_audio_clip)
         
         # Add space background if specified (lane 1 - bottom layer)
         background_asset_key = layout_config.get('background')
