@@ -105,6 +105,7 @@ export class WorkflowComponent implements OnInit {
       const result = await this.electronService.selectFile({
         title: 'Select Audio or Video File',
         filters: [
+          { name: 'All Media Files', extensions: ['wav', 'mp3', 'aac', 'flac', 'ogg', 'm4a', 'mp4', 'mov', 'avi', 'mkv'] },
           { name: 'Audio Files', extensions: ['wav', 'mp3', 'aac', 'flac', 'ogg', 'm4a'] },
           { name: 'Video Files', extensions: ['mp4', 'mov', 'avi', 'mkv'] }
         ]

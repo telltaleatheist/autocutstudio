@@ -163,12 +163,12 @@ function setupFileSystemHandlers(windowService: WindowService): void {
         'bluetooth': new RegExp(`^${session}.*(?:bluetooth|bt).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i')
       };
 
-      // Video file patterns to match
+      // Video file patterns to match (only capture files, not share/output files)
       const videoPatterns: { [key: string]: RegExp } = {
         'cam': new RegExp(`^${session}\\s+cam\\.(mp4|mov|avi|mkv)$`, 'i'),
         'cam-2': new RegExp(`^${session}\\s+cam\\s*2\\.(mp4|mov|avi|mkv)$`, 'i'),
-        'screen-share': new RegExp(`^${session}\\s+screen\\s*share\\.(mp4|mov|avi|mkv)$`, 'i'),
-        'game-share': new RegExp(`^${session}\\s+game\\s*share\\.(mp4|mov|avi|mkv)$`, 'i')
+        'screen-share': new RegExp(`^${session}\\s+screen\\s*capture\\.(mp4|mov|avi|mkv)$`, 'i'),
+        'game-share': new RegExp(`^${session}\\s+game\\s*capture\\.(mp4|mov|avi|mkv)$`, 'i')
       };
 
       // Scan directory for matching audio and video files
