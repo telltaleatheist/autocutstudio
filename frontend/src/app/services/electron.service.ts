@@ -94,7 +94,7 @@ export class ElectronService {
     return window.electron.checkFileExists(filePath);
   }
 
-  async autoDetectAudio(masterVideoPath: string): Promise<{ success: boolean; audioFiles?: { [key: string]: string }; error?: string }> {
+  async autoDetectAudio(masterVideoPath: string): Promise<{ success: boolean; audioFiles?: { [key: string]: string }; videoFiles?: { [key: string]: string }; error?: string }> {
     if (!this.isElectron()) {
       throw new Error('Not running in Electron');
     }

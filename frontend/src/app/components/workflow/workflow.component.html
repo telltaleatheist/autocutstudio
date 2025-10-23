@@ -34,26 +34,26 @@
         <small class="input-hint">Select your main recording file</small>
       </div>
 
-      <!-- Audio Sources -->
+      <!-- Media Sources (Audio & Video) -->
       <div class="form-section">
         <div class="form-section-header">
           <div class="section-icon">🎵</div>
-          <label class="section-label">Audio Sources</label>
+          <label class="section-label">Media Sources</label>
         </div>
         <div class="audio-sources-list">
           <div *ngIf="audioSources.length === 0" class="empty-state">
             <div class="empty-icon">🎤</div>
-            <p class="empty-text">No audio sources added yet</p>
-            <p class="empty-hint">Add audio files manually or use auto-detect</p>
+            <p class="empty-text">No media sources added yet</p>
+            <p class="empty-hint">Add audio/video files manually or use auto-detect</p>
           </div>
 
           <div *ngFor="let source of audioSources" class="audio-source-row">
-            <div class="audio-source-icon">🎵</div>
+            <div class="audio-source-icon">{{ source.isVideo ? '🎥' : '🎵' }}</div>
             <span class="audio-source-name">{{ source.name }}</span>
             <select class="audio-source-select" [(ngModel)]="source.type" [name]="'type_' + source.id">
               <option value="" disabled>Select Type...</option>
               <option *ngFor="let type of getAvailableAudioTypes(source.type)" [value]="type">
-                {{ audioSourceLabels[type] }}
+                {{ mediaSourceLabels[type] }}
               </option>
             </select>
             <button type="button" class="btn-remove" (click)="removeAudioSource(source.id)" title="Remove">
@@ -64,7 +64,7 @@
         <div class="action-row">
           <button type="button" class="btn-secondary-outline" (click)="addAudioSource()">
             <span class="btn-icon">➕</span>
-            <span class="btn-text">Add Audio</span>
+            <span class="btn-text">Add Media</span>
           </button>
           <button type="button" class="btn-secondary-outline" (click)="autoDetectAudioFiles()" [disabled]="!masterVideoPath">
             <span class="btn-icon">🔍</span>

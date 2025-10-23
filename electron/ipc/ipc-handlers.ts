@@ -163,15 +163,29 @@ function setupFileSystemHandlers(windowService: WindowService): void {
         'bluetooth': new RegExp(`^${session}.*(?:bluetooth|bt).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i')
       };
 
-      // Scan directory for matching audio files
+      // Video file patterns to match
+      const videoPatterns: { [key: string]: RegExp } = {
+        'cam': new RegExp(`^${session}\\s+cam\\.(mp4|mov|avi|mkv)$`, 'i'),
+        'cam-2': new RegExp(`^${session}\\s+cam\\s*2\\.(mp4|mov|avi|mkv)$`, 'i'),
+        'screen-share': new RegExp(`^${session}\\s+screen\\s*share\\.(mp4|mov|avi|mkv)$`, 'i'),
+        'game-share': new RegExp(`^${session}\\s+game\\s*share\\.(mp4|mov|avi|mkv)$`, 'i')
+      };
+
+      // Scan directory for matching audio and video files
       const items = fs.readdirSync(dirPath);
       const detectedAudio: { [key: string]: string } = {};
+      const detectedVideo: { [key: string]: string } = {};
 
       // First pass: collect all matching files for each type
-      const candidatesByType: { [key: string]: string[] } = {};
+      const audioCandidatesByType: { [key: string]: string[] } = {};
+      const videoCandidatesByType: { [key: string]: string[] } = {};
 
       for (const [audioType] of Object.entries(audioPatterns)) {
-        candidatesByType[audioType] = [];
+        audioCandidatesByType[audioType] = [];
+      }
+
+      for (const [videoType] of Object.entries(videoPatterns)) {
+        videoCandidatesByType[videoType] = [];
       }
 
       for (const item of items) {
@@ -179,16 +193,24 @@ function setupFileSystemHandlers(windowService: WindowService): void {
         const stats = fs.statSync(itemPath);
 
         if (stats.isFile()) {
+          // Check audio patterns
           for (const [audioType, pattern] of Object.entries(audioPatterns)) {
             if (pattern.test(item)) {
-              candidatesByType[audioType].push(itemPath);
+              audioCandidatesByType[audioType].push(itemPath);
+            }
+          }
+
+          // Check video patterns
+          for (const [videoType, pattern] of Object.entries(videoPatterns)) {
+            if (pattern.test(item)) {
+              videoCandidatesByType[videoType].push(itemPath);
             }
           }
         }
       }
 
-      // Second pass: prefer non-sb files, fall back to sb files
-      for (const [audioType, candidates] of Object.entries(candidatesByType)) {
+      // Second pass: prefer non-sb audio files, fall back to sb files
+      for (const [audioType, candidates] of Object.entries(audioCandidatesByType)) {
         if (candidates.length === 0) continue;
 
         // Filter out files with " sb" or "_sb" in the name (case insensitive)
@@ -205,7 +227,15 @@ function setupFileSystemHandlers(windowService: WindowService): void {
         log.info(`Detected ${audioType} (${fileType}): ${path.basename(selectedFile)}`);
       }
 
-      return { success: true, audioFiles: detectedAudio };
+      // Process video files - just take the first match
+      for (const [videoType, candidates] of Object.entries(videoCandidatesByType)) {
+        if (candidates.length > 0) {
+          detectedVideo[videoType] = candidates[0];
+          log.info(`Detected ${videoType}: ${path.basename(candidates[0])}`);
+        }
+      }
+
+      return { success: true, audioFiles: detectedAudio, videoFiles: detectedVideo };
     } catch (error: any) {
       log.error('Error auto-detecting audio:', error);
       return { success: false, error: error.message };

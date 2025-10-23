@@ -3,10 +3,11 @@
 export interface AudioSource {
   id: string;
   path: string;
-  type: AudioSourceType | '';
+  type: MediaSourceType | '';
   name: string;
   syncFix: boolean;
   applyDrift: boolean;
+  isVideo?: boolean;  // True if this is a video file (cam, screen, game)
 }
 
 export type AudioSourceType =
@@ -18,6 +19,14 @@ export type AudioSourceType =
   | 'game'
   | 'soundEffects'
   | 'bluetooth';
+
+export type VideoSourceType =
+  | 'cam1'
+  | 'cam2'
+  | 'screenVideo'
+  | 'gameVideo';
+
+export type MediaSourceType = AudioSourceType | VideoSourceType;
 
 export interface VideoSource {
   type: 'cam1' | 'cam2' | 'screen' | 'game';
@@ -68,11 +77,16 @@ export const AUDIO_SOURCE_LABELS: { [key in AudioSourceType]: string } = {
   bluetooth: 'Bluetooth Audio'
 };
 
-export const VIDEO_SOURCE_LABELS = {
-  cam1: 'Camera 1',
-  cam2: 'Camera 2',
-  screen: 'Screen Capture',
-  game: 'Game Capture'
+export const VIDEO_SOURCE_LABELS: { [key in VideoSourceType]: string } = {
+  cam1: 'Camera 1 Video',
+  cam2: 'Camera 2 Video',
+  screenVideo: 'Screen Capture Video',
+  gameVideo: 'Game Capture Video'
+};
+
+export const MEDIA_SOURCE_LABELS: { [key in MediaSourceType]: string } = {
+  ...AUDIO_SOURCE_LABELS,
+  ...VIDEO_SOURCE_LABELS
 };
 
 export const XML_OPTIONS = [
