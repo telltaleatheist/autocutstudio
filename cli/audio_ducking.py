@@ -5,15 +5,37 @@ Uses ffmpeg sidechaingate to duck one audio when another is loud.
 """
 
 import subprocess
+import shutil
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 
 class AudioDucker:
     """Handle audio ducking operations using ffmpeg."""
 
     def __init__(self):
-        pass
+        # Find ffmpeg executable in PATH
+        self.ffmpeg_path = self._find_ffmpeg()
+        if not self.ffmpeg_path:
+            raise RuntimeError("ffmpeg not found in PATH. Please install ffmpeg.")
+
+    def _find_ffmpeg(self) -> Optional[str]:
+        """Find ffmpeg executable in system PATH."""
+        # Try common locations
+        ffmpeg = shutil.which('ffmpeg')
+        if ffmpeg:
+            return ffmpeg
+
+        # Try homebrew locations on macOS
+        homebrew_paths = [
+            '/opt/homebrew/bin/ffmpeg',
+            '/usr/local/bin/ffmpeg'
+        ]
+        for path in homebrew_paths:
+            if Path(path).exists():
+                return path
+
+        return None
 
     def duck_audio(
         self,
@@ -21,7 +43,7 @@ class AudioDucker:
         trigger_audio: str,
         output_path: str,
         threshold: int = -40,
-        ratio: int = 20,
+        ratio: int = 20,  # Maximum allowed ratio (20:1)
         attack: int = 10,
         release: int = 100
     ) -> str:
@@ -42,21 +64,20 @@ class AudioDucker:
         print(f"Ducking '{Path(audio_to_duck).name}' when '{Path(trigger_audio).name}' is loud...")
         print(f"  Threshold: {threshold}dB, Ratio: {ratio}:1, Attack: {attack}ms, Release: {release}ms")
 
-        # Build ffmpeg command with sidechaingate filter
+        # Build ffmpeg command with sidechaincompress filter
+        # For dramatic/complete muting, we use max ratio (20) with a hard knee (1)
+        # Hard knee = more aggressive compression = more dramatic effect
         cmd = [
-            'ffmpeg',
-            '-i', str(audio_to_duck),    # Input audio to be ducked
-            '-i', str(trigger_audio),     # Trigger audio
+            self.ffmpeg_path,  # Use the found ffmpeg path
+            '-i', str(audio_to_duck),    # Input audio to be ducked (lowered)
+            '-i', str(trigger_audio),     # Trigger audio (when this is loud, duck the other)
             '-filter_complex',
-            f'[0:a][1:a]sidechaingate='
-            f'threshold={threshold}dB:'
-            f'ratio={ratio}:'
-            f'attack={attack}:'
-            f'release={release}:'
-            f'makeup=0:'
-            f'knee=2.828:'
-            f'detection=rms:'
-            f'link=average[out]',
+            f'[0:a][1:a]sidechaincompress='
+            f'threshold={threshold}dB:'   # When trigger exceeds this, start ducking
+            f'ratio={ratio}:'             # Max ratio (20:1) for heavy reduction
+            f'attack={attack}:'           # How fast to duck (10ms = quick)
+            f'release={release}:'         # How fast to return (100ms = smooth)
+            f'knee=1[out]',               # Hard knee (1) = very aggressive/dramatic
             '-map', '[out]',
             '-c:a', 'pcm_s16le',  # 16-bit PCM WAV
             '-y',  # Overwrite output
@@ -108,7 +129,8 @@ class AudioDucker:
 
         if mode == 'duck1' or mode == 'mutual':
             # Duck audio1 when audio2 is loud
-            output1 = audio1.parent / f"{audio1.stem}_ducked{audio1.suffix}"
+            # Always output as WAV for compatibility with PCM codec
+            output1 = audio1.parent / f"{audio1.stem}_ducked.wav"
             ducked1 = self.duck_audio(
                 audio_to_duck=str(audio1),
                 trigger_audio=str(audio2),
@@ -119,7 +141,8 @@ class AudioDucker:
 
         if mode == 'duck2' or mode == 'mutual':
             # Duck audio2 when audio1 is loud
-            output2 = audio2.parent / f"{audio2.stem}_ducked{audio2.suffix}"
+            # Always output as WAV for compatibility with PCM codec
+            output2 = audio2.parent / f"{audio2.stem}_ducked.wav"
             ducked2 = self.duck_audio(
                 audio_to_duck=str(audio2),
                 trigger_audio=str(audio1),

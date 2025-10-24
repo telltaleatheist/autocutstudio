@@ -5,6 +5,7 @@ import * as log from 'electron-log';
 import { WindowService } from '../services/window-service';
 import { PythonService } from '../services/python-service';
 import { DependencyService } from '../services/dependency-service';
+import { AppConfig } from '../config/app-config';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -294,8 +295,10 @@ function setupAudioHandlers(): void {
         let errorData = '';
 
         // Execute Python script directly
+        const scriptPath = path.join(AppConfig.cliPath, 'apply_audio_drift.py');
+
         const pythonProcess = spawn('python3', [
-          path.join(__dirname, '../../cli/apply_audio_drift.py'),
+          scriptPath,
           '--input', inputPath,
           '--drift-frames', driftFrames.toString(),
           '--duration', videoDuration.toString(),
@@ -372,8 +375,11 @@ function setupAudioHandlers(): void {
         let errorData = '';
 
         // Execute Python audio ducking script
+        const scriptPath = path.join(AppConfig.cliPath, 'audio_ducking.py');
+        log.info('Audio ducking script path:', scriptPath);
+
         const pythonProcess = spawn('python3', [
-          path.join(__dirname, '../../core/audio_ducking.py'),
+          scriptPath,
           audio1,
           audio2,
           mode,
