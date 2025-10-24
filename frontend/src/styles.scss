@@ -51,6 +51,24 @@ html {
     width: 100%;
     overflow: hidden;
 }
+
+/* Force dark mode by default */
+html, body {
+    background: #0f0f0f;
+    color: #ffffff;
+}
+
+:root {
+    --bg-primary: #0f0f0f;
+    --bg-secondary: #1a1a1a;
+    --bg-tertiary: #2d2d2d;
+    --bg-card: #1e1e1e;
+    --text-primary: #ffffff;
+    --text-secondary: #d1d5db;
+    --text-muted: #9ca3af;
+    --border-color: #374151;
+    --shadow-color: rgba(0, 0, 0, 0.3);
+}
 body {
     font-family: var(--font-family);
     line-height: 1.6;

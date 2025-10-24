@@ -22,6 +22,7 @@ from core.compound_generators.ssb_generator import SSBGenerator
 from core.compound_generators.dc_cam_generator import DCCamGenerator
 from core.compound_generators.dc_gs_generator import DCGSGenerator
 from core.compound_generators.dc_ssb_generator import DCSSBGenerator
+from core.compound_generators.hybrid_compound_generator import HybridCompoundGenerator
 from core.compound_generators.master_project_generator import MasterProjectGenerator
 from core.audio_processor import AudioProcessor
 from core.editors.auto_editor import AutoEditor
@@ -107,6 +108,11 @@ def create_xml_zip(xml_files, output_dir, session_name):
 def main():
     """Main workflow execution."""
     try:
+        # DEBUG: Print to verify this version is running
+        print("=" * 80, file=sys.stderr)
+        print("🔥 HYBRID MODE PYTHON CODE VERSION 2.0 - CHANGES ACTIVE! 🔥", file=sys.stderr)
+        print("=" * 80, file=sys.stderr)
+
         # Read input from stdin (passed as JSON from Electron)
         input_data = sys.stdin.read()
         data = json.loads(input_data)
@@ -320,6 +326,36 @@ def main():
         # Get original name from master video path
         original_name = Path(master_video).stem.replace(' master', '')
 
+        # Generate hybrid compounds if DC compounds exist
+        hybrid_cam_path = None
+        hybrid_gs_path = None
+        hybrid_ssb_path = None
+        if cam_dual_path and gs_dual_path and ssb_dual_path:
+            try:
+                emit_progress(88, 'Generating adaptive hybrid compounds...')
+                print(f"\nGenerating hybrid compounds from DC compounds", file=sys.stderr)
+                hybrid_gen = HybridCompoundGenerator(config)
+                # Use the same output directory as the DC compounds
+                output_dir = str(Path(cam_dual_path).parent)
+                hybrid_cam_path, hybrid_gs_path, hybrid_ssb_path = hybrid_gen.generate_hybrid_compounds(
+                    cam_dual_path,
+                    gs_dual_path,
+                    ssb_dual_path,
+                    str(master_video),  # Original master video for detection
+                    output_dir
+                )
+                all_xml_files.extend([hybrid_cam_path, hybrid_gs_path, hybrid_ssb_path])
+                generated_clips.append({
+                    'type': 'hybrid',
+                    'name': 'Hybrid Compounds',
+                    'path': hybrid_cam_path
+                })
+                print(f"Successfully generated hybrid compounds", file=sys.stderr)
+            except Exception as e:
+                print(f"Error generating hybrid compounds: {e}", file=sys.stderr)
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+
         # Generate master projects if requested
         if should_generate('masterSolo', xml_options):
             emit_progress(90, 'Generating Master SOLO project...')
@@ -368,6 +404,34 @@ def main():
                     traceback.print_exc(file=sys.stderr)
             else:
                 print(f"Cannot generate Master DC - missing required compounds", file=sys.stderr)
+
+        # Generate Master Hybrid project if hybrid compounds exist
+        if hybrid_cam_path and hybrid_gs_path and hybrid_ssb_path:
+            try:
+                emit_progress(94, 'Generating Master Hybrid project...')
+                print(f"Generating Master Hybrid project", file=sys.stderr)
+                master_gen = MasterProjectGenerator(config)
+                # Use the DC method but with hybrid compounds - the compounds themselves handle the adaptation
+                master_hybrid_paths = master_gen.generate_dc_master_project(
+                    hybrid_cam_path, hybrid_gs_path, hybrid_ssb_path, original_name
+                )
+                # Rename from DC to Hybrid in the generated files
+                for path in master_hybrid_paths:
+                    if Path(path).exists():
+                        new_path = Path(path).parent / Path(path).name.replace('_DC', '_HYBRID')
+                        Path(path).rename(new_path)
+                        all_xml_files.append(str(new_path))
+
+                generated_clips.append({
+                    'type': 'master_hybrid',
+                    'name': 'Master Hybrid Project',
+                    'path': str(new_path) if master_hybrid_paths else None
+                })
+                print(f"Successfully generated Master Hybrid: {new_path}", file=sys.stderr)
+            except Exception as e:
+                print(f"Error generating Master Hybrid: {e}", file=sys.stderr)
+                import traceback
+                traceback.print_exc(file=sys.stderr)
 
         # Create ZIP file
         emit_progress(95, 'Creating compound clips ZIP file...')

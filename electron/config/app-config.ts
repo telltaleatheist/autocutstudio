@@ -50,12 +50,16 @@ export class AppConfig {
     const isElectronApp = rawAppPath.includes('node_modules/electron/dist/Electron.app');
     log.info(`[AppConfig] isElectronApp: ${isElectronApp}`);
 
+    // NEW: Check if CLI exists in current working directory (development)
+    const cliInCwd = fs.existsSync(path.join(process.cwd(), 'cli', 'electron_workflow.py'));
+    log.info(`[AppConfig] cliInCwd: ${cliInCwd} (${path.join(process.cwd(), 'cli', 'electron_workflow.py')})`);
+
     // Set paths based on environment
     // IMPORTANT: isElectronApp is MORE important than isDevelopment flag
     // because npm start doesn't always set NODE_ENV=development
-    if (isElectronApp) {
-      // Running from node_modules/electron - ALWAYS use process.cwd()
-      log.info('[AppConfig] Using process.cwd() (development mode)');
+    if (isElectronApp || cliInCwd) {
+      // Running from node_modules/electron OR CLI exists in cwd - use process.cwd()
+      log.info('[AppConfig] Using process.cwd() (development mode detected)');
       AppConfig.appPath = process.cwd();
       AppConfig.resourcesPath = process.cwd();
     } else if (AppConfig.isDevelopment) {
