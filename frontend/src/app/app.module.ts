@@ -11,6 +11,7 @@ import { ConsoleOutputComponent } from './components/console-output/console-outp
 import { ResultsComponent } from './components/results/results.component';
 import { AudioEditorComponent } from './components/audio-editor/audio-editor.component';
 import { RelinkingComponent } from './components/relinking/relinking.component';
+import { AudioDuckingComponent } from './components/audio-ducking/audio-ducking.component';
 
 @NgModule({
   declarations: [
@@ -21,7 +22,8 @@ import { RelinkingComponent } from './components/relinking/relinking.component';
     ConsoleOutputComponent,
     ResultsComponent,
     AudioEditorComponent,
-    RelinkingComponent
+    RelinkingComponent,
+    AudioDuckingComponent
   ],
   imports: [
     BrowserModule,

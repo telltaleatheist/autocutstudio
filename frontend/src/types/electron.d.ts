@@ -17,6 +17,12 @@ export interface ElectronAPI {
     videoDuration: number;
     fps: number;
   }) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
+  processAudioDucking: (options: {
+    audio1: string;
+    audio2: string;
+    mode: 'duck1' | 'duck2' | 'mutual';
+    threshold: number;
+  }) => Promise<{ success: boolean; outputFiles?: string[]; error?: string }>;
   onWorkflowOutput: (callback: (data: any) => void) => void;
   onWorkflowComplete: (callback: (data: any) => void) => void;
   removeWorkflowListeners: () => void;

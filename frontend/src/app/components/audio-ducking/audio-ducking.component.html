@@ -1,0 +1,145 @@
+<div class="workflow-container">
+  <div class="workflow-header">
+    <div class="workflow-header-content">
+      <div class="workflow-icon">🔇</div>
+      <div class="workflow-header-text">
+        <h2 class="workflow-title">Audio Ducking</h2>
+        <p class="workflow-subtitle">Automatically lower one audio track when another is loud</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="workflow-card">
+    <div class="workflow-body">
+
+      <!-- Audio File 1 -->
+      <div class="form-section">
+        <div class="form-section-header">
+          <div class="section-icon">🎵</div>
+          <label class="section-label">Audio File 1</label>
+          <span class="required-badge">Required</span>
+        </div>
+        <div class="file-input-group">
+          <input
+            type="text"
+            [(ngModel)]="audio1Path"
+            readonly
+            placeholder="No file selected..."
+            class="file-input"
+          />
+          <button type="button" class="btn-icon-primary" (click)="selectAudio1()">
+            <span class="btn-icon">📁</span>
+            <span class="btn-text">Browse</span>
+          </button>
+        </div>
+        <small class="input-hint">Select first audio file</small>
+      </div>
+
+      <!-- Audio File 2 -->
+      <div class="form-section">
+        <div class="form-section-header">
+          <div class="section-icon">🎵</div>
+          <label class="section-label">Audio File 2</label>
+          <span class="required-badge">Required</span>
+        </div>
+        <div class="file-input-group">
+          <input
+            type="text"
+            [(ngModel)]="audio2Path"
+            readonly
+            placeholder="No file selected..."
+            class="file-input"
+          />
+          <button type="button" class="btn-icon-primary" (click)="selectAudio2()">
+            <span class="btn-icon">📁</span>
+            <span class="btn-text">Browse</span>
+          </button>
+        </div>
+        <small class="input-hint">Select second audio file</small>
+      </div>
+
+      <!-- Ducking Mode -->
+      <div class="form-section">
+        <div class="form-section-header">
+          <div class="section-icon">⚙️</div>
+          <label class="section-label">Ducking Mode</label>
+        </div>
+        <div class="radio-group">
+          <label class="radio-option">
+            <input type="radio" name="duckingMode" value="duck1" [(ngModel)]="duckingMode" />
+            <span class="radio-label">Duck File 1 when File 2 is loud</span>
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="duckingMode" value="duck2" [(ngModel)]="duckingMode" />
+            <span class="radio-label">Duck File 2 when File 1 is loud</span>
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="duckingMode" value="mutual" [(ngModel)]="duckingMode" />
+            <span class="radio-label">Mutual ducking (both files)</span>
+            <small class="option-hint">Creates two output files, each ducked by the other</small>
+          </label>
+        </div>
+      </div>
+
+      <!-- Threshold -->
+      <div class="form-section">
+        <div class="form-section-header">
+          <div class="section-icon">🎚️</div>
+          <label class="section-label">Threshold</label>
+        </div>
+        <div class="slider-group">
+          <input
+            type="range"
+            min="-60"
+            max="-20"
+            step="1"
+            [(ngModel)]="threshold"
+            class="threshold-slider"
+          />
+          <div class="slider-value">{{ threshold }}dB</div>
+        </div>
+        <small class="input-hint">How loud the trigger audio needs to be to activate ducking (lower = more sensitive)</small>
+      </div>
+
+      <!-- Progress Section -->
+      <div class="progress-section" [class.active]="isProcessing">
+        <div class="progress-header">
+          <div class="progress-status-icon" [class.processing]="isProcessing">
+            {{ isProcessing ? '⚙️' : '✓' }}
+          </div>
+          <div class="progress-info">
+            <div class="progress-label">{{ statusMessage }}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Results Section -->
+      <div class="results-section" *ngIf="outputFiles.length > 0">
+        <div class="results-header">
+          <div class="section-icon">✅</div>
+          <label class="section-label">Output Files</label>
+        </div>
+        <div class="results-list">
+          <div *ngFor="let file of outputFiles" class="result-item">
+            <span class="result-icon">🎵</span>
+            <span class="result-path">{{ file }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="workflow-actions">
+        <button
+          class="btn-primary-lg"
+          (click)="processDucking()"
+          [disabled]="isProcessing || !audio1Path || !audio2Path"
+          [class.processing]="isProcessing"
+        >
+          <span class="btn-icon">{{ isProcessing ? '⚙️' : '🔇' }}</span>
+          <span class="btn-text">{{ isProcessing ? 'Processing...' : 'Process Audio Ducking' }}</span>
+        </button>
+      </div>
+
+    </div>
+  </div>
+</div>

@@ -3,11 +3,13 @@ import { RouterModule, Routes } from '@angular/router';
 import { WorkflowComponent } from './components/workflow/workflow.component';
 import { AudioEditorComponent } from './components/audio-editor/audio-editor.component';
 import { RelinkingComponent } from './components/relinking/relinking.component';
+import { AudioDuckingComponent } from './components/audio-ducking/audio-ducking.component';
 
 const routes: Routes = [
   { path: '', redirectTo: '/workflow', pathMatch: 'full' },
   { path: 'workflow', component: WorkflowComponent },
   { path: 'audio-editor', component: AudioEditorComponent },
+  { path: 'audio-ducking', component: AudioDuckingComponent },
   { path: 'relinking', component: RelinkingComponent },
   { path: '**', redirectTo: '/workflow' }
 ];

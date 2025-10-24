@@ -345,6 +345,110 @@ function setupAudioHandlers(): void {
       return { success: false, error: error.message };
     }
   });
+
+  // Process audio ducking
+  ipcMain.handle('process-audio-ducking', async (event, options: {
+    audio1: string;
+    audio2: string;
+    mode: 'duck1' | 'duck2' | 'mutual';
+    threshold: number;
+  }) => {
+    try {
+      log.info('Processing audio ducking:', options);
+
+      const { audio1, audio2, mode, threshold } = options;
+
+      // Validate inputs
+      if (!audio1 || !fs.existsSync(audio1)) {
+        return { success: false, error: 'Audio file 1 does not exist' };
+      }
+      if (!audio2 || !fs.existsSync(audio2)) {
+        return { success: false, error: 'Audio file 2 does not exist' };
+      }
+
+      // Execute Python script for audio ducking
+      return new Promise((resolve) => {
+        let outputData = '';
+        let errorData = '';
+
+        // Execute Python audio ducking script
+        const pythonProcess = spawn('python3', [
+          path.join(__dirname, '../../core/audio_ducking.py'),
+          audio1,
+          audio2,
+          mode,
+          threshold.toString()
+        ]);
+
+        // Handle stdout
+        pythonProcess.stdout.on('data', (data: Buffer) => {
+          const output = data.toString();
+          outputData += output;
+          log.info('Audio ducking output:', output);
+        });
+
+        // Handle stderr
+        pythonProcess.stderr.on('data', (data: Buffer) => {
+          const error = data.toString();
+          errorData += error;
+          log.info('Audio ducking info:', error); // Often progress info goes to stderr
+        });
+
+        // Handle process completion
+        pythonProcess.on('close', (code: number | null) => {
+          if (code === 0) {
+            // Parse output files from the output
+            const outputFiles: string[] = [];
+
+            // Extract file paths from output (look for lines with ducked files)
+            const lines = errorData.split('\n');
+            for (const line of lines) {
+              if (line.includes('_ducked')) {
+                const match = line.match(/saved to: (.+)/i) || line.match(/• (.+)/);
+                if (match) {
+                  outputFiles.push(match[1].trim());
+                }
+              }
+            }
+
+            // If we couldn't parse from output, construct expected paths
+            if (outputFiles.length === 0) {
+              const audio1File = path.parse(audio1);
+              const audio2File = path.parse(audio2);
+
+              if (mode === 'duck1' || mode === 'mutual') {
+                outputFiles.push(path.join(audio1File.dir, `${audio1File.name}_ducked${audio1File.ext}`));
+              }
+              if (mode === 'duck2' || mode === 'mutual') {
+                outputFiles.push(path.join(audio2File.dir, `${audio2File.name}_ducked${audio2File.ext}`));
+              }
+            }
+
+            log.info('Audio ducking completed successfully:', outputFiles);
+            resolve({ success: true, outputFiles });
+          } else {
+            log.error('Audio ducking failed with code:', code);
+            resolve({ success: false, error: errorData || 'Failed to process audio ducking' });
+          }
+        });
+
+        // Handle process errors
+        pythonProcess.on('error', (error: Error) => {
+          log.error('Audio ducking process error:', error);
+          resolve({ success: false, error: error.message });
+        });
+
+        // Timeout after 10 minutes
+        setTimeout(() => {
+          pythonProcess.kill();
+          resolve({ success: false, error: 'Operation timed out after 10 minutes' });
+        }, 10 * 60 * 1000);
+      });
+    } catch (error: any) {
+      log.error('Error processing audio ducking:', error);
+      return { success: false, error: error.message };
+    }
+  });
 }
 
 /**

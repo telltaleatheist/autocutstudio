@@ -165,4 +165,17 @@ export class ElectronService {
     }
     return window.electron.saveAssetConfig(assetPaths);
   }
+
+  // Audio ducking
+  async processAudioDucking(options: {
+    audio1: string;
+    audio2: string;
+    mode: 'duck1' | 'duck2' | 'mutual';
+    threshold: number;
+  }): Promise<{ success: boolean; outputFiles?: string[]; error?: string }> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return window.electron.processAudioDucking(options);
+  }
 }

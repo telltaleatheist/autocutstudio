@@ -28,6 +28,12 @@ export interface ElectronAPI {
     videoDuration: number;
     fps: number;
   }) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
+  processAudioDucking: (options: {
+    audio1: string;
+    audio2: string;
+    mode: 'duck1' | 'duck2' | 'mutual';
+    threshold: number;
+  }) => Promise<{ success: boolean; outputFiles?: string[]; error?: string }>;
 
   // Workflow events
   onWorkflowOutput: (callback: (data: any) => void) => void;
@@ -63,6 +69,7 @@ const electronAPI: ElectronAPI = {
 
   // Audio processing
   applyAudioDrift: (options) => ipcRenderer.invoke('apply-audio-drift', options),
+  processAudioDucking: (options) => ipcRenderer.invoke('process-audio-ducking', options),
 
   // Workflow events
   onWorkflowOutput: (callback) => {
