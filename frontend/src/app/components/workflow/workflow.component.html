@@ -73,69 +73,6 @@
         </div>
       </div>
 
-      <!-- Master Projects -->
-      <div class="form-section">
-        <div class="form-section-header">
-          <div class="section-icon">📽️</div>
-          <label class="section-label">Master Projects</label>
-        </div>
-        <div class="master-projects-grid">
-          <label class="master-project-card" [class.selected]="masterSolo">
-            <input type="checkbox" [(ngModel)]="masterSolo" (ngModelChange)="onMasterSoloChange($event)" />
-            <div class="card-content">
-              <div class="card-icon">👤</div>
-              <div class="card-title">Master SOLO</div>
-              <div class="card-desc">Single camera configuration</div>
-            </div>
-            <div class="card-check">✓</div>
-          </label>
-          <label class="master-project-card" [class.selected]="masterDc">
-            <input type="checkbox" [(ngModel)]="masterDc" (ngModelChange)="onMasterDcChange($event)" />
-            <div class="card-content">
-              <div class="card-icon">👥</div>
-              <div class="card-title">Master DC</div>
-              <div class="card-desc">Dual camera configuration</div>
-            </div>
-            <div class="card-check">✓</div>
-          </label>
-        </div>
-      </div>
-
-      <!-- XML Options -->
-      <div class="form-section">
-        <div class="collapsible-section">
-          <div class="collapsible-header" (click)="toggleXmlAccordion()">
-            <div class="section-icon">📦</div>
-            <label class="section-label">Compound Clip Options</label>
-            <div class="collapsible-toggle">
-              <span class="toggle-hint">{{ xmlAccordionOpen ? 'Click to collapse' : 'Click to expand' }}</span>
-              <span class="toggle-icon" [class.open]="xmlAccordionOpen">▼</span>
-            </div>
-          </div>
-          <div class="collapsible-content" [class.open]="xmlAccordionOpen">
-            <div class="quick-actions">
-              <button type="button" class="btn-quick" (click)="selectAllXmlOptions()">
-                <span class="btn-icon">✓</span> Select All
-              </button>
-              <button type="button" class="btn-quick" (click)="deselectAllXmlOptions()">
-                <span class="btn-icon">✕</span> Deselect All
-              </button>
-            </div>
-            <div class="xml-options-grid">
-              <div *ngFor="let opt of xmlOptions" class="xml-option-card" [class.selected]="selectedXmlOptions.includes(opt.value)">
-                <label class="option-label">
-                  <input type="checkbox" [checked]="selectedXmlOptions.includes(opt.value)" (change)="toggleXmlOption(opt.value)" />
-                  <div class="option-content">
-                    <div class="option-title">{{ opt.label }}</div>
-                    <div class="option-description">{{ opt.description }}</div>
-                  </div>
-                  <div class="option-check">✓</div>
-                </label>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
 
       <!-- Progress Section -->
       <div class="progress-section" [class.active]="isProcessing">

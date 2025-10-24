@@ -238,7 +238,8 @@ class DCGSGenerator:
                     "0s",
                     audio_info['duration'],
                     mic_key,     # Pass audio type for effects
-                    resources    # Pass resources for effect creation
+                    resources,   # Pass resources for effect creation
+                    enabled=False  # DISABLED for GS
                 )
                 gap.append(mic_clip)
                 print(f"Added {mic_key} to lane {current_audio_lane}")
@@ -254,7 +255,8 @@ class DCGSGenerator:
                 "0s",
                 audio_info['duration'],
                 'screen',    # Pass audio type for effects
-                resources    # Pass resources for effect creation
+                resources,   # Pass resources for effect creation
+                enabled=False  # DISABLED for GS
             )
             gap.append(screen_clip)
             print(f"Added screen audio to lane {current_audio_lane}")
@@ -270,7 +272,8 @@ class DCGSGenerator:
                 "0s",
                 audio_info['duration'],
                 'game',      # Pass audio type for effects
-                resources    # Pass resources for effect creation
+                resources,   # Pass resources for effect creation
+                enabled=False  # DISABLED for GS
             )
             gap.append(game_clip)
             print(f"Added game audio to lane {current_audio_lane}")
@@ -286,7 +289,8 @@ class DCGSGenerator:
                 "0s",
                 audio_info['duration'],
                 'sound_effects',  # Pass audio type for effects
-                resources         # Pass resources for effect creation
+                resources,        # Pass resources for effect creation
+                enabled=False  # DISABLED for GS
             )
             gap.append(sfx_clip)
             print(f"Added sound_effects to lane {current_audio_lane}")

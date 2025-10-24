@@ -33,12 +33,11 @@ export class WorkflowComponent implements OnInit {
   // Audio corrections
   globalDriftFrames = 0;
 
-  // XML options
+  // XML options - all options are always selected
   xmlOptions = XML_OPTIONS;
   selectedXmlOptions: string[] = [];
-  xmlAccordionOpen = false;
 
-  // Master projects (both checked by default)
+  // Master projects - always enabled
   masterSolo = true;
   masterDc = true;
 
@@ -61,6 +60,9 @@ export class WorkflowComponent implements OnInit {
   ) {}
 
   ngOnInit() {
+    // Select all XML options by default
+    this.selectedXmlOptions = this.xmlOptions.map(opt => opt.value);
+
     // Subscribe to processing updates
     this.processingService.getCurrentJob().subscribe(job => {
       console.log('[WorkflowComponent] Received job update:', job);
@@ -247,67 +249,6 @@ export class WorkflowComponent implements OnInit {
 
   clearVideoSource(sourceType: 'cam1' | 'cam2' | 'screen' | 'game') {
     this.videoSources[sourceType] = '';
-  }
-
-  // XML options
-  toggleXmlOption(value: string) {
-    const index = this.selectedXmlOptions.indexOf(value);
-    if (index > -1) {
-      this.selectedXmlOptions.splice(index, 1);
-    } else {
-      this.selectedXmlOptions.push(value);
-    }
-  }
-
-  selectAllXmlOptions() {
-    this.selectedXmlOptions = this.xmlOptions.map(opt => opt.value);
-  }
-
-  deselectAllXmlOptions() {
-    this.selectedXmlOptions = [];
-  }
-
-  toggleXmlAccordion() {
-    this.xmlAccordionOpen = !this.xmlAccordionOpen;
-  }
-
-  // Master project handlers
-  onMasterSoloChange(checked: boolean) {
-    this.masterSolo = checked;
-
-    // Auto-select required XML options
-    const soloOptions = ['camSolo', 'gsSolo', 'ssbSolo'];
-
-    if (checked) {
-      // Add SOLO options if not already selected
-      soloOptions.forEach(opt => {
-        if (!this.selectedXmlOptions.includes(opt)) {
-          this.selectedXmlOptions.push(opt);
-        }
-      });
-    } else {
-      // Remove SOLO options
-      this.selectedXmlOptions = this.selectedXmlOptions.filter(opt => !soloOptions.includes(opt));
-    }
-  }
-
-  onMasterDcChange(checked: boolean) {
-    this.masterDc = checked;
-
-    // Auto-select required XML options
-    const dcOptions = ['camDual', 'gsDual', 'ssbDual'];
-
-    if (checked) {
-      // Add DC options if not already selected
-      dcOptions.forEach(opt => {
-        if (!this.selectedXmlOptions.includes(opt)) {
-          this.selectedXmlOptions.push(opt);
-        }
-      });
-    } else {
-      // Remove DC options
-      this.selectedXmlOptions = this.selectedXmlOptions.filter(opt => !dcOptions.includes(opt));
-    }
   }
 
   // Process workflow
