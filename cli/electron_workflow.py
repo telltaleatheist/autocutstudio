@@ -172,6 +172,34 @@ def main():
                 except Exception as e:
                     print(f"Warning: Failed to process {audio_type} audio: {e}", file=sys.stderr)
 
+        # Step 3.5: Process video sources (sync 30fps to 29.97fps)
+        emit_progress(35, 'Processing custom video sources...')
+        processed_video_sources = {}
+
+        # Process screen and game captures if provided
+        for video_type in ['screen', 'game']:
+            if video_type in video_sources and video_sources[video_type]:
+                try:
+                    print(f"Processing {video_type} video for framerate sync...", file=sys.stderr)
+                    synced_path = audio_processor.process_video_source(
+                        video_sources[video_type],
+                        apply_sync=True  # Always sync custom screen/game captures
+                    )
+                    processed_video_sources[video_type] = synced_path
+                    print(f"Synced {video_type} video: {synced_path}", file=sys.stderr)
+                except Exception as e:
+                    print(f"Warning: Failed to sync {video_type} video: {e}", file=sys.stderr)
+                    print(f"Using original video without sync", file=sys.stderr)
+                    processed_video_sources[video_type] = video_sources[video_type]
+
+        # Copy cam1 and cam2 without processing (they're from master video)
+        for cam_type in ['cam1', 'cam2']:
+            if cam_type in video_sources and video_sources[cam_type]:
+                processed_video_sources[cam_type] = video_sources[cam_type]
+
+        # Use processed video sources for the rest of the workflow
+        video_sources = processed_video_sources if processed_video_sources else video_sources
+
         # Step 4: Generate compound clips
         generated_clips = []
         progress_per_clip = 50 / 6

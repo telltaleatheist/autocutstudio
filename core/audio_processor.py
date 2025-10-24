@@ -264,6 +264,84 @@ class AudioProcessor:
         
         return str(processed_audio_path), duration, sample_rate, channels
     
+    def sync_video_for_2997fps(self, input_path: str, output_path: Optional[str] = None) -> str:
+        """Speed up 30fps video to match 29.97fps timeline.
+
+        This is needed when custom screen/game captures are recorded at 30fps
+        but the master video is 29.97fps. We speed up by a factor of 1.001001
+        to keep them in sync.
+
+        Args:
+            input_path: Path to input video file (30fps)
+            output_path: Optional output path
+
+        Returns:
+            Path to the synced video file
+        """
+        input_path = Path(input_path)
+
+        if output_path is None:
+            output_path = input_path.parent / f"{input_path.stem}_synced{input_path.suffix}"
+
+        output_path = Path(output_path)
+
+        # Speed factor: 30 / 29.97 = 1.001001001 (30000/29970)
+        # This makes the video slightly faster to match 29.97fps timeline
+        speed_factor = 1.001001
+
+        print(f"Syncing video framerate: {input_path.name}")
+        print(f"  Speeding up by {speed_factor}x to sync 30fps -> 29.97fps")
+
+        cmd = [
+            'ffmpeg', '-i', str(input_path),
+            '-filter:v', f'setpts=PTS/{speed_factor}',  # Speed up video
+            '-filter:a', f'atempo={speed_factor}',      # Speed up audio too
+            '-c:v', 'libx264',  # Re-encode video
+            '-crf', '18',       # High quality
+            '-preset', 'medium',
+            '-c:a', 'aac',      # Re-encode audio
+            '-b:a', '192k',
+            '-y',  # Overwrite output
+            str(output_path)
+        ]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            print(f"Video synced: {output_path}")
+            return str(output_path)
+        except subprocess.CalledProcessError as e:
+            print(f"Error syncing video {input_path}: {e}")
+            print(f"stderr: {e.stderr}")
+            raise
+
+    def process_video_source(self, source_path: str, apply_sync: bool = True,
+                            output_dir: Optional[str] = None) -> str:
+        """Process video source with optional framerate sync.
+
+        Args:
+            source_path: Path to video file
+            apply_sync: If True, speed up 30fps video to match 29.97fps
+            output_dir: Optional output directory
+
+        Returns:
+            Path to processed video
+        """
+        source_path = Path(source_path)
+
+        if output_dir is None:
+            output_dir = source_path.parent
+        output_dir = Path(output_dir)
+
+        processed_video_path = source_path
+
+        # Apply framerate sync if requested
+        # This assumes the input is 30fps and needs to be synced to 29.97fps
+        if apply_sync:
+            synced_path = output_dir / f"{source_path.stem}_synced{source_path.suffix}"
+            processed_video_path = Path(self.sync_video_for_2997fps(str(source_path), str(synced_path)))
+
+        return str(processed_video_path)
+
     def cleanup_temp_files(self):
         """Remove temporary audio files."""
         if self.temp_dir.exists():
