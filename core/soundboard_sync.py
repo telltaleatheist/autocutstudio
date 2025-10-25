@@ -73,29 +73,15 @@ def sync_soundboard_files(
     if not mic1_sb or not mic1_vmix:
         raise ValueError("Need at least mic 1 soundboard and VMix files for sync detection")
 
-    print("\n▶ SOUNDBOARD SYNC - Unified Offset & Drift Detection")
-    print()
+    print("\n▶ SOUNDBOARD SYNC", file=sys.stderr)
 
     # Step 2: Merge mic 1 + mic 2 if both exist
-    print("Step 1: Preparing soundboard audio for correlation")
-
     if mic2_sb and Path(mic2_sb).exists():
-        print(f"Merging: Mic 1 + Mic 2 soundboard files")
         merged_sb = analyzer.merge_audio_files(mic1_sb, mic2_sb)
         cleanup_merged = (merged_sb != mic1_sb)  # Clean up if temp file was created
     else:
-        print(f"Using: Mic 1 soundboard only (Mic 2 not available)")
         merged_sb = mic1_sb
         cleanup_merged = False
-
-    print()
-
-    # Step 3: Correlate merged soundboard vs VMix mic 1
-    print("Step 2: Detecting sync parameters")
-    print(f"  Correlating: Soundboard Mics vs VMix Mic 1 Audio")
-    print(f"  Soundboard: {Path(merged_sb).name}")
-    print(f"  VMix:       {Path(mic1_vmix).name}")
-    print()
 
     try:
         sync_info = analyzer.analyze_sync(mic1_vmix, merged_sb, search_window=30)
@@ -104,21 +90,7 @@ def sync_soundboard_files(
         speed_factor = sync_info['speed_factor']
         correlation = sync_info['correlation_score']
 
-        print()
-        print("✓ Detected sync parameters:")
-        print(f"  Offset:       {offset_seconds:.3f}s ({offset_seconds * 29.97:.1f} frames)")
-        print(f"  Speed:        {speed_factor:.10f}")
-        print(f"  Drift:        {sync_info['drift_frames']:.1f} frames over {sync_info.get('master_duration', 0)/3600:.2f}h")
-        print(f"  Correlation:  {correlation:.3f}")
-        print()
-
-        if correlation < 0.3:
-            print("⚠ WARNING: Low correlation score - sync may not be accurate")
-            print("  Consider checking:")
-            print("  - Files are from the same recording session")
-            print("  - Audio levels are adequate")
-            print("  - No excessive noise or distortion")
-            print()
+        print(f"  Offset: {offset_seconds * 29.97:.1f}f | Speed: {speed_factor:.10f} | Drift: {sync_info['drift_frames']:.1f}f", file=sys.stderr)
 
     finally:
         # Clean up merged file if it was temporary
@@ -126,17 +98,11 @@ def sync_soundboard_files(
             os.unlink(merged_sb)
 
     # Step 4: Apply sync to ALL soundboard files
-    print("Step 3: Applying sync to all soundboard files")
-
     results = {}
 
     for name, sb_file in soundboard_files.items():
         if not sb_file or not Path(sb_file).exists():
-            print(f"⊘ Skipping {name}: File not found")
             continue
-
-        print(f"\nSyncing: {name}")
-        print(f"  File: {Path(sb_file).name}")
 
         # Determine output path
         sb_path = Path(sb_file)
@@ -163,16 +129,12 @@ def sync_soundboard_files(
                 'correlation': correlation
             }
 
-            print(f"  ✓ Synced: {Path(synced_path).name}")
-
         except Exception as e:
-            print(f"  ✗ Error: {e}")
             results[name] = {
                 'error': str(e)
             }
 
-    print()
-    print(f"✓ Soundboard sync complete: {len([r for r in results.values() if 'path' in r])}/{len(soundboard_files)} files synced")
+    print(f"  Applied to {len([r for r in results.values() if 'path' in r])} files\n", file=sys.stderr)
 
     return results
 

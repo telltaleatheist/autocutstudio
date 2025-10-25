@@ -112,12 +112,8 @@ class AudioSyncAnalyzer:
 
         try:
             subprocess.run(cmd, capture_output=True, text=True, check=True)
-            print(f"Merged audio files for correlation:")
-            print(f"  {Path(file1).name} + {Path(file2).name}")
             return temp_merged.name
         except subprocess.CalledProcessError as e:
-            print(f"Warning: Could not merge audio files, using first file only")
-            print(f"  Error: {e.stderr}")
             # Clean up temp file
             Path(temp_merged.name).unlink(missing_ok=True)
             return file1
@@ -170,13 +166,11 @@ class AudioSyncAnalyzer:
             return audio_data, sample_rate
 
         except subprocess.CalledProcessError as e:
-            print(f"Error extracting audio from {file_path}: {e}")
-            print(f"stderr: {e.stderr}")
             raise
 
     def find_offset_cross_correlation(self, master_path: str, source_path: str,
                                      search_window_seconds: float = 30,
-                                     analysis_duration: float = 60) -> Tuple[float, float]:
+                                     analysis_duration: float = 30) -> Tuple[float, float]:
         """Find time offset between source and master using cross-correlation.
 
         Args:
@@ -190,10 +184,6 @@ class AudioSyncAnalyzer:
             - offset_seconds: How many seconds to shift source to align with master (positive = delay source)
             - correlation_score: Quality of match (0-1, higher is better)
         """
-        print(f"\nAnalyzing audio sync between:")
-        print(f"  Master: {Path(master_path).name}")
-        print(f"  Source: {Path(source_path).name}")
-
         # Extract audio from both files
         # Start at search_window to allow for negative offsets
         master_audio, master_sr = self.extract_audio_segment(
@@ -208,9 +198,6 @@ class AudioSyncAnalyzer:
             duration_seconds=analysis_duration
         )
 
-        print(f"  Master audio: {len(master_audio)} samples @ {master_sr}Hz")
-        print(f"  Source audio: {len(source_audio)} samples @ {source_sr}Hz")
-
         # Perform cross-correlation
         correlation = signal.correlate(master_audio, source_audio, mode='valid')
 
@@ -224,9 +211,6 @@ class AudioSyncAnalyzer:
         # Convert peak index to time offset
         offset_samples = peak_index
         offset_seconds = offset_samples / master_sr
-
-        print(f"  Offset found: {offset_seconds:.3f} seconds")
-        print(f"  Correlation score: {correlation_score:.3f}")
 
         return offset_seconds, correlation_score
 
@@ -248,7 +232,11 @@ class AudioSyncAnalyzer:
 
     def detect_clock_drift(self, master_path: str, source_path: str,
                           offset_seconds: float) -> Tuple[float, float]:
-        """Detect clock drift between source and master.
+        """Detect clock drift between source and master using dual cross-correlation.
+
+        Compares waveform alignment at the start and end of the recording to measure
+        how much the clock drift has accumulated over time. This is independent of
+        file durations and works even if files were re-rendered to different lengths.
 
         Args:
             master_path: Path to master file
@@ -263,28 +251,54 @@ class AudioSyncAnalyzer:
         master_duration = self.get_duration(master_path)
         source_duration = self.get_duration(source_path)
 
-        print(f"\nDetecting clock drift:")
-        print(f"  Master duration: {master_duration:.6f}s ({master_duration / 60:.3f} min)")
-        print(f"  Source duration: {source_duration:.6f}s ({source_duration / 60:.3f} min)")
+        # Use the shorter duration to ensure we don't read past end of either file
+        safe_duration = min(master_duration, source_duration)
 
-        # Account for offset - source should be measured from where it aligns with master
-        effective_source_duration = source_duration
-        effective_master_duration = master_duration - offset_seconds
+        # Measure alignment at START (use the offset we already detected)
+        offset_at_start = offset_seconds
 
-        # Calculate speed factor needed
-        # If source is longer, we need to speed it up (factor > 1)
-        # If source is shorter, we need to slow it down (factor < 1)
-        speed_factor = effective_source_duration / effective_master_duration
+        # Measure alignment at END (30 seconds from the end)
+        # Extract last 30 seconds from both files
+        analysis_duration = 30  # seconds to analyze
+        end_position = safe_duration - analysis_duration - 10  # 10s buffer before actual end
 
-        # Calculate drift in frames at 29.97fps for reference
-        duration_diff = effective_source_duration - effective_master_duration
-        drift_frames = duration_diff * 29.97
-        drift_pct = (speed_factor - 1.0) * 100
+        if end_position < analysis_duration + 10:
+            # File too short for dual correlation, fall back to duration-based
+            effective_source_duration = source_duration
+            effective_master_duration = master_duration - offset_seconds
+            speed_factor = effective_source_duration / effective_master_duration
+            duration_diff = effective_source_duration - effective_master_duration
+            drift_frames = duration_diff * 29.97
+            return speed_factor, drift_frames
 
-        print(f"  Duration difference: {duration_diff:.6f}s ({drift_frames:.3f} frames @ 29.97fps)")
-        print(f"  Clock drift: {drift_pct:+.8f}%")
-        print(f"  Speed correction factor: {speed_factor:.10f}")
-        print(f"    (atempo={speed_factor:.10f} will stretch/shrink to match master)")
+        # Extract audio from end of both files
+        master_end_audio, master_sr = self.extract_audio_segment(
+            master_path,
+            start_seconds=end_position,
+            duration_seconds=analysis_duration
+        )
+
+        source_end_audio, source_sr = self.extract_audio_segment(
+            source_path,
+            start_seconds=end_position,
+            duration_seconds=analysis_duration
+        )
+
+        # Cross-correlate to find offset at the end
+        correlation = signal.correlate(master_end_audio, source_end_audio, mode='valid')
+        peak_index = np.argmax(correlation)
+        offset_at_end = peak_index / master_sr
+
+        # Calculate drift: difference in offsets over time
+        drift_over_time = offset_at_end - offset_at_start
+        drift_frames = drift_over_time * 29.97
+
+        # Calculate speed factor
+        # If drift_over_time is positive: source is falling behind (too slow, needs speedup)
+        # If drift_over_time is negative: source is ahead (too fast, needs slowdown)
+        speed_factor = (end_position + drift_over_time) / end_position
+
+        print(f"  Drift: {drift_frames:.1f} frames over {end_position / 60:.1f} min → speed={speed_factor:.10f}", file=sys.stderr)
 
         return speed_factor, drift_frames
 
@@ -490,20 +504,12 @@ class MediaSyncProcessor:
         # Check if this is a soundboard file (needs dual mono conversion)
         is_soundboard = 'sb' in input_path.name.lower() and ('sb.' in input_path.name.lower() or input_path.name.lower().endswith('sb.wav'))
 
-        print(f"\nApplying sync to audio: {input_path.name}")
-        print(f"  Offset: {offset_seconds:.3f}s")
-        print(f"  Speed factor: {speed_factor:.6f}")
-        if is_soundboard:
-            print(f"  ⚠️  Soundboard file - will convert to dual mono")
-
         # Build ffmpeg filter
         filters = []
 
-        # Apply speed adjustment if needed (allow 0.01% tolerance)
-        if abs(speed_factor - 1.0) > 0.0001:
-            print(f"  Applying speed correction: atempo={speed_factor:.10f}")
-            drift_pct = (speed_factor - 1.0) * 100
-            print(f"    Clock drift: {drift_pct:+.6f}%")
+        # Apply speed adjustment if needed (allow 0.0001% tolerance)
+        # Even tiny drifts matter over long recordings (e.g., 12 frames over 4 hours = 0.003%)
+        if abs(speed_factor - 1.0) > 0.000001:
 
             # atempo has limits [0.5, 2.0], so chain multiple if needed
             if 0.5 <= speed_factor <= 2.0:
@@ -521,8 +527,6 @@ class MediaSyncProcessor:
                     else:
                         filters.append(f'atempo={remaining:.10f}')
                         break
-        else:
-            print(f"  No speed correction needed (drift < 0.01%)")
 
         # Apply offset (delay) if needed
         if abs(offset_seconds) > 0.001:
