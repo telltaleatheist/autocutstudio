@@ -76,6 +76,7 @@
 
       <!-- Progress Section -->
       <div class="progress-section" [class.active]="isProcessing">
+        <!-- Overall Progress -->
         <div class="progress-header">
           <div class="progress-status-icon" [class.processing]="isProcessing">
             {{ isProcessing ? '⚙️' : '✓' }}
@@ -87,6 +88,31 @@
         </div>
         <div class="progress-bar">
           <div class="progress-fill" [style.width.%]="currentProgress"></div>
+        </div>
+
+        <!-- Current Operation (with sub-progress and skip button) -->
+        <div class="operation-progress" *ngIf="isProcessing && currentOperation">
+          <div class="operation-header">
+            <div class="operation-info">
+              <div class="operation-label">{{ currentOperation }}</div>
+              <div class="operation-detail-row">
+                <div class="operation-detail">{{ subProgress.toFixed(1) }}%</div>
+                <div class="operation-time-estimate" *ngIf="estimatedTimeRemaining">{{ estimatedTimeRemaining }}</div>
+              </div>
+            </div>
+            <button
+              class="btn-skip"
+              (click)="skipCurrentOperation()"
+              [disabled]="!canSkipCurrent"
+              [title]="canSkipCurrent ? 'Skip this operation' : 'Cannot skip - required for workflow'"
+            >
+              <span class="btn-icon">⏩</span>
+              <span class="btn-text">Skip</span>
+            </button>
+          </div>
+          <div class="progress-bar sub">
+            <div class="progress-fill" [style.width.%]="subProgress"></div>
+          </div>
         </div>
       </div>
 

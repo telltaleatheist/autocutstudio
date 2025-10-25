@@ -480,10 +480,10 @@ function setupPythonHandlers(): void {
           log.info(`[${jobId}] Sending workflow-output (stderr) to renderer:`, data);
           event.sender.send('workflow-output', { jobId, type: 'stderr', data });
         },
-        onProgress: (progress, message) => {
+        onProgress: (progress, message, subProgress) => {
           // Send progress updates to renderer
           log.info(`[${jobId}] Sending workflow-output (progress) to renderer: ${progress}% - ${message}`);
-          event.sender.send('workflow-output', { jobId, type: 'progress', data: message, progress });
+          event.sender.send('workflow-output', { jobId, type: 'progress', data: message, progress, sub_progress: subProgress });
         },
         onComplete: (code, result) => {
           // Send completion to renderer
@@ -506,6 +506,19 @@ function setupPythonHandlers(): void {
       return { success: killed };
     } catch (error: any) {
       log.error('Error canceling job:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Send skip signal to current workflow
+  ipcMain.handle('send-skip-signal', async (event) => {
+    try {
+      log.info('[SKIP IPC] Skip signal received from renderer');
+      const sent = pythonService.sendSkipSignal();
+      log.info('[SKIP IPC] pythonService.sendSkipSignal() returned:', sent);
+      return { success: sent };
+    } catch (error: any) {
+      log.error('[SKIP IPC] Error sending skip signal:', error);
       return { success: false, error: error.message };
     }
   });

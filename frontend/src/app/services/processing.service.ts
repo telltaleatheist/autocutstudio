@@ -13,6 +13,11 @@ export interface ProcessingJob {
   results?: any[];
   startTime?: Date;
   endTime?: Date;
+  // Skip functionality
+  currentOperation?: string;
+  canSkipCurrent?: boolean;
+  subProgress?: number;
+  skipDecisions?: any;
 }
 
 @Injectable({
@@ -103,30 +108,81 @@ export class ProcessingService {
   /**
    * Handle workflow output
    */
-  private handleWorkflowOutput(data: { jobId: string; type: string; data: string; progress?: number }): void {
-    console.log('[ProcessingService] Received workflow-output event:', data);
+  private handleWorkflowOutput(data: { jobId: string; type: string; data: string; progress?: number; sub_progress?: number }): void {
     const currentJob = this.currentJob$.value;
-    console.log('[ProcessingService] Current job:', currentJob);
 
     if (!currentJob || currentJob.id !== data.jobId) {
-      console.warn('[ProcessingService] Ignoring output - no matching job', { currentJobId: currentJob?.id, dataJobId: data.jobId });
       return;
     }
 
     // Handle progress updates
     if (data.type === 'progress' && data.progress !== undefined) {
-      console.log(`[ProcessingService] Updating progress: ${data.progress}% - ${data.data}`);
       const updatedJob = {
         ...currentJob,
         progress: data.progress,
-        message: data.data
+        message: data.data,
+        subProgress: data.sub_progress || 0
+      };
+      this.currentJob$.next(updatedJob);
+      return;
+    }
+
+    // For stdout type, try to parse data as JSON to check for special events
+    if (data.type === 'stdout' && typeof data.data === 'string') {
+      try {
+        const parsed = JSON.parse(data.data);
+
+        // Handle skip_capabilities event
+        if (parsed.type === 'skip_capabilities') {
+          const updatedJob = {
+            ...currentJob,
+            skipDecisions: parsed.data.decisions
+          };
+          this.currentJob$.next(updatedJob);
+          return;
+        }
+
+        // Handle operation_start event
+        if (parsed.type === 'operation_start') {
+          const updatedJob = {
+            ...currentJob,
+            currentOperation: parsed.data.operation,
+            canSkipCurrent: parsed.data.can_skip,
+            subProgress: 0  // Reset sub-progress
+          };
+          this.currentJob$.next(updatedJob);
+          return;
+        }
+      } catch (e) {
+        // Not JSON or different format, treat as regular output
+      }
+    }
+
+    // Handle skip_capabilities event (legacy format)
+    if (data.type === 'skip_capabilities') {
+      const parsedData = typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
+      const updatedJob = {
+        ...currentJob,
+        skipDecisions: parsedData.decisions
+      };
+      this.currentJob$.next(updatedJob);
+      return;
+    }
+
+    // Handle operation_start event (legacy format)
+    if (data.type === 'operation_start') {
+      const parsedData = typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
+      const updatedJob = {
+        ...currentJob,
+        currentOperation: parsedData.operation,
+        canSkipCurrent: parsedData.can_skip,
+        subProgress: 0  // Reset sub-progress
       };
       this.currentJob$.next(updatedJob);
       return;
     }
 
     // Handle regular output
-    console.log('[ProcessingService] Handling regular output:', data.data);
     const output = [...currentJob.output, data.data];
     const updatedJob = {
       ...currentJob,

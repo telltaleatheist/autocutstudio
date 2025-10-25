@@ -10,6 +10,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import atexit
+import signal
 
 # Add parent directory to path to import core modules
 BASE_DIR = Path(__file__).parent.parent.resolve()
@@ -26,15 +28,61 @@ from core.compound_generators.hybrid_compound_generator import HybridCompoundGen
 from core.compound_generators.master_project_generator import MasterProjectGenerator
 from core.audio_processor import AudioProcessor
 from core.editors.auto_editor import AutoEditor
+from core.skip_logic import SkipDecisionEngine
 import zipfile
+import select
 
-def emit_progress(progress, message):
+# DO NOT reopen stdin - causes character loss issues
+# Keep the original stdin as-is for reliable reading
+
+# Try to import audio sync - it's optional
+AUDIO_SYNC_AVAILABLE = False
+try:
+    from core.audio_sync import MediaSyncProcessor, _DEPENDENCIES_AVAILABLE
+    AUDIO_SYNC_AVAILABLE = _DEPENDENCIES_AVAILABLE
+    if AUDIO_SYNC_AVAILABLE:
+        print("✓ Advanced audio sync system loaded (cross-correlation enabled)", file=sys.stderr)
+    else:
+        print("⚠ Advanced sync not available (using basic sync)", file=sys.stderr)
+        print(f"  Reason: Python {sys.version_info.major}.{sys.version_info.minor} - requires 3.10-3.13", file=sys.stderr)
+        MediaSyncProcessor = None
+except Exception as e:
+    print(f"⚠ Audio sync not available: {e}", file=sys.stderr)
+    print("  Falling back to basic framerate sync", file=sys.stderr)
+    MediaSyncProcessor = None
+
+# Cleanup removed - user will manage their own files
+
+def signal_handler(signum, frame):
+    """Handle termination signals (cancel button, Ctrl+C, etc)."""
+    print(f"\n⚠️  Workflow cancelled (signal {signum})", file=sys.stderr)
+    sys.exit(1)
+
+# Global flags for skip signal
+_skip_requested = False
+_last_skipped_file = None  # Track the file being processed when skip was requested
+
+def skip_signal_handler(signum, frame):
+    """Handle skip signal (SIGUSR1)."""
+    global _skip_requested
+    print("\n⏩ Skip signal received via SIGUSR1", file=sys.stderr)
+    _skip_requested = True
+
+# Register signal handlers for cancel/interrupt
+signal.signal(signal.SIGTERM, signal_handler)  # Kill/cancel
+signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
+signal.signal(signal.SIGUSR1, skip_signal_handler)  # Skip signal
+
+def emit_progress(progress, message, sub_progress=None):
     """Emit progress update as JSON to stdout."""
-    print(json.dumps({
+    data = {
         'type': 'progress',
         'progress': progress,
         'message': message
-    }), flush=True)
+    }
+    if sub_progress is not None:
+        data['sub_progress'] = sub_progress
+    print(json.dumps(data), flush=True)
 
 def emit_error(error_message):
     """Emit error as JSON to stdout."""
@@ -42,6 +90,37 @@ def emit_error(error_message):
         'type': 'error',
         'error': error_message
     }), flush=True)
+
+def emit_skip_capabilities(skip_decisions):
+    """Emit information about which operations can be skipped."""
+    print(json.dumps({
+        'type': 'skip_capabilities',
+        'decisions': skip_decisions
+    }), flush=True)
+
+def emit_operation_start(operation_name, can_skip=False):
+    """Emit start of a skippable operation."""
+    print(json.dumps({
+        'type': 'operation_start',
+        'operation': operation_name,
+        'can_skip': can_skip
+    }), flush=True)
+
+def check_for_skip_signal():
+    """Check if skip signal was received via SIGUSR1.
+
+    This is much more reliable than reading from stdin which has character loss issues.
+    The signal handler sets the global _skip_requested flag when SIGUSR1 is received.
+
+    NOTE: Does NOT reset the flag - caller must handle that after cleanup.
+    """
+    global _skip_requested
+    return _skip_requested
+
+def clear_skip_signal():
+    """Clear the skip signal flag after handling it."""
+    global _skip_requested
+    _skip_requested = False
 
 def emit_success(result):
     """Emit success result as JSON to stdout."""
@@ -114,8 +193,9 @@ def main():
         print("=" * 80, file=sys.stderr)
 
         # Read input from stdin (passed as JSON from Electron)
-        input_data = sys.stdin.read()
-        data = json.loads(input_data)
+        # Only read first line so stdin remains open for skip signals
+        input_line = sys.stdin.readline()
+        data = json.loads(input_line.strip())
 
         # Load configuration
         config_path = BASE_DIR / 'config' / 'autostudio_config.yaml'
@@ -128,6 +208,15 @@ def main():
         threshold = data.get('threshold', config.default_threshold)
         xml_options = data.get('xmlOptions')
         video_sources = data.get('videoSources', {})
+
+        # Step 0.5: Analyze skip capabilities and emit to frontend
+        emit_progress(3, 'Analyzing which operations can be skipped...')
+        skip_engine = SkipDecisionEngine(master_video, audio_sources_input, video_sources)
+        skip_decisions = skip_engine.get_all_skip_decisions()
+        emit_skip_capabilities(skip_decisions)
+
+        # Print skip summary to stderr for debugging
+        print(skip_engine.generate_skip_summary(), file=sys.stderr)
 
         emit_progress(5, 'Detecting framerate...')
         detected_framerate = detect_framerate(master_video)
@@ -151,48 +240,257 @@ def main():
 
         emit_progress(30, 'Processing audio sources...')
 
-        # Step 3: Process audio files
-        audio_processor = AudioProcessor(config)
+        # Step 3: Process audio files with optional advanced sync
+        # Create progress callback for FFmpeg operations (emits sub-progress)
+        def ffmpeg_progress_callback(progress_info: dict):
+            """Callback for FFmpeg progress updates.
+
+            Args:
+                progress_info: Dict with keys: frame, fps, time, speed, progress_percent
+            """
+            # Get current overall progress from the step we're on
+            current_overall = 35  # We're in the video processing step
+            percent = progress_info.get('progress_percent', 0)
+            emit_progress(current_overall, 'Processing media sources...', sub_progress=percent)
+
+        audio_processor = AudioProcessor(config, progress_callback=ffmpeg_progress_callback)
+        # Attach skip check callback so FFmpeg can check for skip signals
+        audio_processor.skip_check_callback = check_for_skip_signal
         processed_audio = {}
+
+        # Check if advanced sync is available
+        if AUDIO_SYNC_AVAILABLE and MediaSyncProcessor:
+            print("Using advanced audio sync (cross-correlation)", file=sys.stderr)
+            sync_processor = MediaSyncProcessor(config)
+            use_advanced_sync = True
+        else:
+            print("Using basic audio sync (framerate correction only)", file=sys.stderr)
+            sync_processor = None
+            use_advanced_sync = False
 
         for audio_type, audio_path in audio_sources_input.items():
             if audio_path:
+                synced_path = None  # Track synced file for cleanup if needed
+                skip_was_requested = False  # Track if skip happened during this operation
+
                 try:
-                    apply_sync = audio_sync_settings.get(audio_type, False)
-                    processed_path, duration, sample_rate, channels = \
-                        audio_processor.process_audio_source(audio_path, apply_sync)
-                    processed_audio[audio_type] = {
-                        'path': processed_path,
-                        'duration': duration,
-                        'sample_rate': sample_rate,
-                        'channels': channels
-                    }
-                    sync_status = "with sync" if apply_sync else "without sync"
-                    print(f"Processed {audio_type} audio ({sync_status})", file=sys.stderr)
+                    # Check if this audio can be skipped
+                    audio_decision = skip_decisions['audio'].get(audio_type, {})
+                    can_skip = audio_decision.get('can_skip', False)
+
+                    # Clear any previous skip signal
+                    clear_skip_signal()
+
+                    # Emit operation start (frontend will enable skip button)
+                    emit_operation_start(f"Syncing {audio_type} audio", can_skip=can_skip)
+
+                    # NOTE: Skip checking happens during FFmpeg encoding via skip_check_callback
+                    # Don't check immediately - give user time to see the button and click it
+
+                    if use_advanced_sync:
+                        # Advanced sync using cross-correlation
+                        emit_progress(30, f'Syncing {audio_type} audio with master...')
+                        print(f"\n{'='*60}", file=sys.stderr)
+                        print(f"Processing {audio_type}: {Path(audio_path).name}", file=sys.stderr)
+
+                        try:
+                            synced_path, sync_info = sync_processor.sync_file(
+                                master_path=master_video,
+                                source_path=audio_path,
+                                search_window=30
+                            )
+                        except InterruptedError:
+                            skip_was_requested = True
+                            raise  # Re-raise to be caught by outer handler
+
+                        # Check if skip was requested during processing (even if FFmpeg completed)
+                        if check_for_skip_signal():
+                            skip_was_requested = True
+                            raise InterruptedError("Skip requested after processing completed")
+
+                        duration, sample_rate, channels = audio_processor.get_audio_info(synced_path)
+
+                        processed_audio[audio_type] = {
+                            'path': synced_path,
+                            'duration': duration,
+                            'sample_rate': sample_rate,
+                            'channels': channels,
+                            'sync_info': sync_info
+                        }
+
+                        print(f"✓ {audio_type} synced successfully:", file=sys.stderr)
+                        print(f"  Offset: {sync_info['offset_seconds']:.3f}s", file=sys.stderr)
+                        print(f"  Speed correction: {sync_info['speed_factor']:.6f}", file=sys.stderr)
+                        print(f"  Drift: {sync_info['drift_frames']:.1f} frames", file=sys.stderr)
+                        if sync_info['is_soundboard']:
+                            print(f"  🎚️  Soundboard file detected - applied clock correction", file=sys.stderr)
+                        print(f"{'='*60}\n", file=sys.stderr)
+
+                    else:
+                        # Basic processing - just extract/sync if requested
+                        apply_sync = audio_sync_settings.get(audio_type, False)
+                        try:
+                            synced_path, duration, sample_rate, channels = \
+                                audio_processor.process_audio_source(audio_path, apply_sync)
+                        except InterruptedError:
+                            skip_was_requested = True
+                            raise  # Re-raise to be caught by outer handler
+
+                        # Check if skip was requested during processing (even if FFmpeg completed)
+                        if check_for_skip_signal():
+                            skip_was_requested = True
+                            raise InterruptedError("Skip requested after processing completed")
+
+                        processed_audio[audio_type] = {
+                            'path': synced_path,
+                            'duration': duration,
+                            'sample_rate': sample_rate,
+                            'channels': channels
+                        }
+                        sync_status = "with framerate sync" if apply_sync else "without sync"
+                        print(f"Processed {audio_type} audio ({sync_status})", file=sys.stderr)
+
+                except InterruptedError:
+                    # Skip was requested - delete the synced file if it was created
+                    print("=" * 80, file=sys.stderr)
+                    print(f"⏩ SKIP CONFIRMED - {audio_type} audio will be omitted", file=sys.stderr)
+                    print("=" * 80, file=sys.stderr)
+
+                    # Delete the synced file if it exists
+                    if synced_path and synced_path != audio_path:
+                        if Path(synced_path).exists():
+                            print(f"🗑️  Deleting skipped file: {Path(synced_path).name}", file=sys.stderr)
+                            try:
+                                Path(synced_path).unlink()
+                                print(f"✓ Successfully deleted: {Path(synced_path).name}", file=sys.stderr)
+                            except Exception as del_err:
+                                print(f"⚠️  Could not delete {synced_path}: {del_err}", file=sys.stderr)
+                        else:
+                            print(f"ℹ️  No synced file to delete (processing was interrupted early)", file=sys.stderr)
+
+                    # Clear the skip signal for next operation
+                    clear_skip_signal()
+
+                    # Don't add to processed_audio - will be omitted from output
+                    continue
                 except Exception as e:
                     print(f"Warning: Failed to process {audio_type} audio: {e}", file=sys.stderr)
+                    import traceback
+                    traceback.print_exc(file=sys.stderr)
+                    print(f"Using original file without sync", file=sys.stderr)
+                    # Fallback to original file
+                    try:
+                        duration, sample_rate, channels = audio_processor.get_audio_info(audio_path)
+                        processed_audio[audio_type] = {
+                            'path': audio_path,
+                            'duration': duration,
+                            'sample_rate': sample_rate,
+                            'channels': channels
+                        }
+                    except Exception as e2:
+                        print(f"Error getting audio info: {e2}", file=sys.stderr)
 
-        # Step 3.5: Process video sources (sync 30fps to 29.97fps)
+        # Step 3.5: Process video sources with optional advanced sync
         emit_progress(35, 'Processing custom video sources...')
         processed_video_sources = {}
 
-        # Process screen and game captures if provided
+        # Process screen and game captures
         for video_type in ['screen', 'game']:
             if video_type in video_sources and video_sources[video_type]:
+                synced_path = None  # Track synced file for cleanup if needed
+                original_path = video_sources[video_type]
+                skip_was_requested = False  # Track if skip happened during this operation
+
                 try:
-                    print(f"Processing {video_type} video for framerate sync...", file=sys.stderr)
-                    synced_path = audio_processor.process_video_source(
-                        video_sources[video_type],
-                        apply_sync=True  # Always sync custom screen/game captures
-                    )
-                    processed_video_sources[video_type] = synced_path
-                    print(f"Synced {video_type} video: {synced_path}", file=sys.stderr)
+                    # Clear any previous skip signal
+                    clear_skip_signal()
+
+                    # Emit operation start - these are skippable (can use master quadrant)
+                    emit_operation_start(f"Syncing {video_type} video", can_skip=True)
+
+                    # NOTE: Skip checking happens during FFmpeg encoding via skip_check_callback
+                    # Don't check immediately - give user time to see the button and click it
+
+                    if use_advanced_sync:
+                        # Advanced sync using cross-correlation
+                        emit_progress(35, f'Syncing {video_type} video with master...')
+                        print(f"\n{'='*60}", file=sys.stderr)
+                        print(f"Processing {video_type}: {Path(video_sources[video_type]).name}", file=sys.stderr)
+
+                        try:
+                            synced_path, sync_info = sync_processor.sync_file(
+                                master_path=master_video,
+                                source_path=video_sources[video_type],
+                                search_window=30
+                            )
+                        except InterruptedError:
+                            skip_was_requested = True
+                            raise  # Re-raise to be caught by outer handler
+
+                        # Check if skip was requested during processing (even if FFmpeg completed)
+                        if check_for_skip_signal():
+                            skip_was_requested = True
+                            raise InterruptedError("Skip requested after processing completed")
+
+                        processed_video_sources[video_type] = synced_path
+
+                        print(f"✓ {video_type} video synced successfully:", file=sys.stderr)
+                        print(f"  Offset: {sync_info['offset_seconds']:.3f}s", file=sys.stderr)
+                        print(f"  Speed correction: {sync_info['speed_factor']:.6f}", file=sys.stderr)
+                        print(f"  Drift: {sync_info['drift_frames']:.1f} frames", file=sys.stderr)
+                        print(f"{'='*60}\n", file=sys.stderr)
+
+                    else:
+                        # Basic framerate sync (30fps -> 29.97fps)
+                        print(f"Processing {video_type} video for framerate sync...", file=sys.stderr)
+                        try:
+                            synced_path = audio_processor.process_video_source(
+                                original_path,
+                                apply_sync=True
+                            )
+                        except InterruptedError:
+                            skip_was_requested = True
+                            raise  # Re-raise to be caught by outer handler
+
+                        # Check if skip was requested during processing (even if FFmpeg completed)
+                        if check_for_skip_signal():
+                            skip_was_requested = True
+                            raise InterruptedError("Skip requested after processing completed")
+
+                        processed_video_sources[video_type] = synced_path
+                        print(f"Synced {video_type} video: {synced_path}", file=sys.stderr)
+
+                except InterruptedError as e:
+                    # Skip was requested - delete the synced file if it was created
+                    print("=" * 80, file=sys.stderr)
+                    print(f"⏩ SKIP CONFIRMED - {video_type} video will use master quadrant", file=sys.stderr)
+                    print("=" * 80, file=sys.stderr)
+
+                    # Delete the synced file if it exists
+                    if synced_path and synced_path != original_path:
+                        if Path(synced_path).exists():
+                            print(f"🗑️  Deleting skipped file: {Path(synced_path).name}", file=sys.stderr)
+                            try:
+                                Path(synced_path).unlink()
+                                print(f"✓ Successfully deleted: {Path(synced_path).name}", file=sys.stderr)
+                            except Exception as del_err:
+                                print(f"⚠️  Could not delete {synced_path}: {del_err}", file=sys.stderr)
+                        else:
+                            print(f"ℹ️  No synced file to delete (processing was interrupted early)", file=sys.stderr)
+
+                    # Clear the skip signal for next operation
+                    clear_skip_signal()
+
+                    # Don't add to processed_video_sources - will use master quadrant
+                    continue
                 except Exception as e:
                     print(f"Warning: Failed to sync {video_type} video: {e}", file=sys.stderr)
+                    import traceback
+                    traceback.print_exc(file=sys.stderr)
                     print(f"Using original video without sync", file=sys.stderr)
                     processed_video_sources[video_type] = video_sources[video_type]
 
-        # Copy cam1 and cam2 without processing (they're from master video)
+        # Copy cam1 and cam2 without processing (they're from master video, already aligned)
         for cam_type in ['cam1', 'cam2']:
             if cam_type in video_sources and video_sources[cam_type]:
                 processed_video_sources[cam_type] = video_sources[cam_type]

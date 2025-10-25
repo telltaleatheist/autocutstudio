@@ -16,6 +16,7 @@ from core.compound_generators.dc_cam_generator import DCCamGenerator
 from core.compound_generators.dc_gs_generator import DCGSGenerator
 from core.compound_generators.dc_ssb_generator import DCSSBGenerator
 from core.audio_processor import AudioProcessor
+from core.audio_sync import MediaSyncProcessor, AudioSyncAnalyzer
 from core.editors.auto_editor import AutoEditor
 
 def create_parser():
@@ -92,7 +93,15 @@ def create_parser():
     extract_parser = subparsers.add_parser('extract-audio', help='Extract audio from video file')
     extract_parser.add_argument('--input', required=True, help='Input video file')
     extract_parser.add_argument('--output', help='Output audio file')
-    
+
+    # Auto-sync command - NEW: Automatic sync using cross-correlation
+    auto_sync_parser = subparsers.add_parser('auto-sync', help='Automatically sync audio/video to master using cross-correlation')
+    auto_sync_parser.add_argument('--master', required=True, help='Master audio/video file')
+    auto_sync_parser.add_argument('--source', required=True, help='Source audio/video file to sync')
+    auto_sync_parser.add_argument('--output', help='Output file (defaults to source_synced.ext)')
+    auto_sync_parser.add_argument('--search-window', type=float, default=30, help='Seconds to search for alignment (default: 30)')
+    auto_sync_parser.add_argument('--analyze-only', action='store_true', help='Only analyze sync, do not create output file')
+
     return parser
 
 def handle_workflow(args, config):
@@ -248,9 +257,82 @@ def handle_extract_audio(args, config):
         
         print(f"Success! Audio extracted: {output_path}")
         return 0
-        
+
     except Exception as e:
         print(f"Error extracting audio: {e}")
+        return 1
+
+def handle_auto_sync(args, config):
+    """Handle automatic sync using cross-correlation."""
+    try:
+        master_path = Path(args.master)
+        source_path = Path(args.source)
+
+        if not master_path.exists():
+            print(f"Error: Master file not found: {master_path}")
+            return 1
+
+        if not source_path.exists():
+            print(f"Error: Source file not found: {source_path}")
+            return 1
+
+        print("\n" + "="*70)
+        print("AutoCutStudio - Automatic Sync Tool")
+        print("="*70)
+
+        # Check dependencies with user prompt (since this is a CLI tool)
+        try:
+            from core.install_sync_dependencies import ensure_dependencies
+            if not ensure_dependencies(interactive=True):
+                print("\nCannot proceed without dependencies. Exiting.")
+                return 1
+        except Exception as e:
+            print(f"\nError checking dependencies: {e}")
+            return 1
+
+        # Analyze sync
+        analyzer = AudioSyncAnalyzer(config)
+        print(f"\nAnalyzing sync between:")
+        print(f"  Master: {master_path.name}")
+        print(f"  Source: {source_path.name}")
+
+        sync_info = analyzer.analyze_sync(
+            str(master_path),
+            str(source_path),
+            search_window=args.search_window
+        )
+
+        # Display results
+        print(f"\n{'='*70}")
+        print("SYNC ANALYSIS RESULTS")
+        print(f"{'='*70}")
+        print(f"  Time offset:        {sync_info['offset_seconds']:.3f} seconds")
+        print(f"  Speed correction:   {sync_info['speed_factor']:.6f}x")
+        print(f"  Drift:              {sync_info['drift_frames']:.1f} frames @ 29.97fps")
+        print(f"  Correlation score:  {sync_info['correlation_score']:.3f} (0-1, higher is better)")
+        if sync_info['is_soundboard']:
+            print(f"  Type:               🎚️  Soundboard audio (clock drift detected)")
+        print(f"{'='*70}\n")
+
+        # Apply sync if not analyze-only
+        if not args.analyze_only:
+            sync_processor = MediaSyncProcessor(config)
+            synced_path, _ = sync_processor.sync_file(
+                str(master_path),
+                str(source_path),
+                output_path=args.output,
+                search_window=args.search_window
+            )
+
+            print(f"✓ Success! Synced file saved to:")
+            print(f"  {synced_path}\n")
+
+        return 0
+
+    except Exception as e:
+        print(f"\n✗ Error during sync: {e}")
+        import traceback
+        traceback.print_exc()
         return 1
 
 def main():
@@ -286,6 +368,8 @@ def main():
             return handle_sync_audio(args, config)
         elif args.command == 'extract-audio':
             return handle_extract_audio(args, config)
+        elif args.command == 'auto-sync':
+            return handle_auto_sync(args, config)
         else:
             print(f"Unknown command: {args.command}")
             return 1

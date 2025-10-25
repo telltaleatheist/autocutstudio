@@ -11,6 +11,7 @@ export interface ElectronAPI {
   checkDependencies: () => Promise<any>;
   executeWorkflow: (options: any) => Promise<any>;
   cancelJob: (jobId: string) => Promise<any>;
+  sendSkipSignal: () => Promise<void>;
   applyAudioDrift: (options: {
     inputPath: string;
     driftFrames: number;

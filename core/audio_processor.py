@@ -1,21 +1,22 @@
 # Updated methods for core/audio_processor.py to avoid subprocess calls
-# Note: This assumes you want to keep using subprocess for ffmpeg since Python 
+# Note: This assumes you want to keep using subprocess for ffmpeg since Python
 # doesn't have a pure-Python FFmpeg implementation, but we structure it better
 
 import subprocess
 import json
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Callable
 import tempfile
 import os
 
 class AudioProcessor:
     """Handle audio extraction, format conversion, and sync adjustments."""
-    
-    def __init__(self, config):
+
+    def __init__(self, config, progress_callback: Optional[Callable] = None):
         self.config = config
         self.temp_dir = Path(config.get('paths.temp_dir', './temp'))
         self.temp_dir.mkdir(parents=True, exist_ok=True)
+        self.progress_callback = progress_callback
     
     def apply_drift_correction(self, input_path: str, drift_frames: float, 
                               video_duration: float, fps: float = 29.97,
@@ -265,14 +266,14 @@ class AudioProcessor:
         return str(processed_audio_path), duration, sample_rate, channels
     
     def sync_video_for_2997fps(self, input_path: str, output_path: Optional[str] = None) -> str:
-        """Speed up 30fps video to match 29.97fps timeline.
+        """Convert high-fps video (30fps, 60fps, etc.) to 29.97fps timeline.
 
-        This is needed when custom screen/game captures are recorded at 30fps
-        but the master video is 29.97fps. We speed up by a factor of 1.001001
-        to keep them in sync.
+        This is needed when custom screen/game captures are recorded at higher framerates
+        (commonly 30fps or 60fps) but the master video is 29.97fps. We convert the framerate
+        by dropping frames to match the 29.97fps timeline while maintaining duration.
 
         Args:
-            input_path: Path to input video file (30fps)
+            input_path: Path to input video file (30fps, 60fps, etc.)
             output_path: Optional output path
 
         Returns:
@@ -285,33 +286,44 @@ class AudioProcessor:
 
         output_path = Path(output_path)
 
-        # Speed factor: 30 / 29.97 = 1.001001001 (30000/29970)
-        # This makes the video slightly faster to match 29.97fps timeline
-        speed_factor = 1.001001
-
         print(f"Syncing video framerate: {input_path.name}")
-        print(f"  Speeding up by {speed_factor}x to sync 30fps -> 29.97fps")
+        print(f"  Converting to 29.97fps (dropping frames to match timeline)")
 
+        # CORRECT METHOD: Use fps filter to drop frames to 29.97fps
+        # This keeps the same DURATION but reduces frame count
+        # Works for any source fps (30, 60, 120, etc.) → 29.97
         cmd = [
             'ffmpeg', '-i', str(input_path),
-            '-filter:v', f'setpts=PTS/{speed_factor}',  # Speed up video
-            '-filter:a', f'atempo={speed_factor}',      # Speed up audio too
+            '-filter:v', 'fps=fps=29.97',  # Convert to 29.97fps by dropping frames
             '-c:v', 'libx264',  # Re-encode video
-            '-crf', '18',       # High quality
-            '-preset', 'medium',
-            '-c:a', 'aac',      # Re-encode audio
+            '-crf', '23',       # Slightly lower quality for speed
+            '-preset', 'faster', # Faster encoding
+            '-c:a', 'aac',      # Re-encode audio (unchanged)
             '-b:a', '192k',
             '-y',  # Overwrite output
             str(output_path)
         ]
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            if self.progress_callback:
+                # Use progress tracking if available
+                from core.ffmpeg_progress import FFmpegProgressTracker
+                tracker = FFmpegProgressTracker(self.progress_callback)
+                # Pass skip_check_callback if available (for checking skip signals during encoding)
+                skip_callback = getattr(self, 'skip_check_callback', None)
+                tracker.run_ffmpeg_with_progress(cmd, str(input_path), f"Syncing {input_path.name}", skip_check_callback=skip_callback)
+            else:
+                # Fall back to simple subprocess
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
             print(f"Video synced: {output_path}")
             return str(output_path)
         except subprocess.CalledProcessError as e:
             print(f"Error syncing video {input_path}: {e}")
             print(f"stderr: {e.stderr}")
+            raise
+        except InterruptedError:
+            print(f"Video sync canceled by user")
             raise
 
     def process_video_source(self, source_path: str, apply_sync: bool = True,
@@ -342,11 +354,3 @@ class AudioProcessor:
 
         return str(processed_video_path)
 
-    def cleanup_temp_files(self):
-        """Remove temporary audio files."""
-        if self.temp_dir.exists():
-            for file in self.temp_dir.glob("*_extracted.*"):
-                file.unlink()
-            for file in self.temp_dir.glob("*_synced.*"):
-                file.unlink()
-            print(f"Cleaned up temporary files in {self.temp_dir}")

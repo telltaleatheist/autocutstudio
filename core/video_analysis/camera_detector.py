@@ -25,10 +25,11 @@ class CameraDetector:
     def detect_segments(self, video_path: str, camera_region: str = 'top_right') -> List[Tuple[float, float, str]]:
         """
         Detect when camera 2 is active vs inactive using recursive refinement:
-        1. Level 1: Scan every 15 minutes
-        2. Level 2: If change detected, scan every 1 minute in that region
-        3. Level 3: If change detected, scan every 10 seconds in that region
-        4. Level 4: If change detected, scan every 1 second in that region
+        1. Level 1: Scan every 60 minutes (3600s) - coarse overview
+        2. Level 2: Scan every 15 minutes (900s) - 4x faster
+        3. Level 3: Scan every 1 minute (60s) - 15x faster
+        4. Level 4: Scan every 10 seconds (10s) - 6x faster
+        5. Level 5: Scan every 1 second (1s) - 10x faster (precise)
 
         Args:
             video_path: Path to the cut master video
@@ -38,15 +39,15 @@ class CameraDetector:
             List of (start_time, end_time, mode) tuples where mode is 'solo' or 'dc'
         """
         print(f"[CameraDetector] Analyzing video: {video_path}", file=sys.stderr)
-        print(f"[CameraDetector] Using recursive refinement detection", file=sys.stderr)
+        print(f"[CameraDetector] Using 5-level recursive refinement detection", file=sys.stderr)
 
         # Get video duration
         duration = self._get_video_duration(video_path)
         print(f"[CameraDetector] Video duration: {duration:.2f}s ({duration/60:.1f} minutes)", file=sys.stderr)
 
-        # Recursive refinement
+        # Recursive refinement - start with 60min intervals for very coarse overview
         all_samples = []
-        self._recursive_scan(video_path, camera_region, 0, duration, 900, all_samples)  # Start with 15min intervals
+        self._recursive_scan(video_path, camera_region, 0, duration, 3600, all_samples)  # Start with 60min intervals
 
         # Sort all samples by timestamp
         all_samples = sorted(set(all_samples), key=lambda x: x[0])
@@ -98,12 +99,14 @@ class CameraDetector:
 
         # Determine next refinement level
         next_interval = None
-        if interval == 900:  # 15 minutes
-            next_interval = 60  # Refine to 1 minute
+        if interval == 3600:  # 60 minutes (new coarse level)
+            next_interval = 900  # Refine to 15 minutes (4x faster)
+        elif interval == 900:  # 15 minutes
+            next_interval = 60  # Refine to 1 minute (15x faster)
         elif interval == 60:  # 1 minute
-            next_interval = 10  # Refine to 10 seconds
+            next_interval = 10  # Refine to 10 seconds (6x faster)
         elif interval == 10:  # 10 seconds
-            next_interval = 1  # Refine to 1 second
+            next_interval = 1  # Refine to 1 second (10x faster)
         # If interval is 1 second, we're done refining
 
         # Recursively refine regions where changes were detected

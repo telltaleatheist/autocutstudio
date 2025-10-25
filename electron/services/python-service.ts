@@ -16,7 +16,7 @@ export interface WorkflowExecutionOptions {
   inputData: any;
   onOutput?: (data: string) => void;
   onError?: (data: string) => void;
-  onProgress?: (progress: number, message: string) => void;
+  onProgress?: (progress: number, message: string, subProgress?: number) => void;
   onComplete?: (code: number, result?: any) => void;
 }
 
@@ -200,8 +200,8 @@ export class PythonService {
     this.runningProcesses.set(jobId, pythonProcess);
 
     // Send input data as JSON to stdin
-    pythonProcess.stdin.write(JSON.stringify(options.inputData));
-    pythonProcess.stdin.end();
+    // NOTE: Don't close stdin - we need it open to send skip signals later
+    pythonProcess.stdin.write(JSON.stringify(options.inputData) + '\n');
 
     let finalResult: any = null;
 
@@ -219,7 +219,15 @@ export class PythonService {
 
           if (message.type === 'progress' && options.onProgress) {
             log.info(`[${jobId}] Emitting progress: ${message.progress}% - ${message.message}`);
-            options.onProgress(message.progress, message.message);
+            options.onProgress(message.progress, message.message, message.sub_progress);
+          } else if (message.type === 'operation_start' && options.onOutput) {
+            log.info(`[${jobId}] Operation start:`, message);
+            // Send as structured output so processing service can handle it
+            options.onOutput(JSON.stringify({ type: 'operation_start', data: { operation: message.operation, can_skip: message.can_skip } }));
+          } else if (message.type === 'skip_capabilities' && options.onOutput) {
+            log.info(`[${jobId}] Skip capabilities:`, message);
+            // Send as structured output so processing service can handle it
+            options.onOutput(JSON.stringify({ type: 'skip_capabilities', data: { decisions: message.decisions } }));
           } else if (message.type === 'error' && options.onError) {
             log.error(`[${jobId}] Emitting error:`, message.error);
             options.onError(message.error);
@@ -265,5 +273,39 @@ export class PythonService {
     });
 
     return pythonProcess;
+  }
+
+  /**
+   * Send skip signal to the current running workflow process
+   */
+  sendSkipSignal(): boolean {
+    // Get the most recent running process (the current workflow)
+    const processes = Array.from(this.runningProcesses.values());
+    log.info(`[SKIP] Total running processes: ${processes.length}`);
+
+    if (processes.length > 0) {
+      const currentProcess = processes[processes.length - 1];
+      const pid = currentProcess.pid;
+
+      log.info(`[SKIP] Current process PID: ${pid}`);
+
+      if (currentProcess && pid) {
+        try {
+          // Send SIGUSR1 signal to Python process
+          // This is much more reliable than stdin which has character loss issues
+          log.info(`[SKIP] ✅ Sending SIGUSR1 signal to PID ${pid}`);
+          currentProcess.kill('SIGUSR1');
+          log.info('[SKIP] ✅ SIGUSR1 signal sent successfully');
+          return true;
+        } catch (error) {
+          log.error('[SKIP] ❌ Error sending SIGUSR1:', error);
+          return false;
+        }
+      } else {
+        log.warn('[SKIP] ⚠️  Process or PID not available');
+      }
+    }
+    log.warn('[SKIP] ⚠️  No active workflow process to send skip signal to');
+    return false;
   }
 }

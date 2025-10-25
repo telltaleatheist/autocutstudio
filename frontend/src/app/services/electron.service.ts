@@ -124,6 +124,13 @@ export class ElectronService {
     return window.electron.cancelJob(jobId);
   }
 
+  async sendSkipSignal(): Promise<void> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return window.electron.sendSkipSignal();
+  }
+
   // Utility
   async getAppVersion(): Promise<string> {
     if (!this.isElectron()) {

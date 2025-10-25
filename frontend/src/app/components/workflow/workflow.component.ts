@@ -48,6 +48,18 @@ export class WorkflowComponent implements OnInit {
   currentProgress = 0;
   currentMessage = '';
 
+  // Skip functionality
+  currentOperation = '';
+  canSkipCurrent = false;
+  subProgress = 0;
+  skipDecisions: any = null;
+
+  // Time estimation
+  operationStartTime: number | null = null;
+  estimatedTimeRemaining = '';
+  private lastProgressUpdate = 0;
+  private lastProgressTime = 0;
+
   // File browser
   showFileBrowser = false;
   fileBrowserMode: 'master' | 'audio' | 'videoSource' = 'master';
@@ -65,17 +77,40 @@ export class WorkflowComponent implements OnInit {
 
     // Subscribe to processing updates
     this.processingService.getCurrentJob().subscribe(job => {
-      console.log('[WorkflowComponent] Received job update:', job);
       if (job) {
         this.isProcessing = job.status === 'running';
         this.consoleOutput = job.output;
         this.currentJobId = job.id;
         this.currentProgress = job.progress;
         this.currentMessage = job.message;
-        console.log(`[WorkflowComponent] Updated: progress=${this.currentProgress}%, message=${this.currentMessage}, isProcessing=${this.isProcessing}`);
+
+        // Track operation changes and reset time estimation
+        const previousOperation = this.currentOperation;
+        this.currentOperation = job.currentOperation || '';
+
+        // Reset time tracking when operation changes
+        if (this.currentOperation && this.currentOperation !== previousOperation) {
+          this.operationStartTime = Date.now();
+          this.lastProgressUpdate = job.subProgress || 0;
+          this.lastProgressTime = Date.now();
+          this.estimatedTimeRemaining = 'Calculating...';
+        }
+
+        // Skip functionality
+        this.canSkipCurrent = job.canSkipCurrent || false;
+        const newSubProgress = job.subProgress || 0;
+
+        // Update time estimation when progress changes
+        if (this.currentOperation && newSubProgress !== this.subProgress && newSubProgress > 0) {
+          this.updateTimeEstimate(newSubProgress);
+        }
+
+        this.subProgress = newSubProgress;
+        this.skipDecisions = job.skipDecisions;
       } else {
         this.isProcessing = false;
-        console.log('[WorkflowComponent] No active job');
+        this.operationStartTime = null;
+        this.estimatedTimeRemaining = '';
       }
       // Force change detection for updates from outside Angular zone (Electron IPC)
       this.cdr.detectChanges();
@@ -253,11 +288,8 @@ export class WorkflowComponent implements OnInit {
 
   // Process workflow
   async processWorkflow() {
-    console.log('Process button clicked!');
-
     // Validation - just return silently, button is disabled when invalid
     if (!this.masterVideoPath || this.audioSources.length === 0) {
-      console.log('Validation failed: missing master video or audio sources');
       alert('Please select a master video and add at least one audio source.');
       return;
     }
@@ -265,14 +297,11 @@ export class WorkflowComponent implements OnInit {
     // Check if all audio sources have types assigned
     const unassignedAudio = this.audioSources.filter(s => !s.type);
     if (unassignedAudio.length > 0) {
-      console.log('Validation failed: unassigned audio sources', unassignedAudio);
       alert('Please assign types to all audio sources.');
       return;
     }
 
     try {
-      console.log('Building workflow options...');
-
       // Build audio and video sources objects
       const audioSourcesObj: { [key: string]: string } = {};
       const audioSyncSettings: { [key: string]: boolean } = {};
@@ -319,13 +348,8 @@ export class WorkflowComponent implements OnInit {
         xmlOptions: xmlOptionsToSend.length > 0 ? xmlOptionsToSend : undefined
       };
 
-      console.log('Workflow options:', options);
-      console.log('Starting workflow...');
-
       // Start workflow
       await this.processingService.startWorkflow(options);
-
-      console.log('Workflow started successfully!');
     } catch (error) {
       console.error('Error starting workflow:', error);
       alert('Error starting workflow: ' + error);
@@ -336,6 +360,82 @@ export class WorkflowComponent implements OnInit {
   async cancelJob() {
     if (confirm('Are you sure you want to cancel the current job?')) {
       await this.processingService.cancelJob();
+    }
+  }
+
+  async skipCurrentOperation() {
+    console.log('[SKIP] Button clicked, canSkipCurrent:', this.canSkipCurrent);
+    if (!this.canSkipCurrent) {
+      console.log('[SKIP] Cannot skip - button disabled');
+      return;
+    }
+    try {
+      console.log('[SKIP] Sending skip signal...');
+      await this.electronService.sendSkipSignal();
+      console.log('[SKIP] Skip signal sent successfully');
+    } catch (error) {
+      console.error('[SKIP] Error sending skip signal:', error);
+    }
+  }
+
+  /**
+   * Update estimated time remaining based on progress rate
+   */
+  private updateTimeEstimate(currentProgress: number): void {
+    const now = Date.now();
+
+    // Need at least 1% progress and 2 seconds elapsed for a reasonable estimate
+    if (currentProgress < 1 || !this.operationStartTime || (now - this.operationStartTime) < 2000) {
+      this.estimatedTimeRemaining = 'Calculating...';
+      return;
+    }
+
+    // Calculate progress rate (percent per second)
+    const timeDelta = (now - this.lastProgressTime) / 1000; // seconds
+    const progressDelta = currentProgress - this.lastProgressUpdate;
+
+    // Update tracking values
+    this.lastProgressUpdate = currentProgress;
+    this.lastProgressTime = now;
+
+    // Need meaningful progress change
+    if (progressDelta <= 0 || timeDelta < 0.5) {
+      return; // Keep previous estimate
+    }
+
+    const progressRate = progressDelta / timeDelta; // percent per second
+
+    if (progressRate <= 0) {
+      this.estimatedTimeRemaining = 'Calculating...';
+      return;
+    }
+
+    // Calculate remaining time
+    const remainingProgress = 100 - currentProgress;
+    const remainingSeconds = remainingProgress / progressRate;
+
+    // Format time remaining
+    this.estimatedTimeRemaining = this.formatTimeRemaining(remainingSeconds);
+  }
+
+  /**
+   * Format seconds into human-readable time string
+   */
+  private formatTimeRemaining(seconds: number): string {
+    if (seconds < 0 || !isFinite(seconds)) {
+      return 'Calculating...';
+    }
+
+    if (seconds < 60) {
+      return `${Math.round(seconds)}s remaining`;
+    } else if (seconds < 3600) {
+      const minutes = Math.floor(seconds / 60);
+      const secs = Math.round(seconds % 60);
+      return `${minutes}m ${secs}s remaining`;
+    } else {
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      return `${hours}h ${minutes}m remaining`;
     }
   }
 }

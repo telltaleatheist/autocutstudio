@@ -20,3 +20,4 @@ dist-electron/mac-arm64/AutoCutStudio.app/Contents/Frameworks/
 dist-electron/*
 python-dist/*
 python-dist/darwin-x64/env/env/include/unctrl.h
+core/video_analysis/__pycache__/*

@@ -20,6 +20,7 @@ export interface ElectronAPI {
   // Python execution
   executeWorkflow: (options: any) => Promise<any>;
   cancelJob: (jobId: string) => Promise<any>;
+  sendSkipSignal: () => Promise<void>;
 
   // Audio processing
   applyAudioDrift: (options: {
@@ -66,6 +67,7 @@ const electronAPI: ElectronAPI = {
   // Python execution
   executeWorkflow: (options) => ipcRenderer.invoke('execute-workflow', options),
   cancelJob: (jobId) => ipcRenderer.invoke('cancel-job', jobId),
+  sendSkipSignal: () => ipcRenderer.invoke('send-skip-signal'),
 
   // Audio processing
   applyAudioDrift: (options) => ipcRenderer.invoke('apply-audio-drift', options),
