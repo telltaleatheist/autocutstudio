@@ -73,14 +73,11 @@ def sync_soundboard_files(
     if not mic1_sb or not mic1_vmix:
         raise ValueError("Need at least mic 1 soundboard and VMix files for sync detection")
 
-    print("="*70)
-    print("SOUNDBOARD SYNC - Unified Offset & Drift Detection")
-    print("="*70)
+    print("\n▶ SOUNDBOARD SYNC - Unified Offset & Drift Detection")
     print()
 
     # Step 2: Merge mic 1 + mic 2 if both exist
     print("Step 1: Preparing soundboard audio for correlation")
-    print("-"*70)
 
     if mic2_sb and Path(mic2_sb).exists():
         print(f"Merging: Mic 1 + Mic 2 soundboard files")
@@ -95,8 +92,7 @@ def sync_soundboard_files(
 
     # Step 3: Correlate merged soundboard vs VMix mic 1
     print("Step 2: Detecting sync parameters")
-    print("-"*70)
-    print(f"Correlating: Soundboard Mics vs VMix Mic 1 Audio")
+    print(f"  Correlating: Soundboard Mics vs VMix Mic 1 Audio")
     print(f"  Soundboard: {Path(merged_sb).name}")
     print(f"  VMix:       {Path(mic1_vmix).name}")
     print()
@@ -109,12 +105,11 @@ def sync_soundboard_files(
         correlation = sync_info['correlation_score']
 
         print()
-        print("DETECTED SYNC PARAMETERS:")
-        print("="*70)
-        print(f"Offset:       {offset_seconds:.3f}s ({offset_seconds * 29.97:.1f} frames)")
-        print(f"Speed:        {speed_factor:.10f}")
-        print(f"Drift:        {sync_info['drift_frames']:.1f} frames over {sync_info.get('master_duration', 0)/3600:.2f}h")
-        print(f"Correlation:  {correlation:.3f}")
+        print("✓ Detected sync parameters:")
+        print(f"  Offset:       {offset_seconds:.3f}s ({offset_seconds * 29.97:.1f} frames)")
+        print(f"  Speed:        {speed_factor:.10f}")
+        print(f"  Drift:        {sync_info['drift_frames']:.1f} frames over {sync_info.get('master_duration', 0)/3600:.2f}h")
+        print(f"  Correlation:  {correlation:.3f}")
         print()
 
         if correlation < 0.3:
@@ -132,7 +127,6 @@ def sync_soundboard_files(
 
     # Step 4: Apply sync to ALL soundboard files
     print("Step 3: Applying sync to all soundboard files")
-    print("-"*70)
 
     results = {}
 
@@ -178,9 +172,7 @@ def sync_soundboard_files(
             }
 
     print()
-    print("="*70)
-    print(f"COMPLETE: Synced {len([r for r in results.values() if 'path' in r])}/{len(soundboard_files)} soundboard files")
-    print("="*70)
+    print(f"✓ Soundboard sync complete: {len([r for r in results.values() if 'path' in r])}/{len(soundboard_files)} files synced")
 
     return results
 

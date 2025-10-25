@@ -238,7 +238,7 @@ class FCPXMLUtils:
     def create_clip_with_audio_effects(name: str, ref: str, lane: str, offset: str,
                                     duration: str, audio_type: Optional[str] = None,
                                     resources: Optional[ET.Element] = None,
-                                    enabled: bool = True) -> ET.Element:
+                                    enabled: bool = True, channels: int = 2) -> ET.Element:
         """Create an audio clip with Voice Isolation, Compressor, Noise Gate, and Volume effects."""
         # Create clip element (not audio element) to support complex effects
         clip = ET.Element('clip')
@@ -263,6 +263,15 @@ class FCPXMLUtils:
         else:
             volume.set('amount', '0dB')  # Default
 
+        # Determine source channels based on actual file channels
+        if channels == 1:
+            src_ch = '1'
+        elif channels == 2:
+            src_ch = '1, 2'
+        else:
+            # For > 2 channels, use all available
+            src_ch = ', '.join(str(i) for i in range(1, channels + 1))
+
         # Add gap with audio reference inside (matching template structure)
         gap = ET.SubElement(clip, 'gap')
         gap.set('name', 'Gap')
@@ -276,11 +285,11 @@ class FCPXMLUtils:
         audio.set('offset', '0s')
         audio.set('duration', duration)
         audio.set('role', 'dialogue.dialogue-1')
-        audio.set('srcCh', '1, 2')
+        audio.set('srcCh', src_ch)
 
         # Add audio-channel-source with Voice Isolation
         audio_channel = ET.SubElement(clip, 'audio-channel-source')
-        audio_channel.set('srcCh', '1, 2')
+        audio_channel.set('srcCh', src_ch)
         audio_channel.set('role', 'dialogue.dialogue-1')
 
         voice_isolation = ET.SubElement(audio_channel, 'adjust-voiceIsolation')

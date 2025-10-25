@@ -239,7 +239,8 @@ class GSGenerator:
                     audio_info['duration'],
                     mic_key,     # Pass audio type for effects
                     resources,   # Pass resources for effect creation
-                    enabled=False  # DISABLED for GS
+                    enabled=False,  # DISABLED for GS
+                    channels=audio_info['channels']
                 )
                 gap.append(mic_clip)
                 print(f"Added {mic_key} to lane {current_audio_lane} (disabled)")

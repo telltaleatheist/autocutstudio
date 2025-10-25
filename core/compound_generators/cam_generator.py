@@ -235,7 +235,9 @@ class CamGenerator:
                     "0s",
                     audio_info['duration'],
                     audio_type,
-                    resources
+                    resources,
+                    enabled=True,
+                    channels=audio_info['channels']
                 )
                 gap.append(audio_clip)
                 print(f"Added {audio_type} audio to lane {audio_lane}")

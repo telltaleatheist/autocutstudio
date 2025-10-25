@@ -238,7 +238,9 @@ class SSBGenerator:
                         "0s",
                         audio_info['duration'],
                         audio_type,  # Pass audio type for volume adjustment
-                        resources    # Pass resources
+                        resources,   # Pass resources
+                        enabled=True,
+                        channels=audio_info['channels']
                     )
                     gap.append(audio_clip)
                     print(f"Added {audio_type} audio to lane {current_audio_lane}")

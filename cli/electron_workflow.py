@@ -188,9 +188,7 @@ def main():
     """Main workflow execution."""
     try:
         # DEBUG: Print to verify this version is running
-        print("=" * 80, file=sys.stderr)
-        print("🔥 HYBRID MODE PYTHON CODE VERSION 2.0 - CHANGES ACTIVE! 🔥", file=sys.stderr)
-        print("=" * 80, file=sys.stderr)
+        print("\n🔥 Hybrid Mode v2.0 - Active", file=sys.stderr)
 
         # Read input from stdin (passed as JSON from Electron)
         # Only read first line so stdin remains open for skip signals
@@ -261,7 +259,9 @@ def main():
         # Check if advanced sync is available
         if AUDIO_SYNC_AVAILABLE and MediaSyncProcessor:
             print("Using advanced audio sync (cross-correlation)", file=sys.stderr)
-            sync_processor = MediaSyncProcessor(config)
+            sync_processor = MediaSyncProcessor(config, progress_callback=ffmpeg_progress_callback)
+            # Attach skip check callback so FFmpeg can check for skip signals
+            sync_processor.skip_check_callback = check_for_skip_signal
             use_advanced_sync = True
         else:
             print("Using basic audio sync (framerate correction only)", file=sys.stderr)
@@ -275,10 +275,16 @@ def main():
         vmix_files = {}
         soundboard_sync_params = None  # Will store offset + speed for all SB files
 
-        # Identify soundboard files (contain 'sb' in filename)
+        # Identify soundboard files (contain 'sb' in type name or filename)
         for audio_type, audio_path in audio_sources_input.items():
             if audio_path and Path(audio_path).exists():
-                if 'sb' in Path(audio_path).name.lower():
+                # Check if this is a soundboard file by:
+                # 1. Type name ends with 'Sb' (e.g., mic1Sb, mic2Sb)
+                # 2. Or filename contains 'sb' (backwards compatibility)
+                is_soundboard = (audio_type.endswith('Sb') or
+                                'sb' in Path(audio_path).name.lower())
+
+                if is_soundboard:
                     soundboard_files[audio_type] = audio_path
                 else:
                     vmix_files[audio_type] = audio_path
@@ -288,10 +294,8 @@ def main():
             try:
                 from core.soundboard_sync import sync_soundboard_files
 
-                print("="*70, file=sys.stderr)
-                print("SOUNDBOARD FILES DETECTED - Using Unified Sync", file=sys.stderr)
-                print("="*70, file=sys.stderr)
-                print(f"Found {len(soundboard_files)} soundboard files:", file=sys.stderr)
+                print("\n▶ Soundboard files detected - using unified sync", file=sys.stderr)
+                print(f"  Found {len(soundboard_files)} soundboard files:", file=sys.stderr)
                 for sb_type, sb_path in soundboard_files.items():
                     print(f"  - {sb_type}: {Path(sb_path).name}", file=sys.stderr)
                 print(file=sys.stderr)
@@ -299,31 +303,37 @@ def main():
                 # Add master to VMix files
                 vmix_files['master'] = master_video
 
+                # Normalize soundboard keys for the sync function
+                # The sync function expects keys like 'mic1', 'mic2', 'screen', etc.
+                # but we have 'mic1Sb', 'mic2Sb', 'screenSb', etc.
+                normalized_sb_files = {}
+                for sb_type, sb_path in soundboard_files.items():
+                    # Remove the 'Sb' suffix to get the base type
+                    base_type = sb_type.replace('Sb', '').lower()
+                    # Handle special cases
+                    if base_type == 'soundeffects':
+                        base_type = 'sound_effects'
+                    normalized_sb_files[base_type] = sb_path
+
                 # Run unified soundboard sync
                 emit_progress(30, 'Syncing soundboard files (unified detection)...')
-                sb_results = sync_soundboard_files(soundboard_files, vmix_files)
+                sb_results = sync_soundboard_files(normalized_sb_files, vmix_files)
 
                 # Store synced files in processed_audio
-                # Map soundboard types to their regular equivalents for compound generators
-                sb_type_map = {
-                    'mic1Sb': 'mic1',
-                    'mic2Sb': 'mic2',
-                    'mic3Sb': 'mic3',
-                    'mic4Sb': 'mic4',
-                    'screenSb': 'screen',
-                    'desktopSb': 'screen',  # Desktop audio goes to screen slot
-                    'bluetoothSb': 'bluetooth',
-                    'soundEffectsSb': 'sound_effects'
-                }
-
+                # sb_results has normalized keys ('mic1', 'screen', etc.)
+                # We need to map these to the final audio types for compound generators
                 for sb_type, sb_info in sb_results.items():
                     if 'path' in sb_info:
                         duration, sample_rate, channels = audio_processor.get_audio_info(sb_info['path'])
 
-                        # Use the mapped type for compound generators
-                        mapped_type = sb_type_map.get(sb_type, sb_type)
+                        # Map normalized types to compound generator types
+                        # Most are 1:1, but handle special cases
+                        if sb_type == 'sound_effects':
+                            final_type = 'sound_effects'
+                        else:
+                            final_type = sb_type  # mic1 → mic1, screen → screen, etc.
 
-                        processed_audio[mapped_type] = {
+                        processed_audio[final_type] = {
                             'path': sb_info['path'],
                             'duration': duration,
                             'sample_rate': sample_rate,
@@ -336,7 +346,7 @@ def main():
                                 'is_soundboard': True
                             }
                         }
-                        print(f"✓ Soundboard {sb_type} → {mapped_type} synced via unified detection", file=sys.stderr)
+                        print(f"✓ Soundboard {sb_type} synced via unified detection", file=sys.stderr)
 
                 # Save sync params for reference
                 if sb_results:
@@ -348,13 +358,10 @@ def main():
                             'drift': first_result['drift_frames']
                         }
 
-                print("="*70, file=sys.stderr)
-                print(f"Soundboard unified sync complete!", file=sys.stderr)
+                print(f"\n✓ Soundboard unified sync complete!", file=sys.stderr)
                 print(f"  Offset: {soundboard_sync_params['offset']:.3f}s", file=sys.stderr)
                 print(f"  Speed: {soundboard_sync_params['speed']:.6f}", file=sys.stderr)
-                print(f"  Drift: {soundboard_sync_params['drift']:.1f} frames", file=sys.stderr)
-                print("="*70, file=sys.stderr)
-                print(file=sys.stderr)
+                print(f"  Drift: {soundboard_sync_params['drift']:.1f} frames\n", file=sys.stderr)
 
             except Exception as e:
                 print(f"⚠ Warning: Soundboard unified sync failed: {e}", file=sys.stderr)
@@ -366,9 +373,28 @@ def main():
         for audio_type, audio_path in audio_sources_input.items():
             if audio_path:
                 # Skip if already processed by soundboard unified sync
-                if audio_type in processed_audio:
-                    print(f"⊷ Skipping {audio_type} - already synced via unified soundboard sync", file=sys.stderr)
-                    continue
+                # Need to normalize the type to check (remove 'Sb' suffix)
+                normalized_type = audio_type.replace('Sb', '').lower()
+                if normalized_type == 'soundeffects':
+                    normalized_type = 'sound_effects'
+
+                # Skip if already processed by soundboard unified sync
+                # OR if we have a soundboard version and this is a VMix version
+                if normalized_type in processed_audio:
+                    existing_is_sb = processed_audio[normalized_type].get('sync_info', {}).get('is_soundboard', False)
+                    current_is_sb = audio_type.endswith('Sb')
+
+                    if existing_is_sb:
+                        # Already have soundboard version - skip this (don't overwrite with VMix)
+                        print(f"⊷ Skipping {audio_type} - already have soundboard version for {normalized_type}", file=sys.stderr)
+                        continue
+                    elif current_is_sb:
+                        # This is soundboard but we have VMix - replace it
+                        print(f"⚠ Replacing VMix {normalized_type} with soundboard version", file=sys.stderr)
+                    else:
+                        # Both are same type (both VMix or both SB) - skip duplicate
+                        print(f"⊷ Skipping {audio_type} - already processed {normalized_type}", file=sys.stderr)
+                        continue
 
                 synced_path = None  # Track synced file for cleanup if needed
                 skip_was_requested = False  # Track if skip happened during this operation
@@ -410,7 +436,8 @@ def main():
 
                         duration, sample_rate, channels = audio_processor.get_audio_info(synced_path)
 
-                        processed_audio[audio_type] = {
+                        # Store with normalized type for compound generators
+                        processed_audio[normalized_type] = {
                             'path': synced_path,
                             'duration': duration,
                             'sample_rate': sample_rate,
@@ -441,7 +468,8 @@ def main():
                             skip_was_requested = True
                             raise InterruptedError("Skip requested after processing completed")
 
-                        processed_audio[audio_type] = {
+                        # Store with normalized type for compound generators
+                        processed_audio[normalized_type] = {
                             'path': synced_path,
                             'duration': duration,
                             'sample_rate': sample_rate,
@@ -452,9 +480,7 @@ def main():
 
                 except InterruptedError:
                     # Skip was requested - delete the synced file if it was created
-                    print("=" * 80, file=sys.stderr)
-                    print(f"⏩ SKIP CONFIRMED - {audio_type} audio will be omitted", file=sys.stderr)
-                    print("=" * 80, file=sys.stderr)
+                    print(f"\n⏩ SKIP CONFIRMED - {audio_type} audio will be omitted\n", file=sys.stderr)
 
                     # Delete the synced file if it exists
                     if synced_path and synced_path != audio_path:
@@ -481,7 +507,8 @@ def main():
                     # Fallback to original file
                     try:
                         duration, sample_rate, channels = audio_processor.get_audio_info(audio_path)
-                        processed_audio[audio_type] = {
+                        # Store with normalized type for compound generators
+                        processed_audio[normalized_type] = {
                             'path': audio_path,
                             'duration': duration,
                             'sample_rate': sample_rate,
@@ -494,9 +521,24 @@ def main():
         emit_progress(35, 'Processing custom video sources...')
         processed_video_sources = {}
 
+        # DEBUG: Show what video sources we received
+        print(f"\n▶ Processing video sources", file=sys.stderr)
+        print(f"  Received video_sources: {video_sources}", file=sys.stderr)
+        print(f"  Looking for: screen, game", file=sys.stderr)
+
+        # Check for empty strings or None values
+        for vtype in ['screen', 'game', 'cam1', 'cam2']:
+            if vtype in video_sources:
+                vpath = video_sources[vtype]
+                if not vpath or vpath == '':
+                    print(f"  ⚠️  {vtype} is empty string", file=sys.stderr)
+                elif not Path(vpath).exists():
+                    print(f"  ⚠️  {vtype} file does not exist: {vpath}", file=sys.stderr)
+
         # Process screen and game captures
         for video_type in ['screen', 'game']:
             if video_type in video_sources and video_sources[video_type]:
+                print(f"\n  Found {video_type} video: {Path(video_sources[video_type]).name}", file=sys.stderr)
                 synced_path = None  # Track synced file for cleanup if needed
                 original_path = video_sources[video_type]
                 skip_was_requested = False  # Track if skip happened during this operation
@@ -562,9 +604,7 @@ def main():
 
                 except InterruptedError as e:
                     # Skip was requested - delete the synced file if it was created
-                    print("=" * 80, file=sys.stderr)
-                    print(f"⏩ SKIP CONFIRMED - {video_type} video will use master quadrant", file=sys.stderr)
-                    print("=" * 80, file=sys.stderr)
+                    print(f"\n⏩ SKIP CONFIRMED - {video_type} video will use master quadrant\n", file=sys.stderr)
 
                     # Delete the synced file if it exists
                     if synced_path and synced_path != original_path:
@@ -594,9 +634,16 @@ def main():
         for cam_type in ['cam1', 'cam2']:
             if cam_type in video_sources and video_sources[cam_type]:
                 processed_video_sources[cam_type] = video_sources[cam_type]
+                print(f"  Copied {cam_type} video without processing", file=sys.stderr)
 
         # Use processed video sources for the rest of the workflow
         video_sources = processed_video_sources if processed_video_sources else video_sources
+
+        # DEBUG: Show final video sources being used
+        print(f"\n✓ Final video sources for compound generation:", file=sys.stderr)
+        for vtype, vpath in video_sources.items():
+            if vpath:
+                print(f"  {vtype}: {Path(vpath).name}", file=sys.stderr)
 
         # Step 4: Generate compound clips
         generated_clips = []
@@ -605,19 +652,15 @@ def main():
 
         # Build CAM audio sources (mic1-4, sound_effects)
         cam_audio_sources = {}
-        for audio_type in ['mic1', 'mic2', 'mic3', 'mic4', 'soundEffects']:
-            # Map soundEffects to sound_effects for core modules
-            core_audio_type = 'sound_effects' if audio_type == 'soundEffects' else audio_type
-
-            # ALWAYS prefer soundboard variant if available (individual tracks)
-            # VMix files are pre-mixed combinations - soundboard files are separated tracks
-            sb_variant = f"{audio_type}Sb"
-            if sb_variant in processed_audio:
-                cam_audio_sources[core_audio_type] = processed_audio[sb_variant]['path']
-                print(f"✓ Using soundboard file {sb_variant} for {core_audio_type}", file=sys.stderr)
-            elif core_audio_type in processed_audio:
-                cam_audio_sources[core_audio_type] = processed_audio[core_audio_type]['path']
-                print(f"Using VMix file (pre-mixed) for {core_audio_type}", file=sys.stderr)
+        for audio_type in ['mic1', 'mic2', 'mic3', 'mic4', 'sound_effects']:
+            # Check if this audio type was processed (could be from soundboard or VMix)
+            if audio_type in processed_audio:
+                cam_audio_sources[audio_type] = processed_audio[audio_type]['path']
+                # Check if it was a soundboard file by looking at sync_info
+                if 'sync_info' in processed_audio[audio_type] and processed_audio[audio_type].get('sync_info', {}).get('is_soundboard'):
+                    print(f"✓ Using soundboard file for {audio_type}", file=sys.stderr)
+                else:
+                    print(f"Using VMix/regular file for {audio_type}", file=sys.stderr)
 
         # Store paths for master project generation
         cam_solo_path = None
@@ -667,23 +710,15 @@ def main():
 
         # Build GS audio sources (all audio types)
         gs_audio_sources = {}
-        for audio_type in ['mic1', 'mic2', 'mic3', 'mic4', 'screen', 'game', 'soundEffects', 'bluetooth']:
-            core_audio_type = 'sound_effects' if audio_type == 'soundEffects' else audio_type
-
-            # ALWAYS prefer soundboard variant if available (individual tracks)
-            # VMix files are pre-mixed combinations - soundboard files are separated tracks
-            sb_variant = f"{audio_type}Sb"
-            if sb_variant in processed_audio:
-                gs_audio_sources[core_audio_type] = processed_audio[sb_variant]['path']
-                print(f"✓ Using soundboard file {sb_variant} for {core_audio_type}", file=sys.stderr)
-            elif core_audio_type in processed_audio:
-                gs_audio_sources[core_audio_type] = processed_audio[core_audio_type]['path']
-                print(f"Using VMix file (pre-mixed) for {core_audio_type}", file=sys.stderr)
-
-            # Special case: desktopSb should also map to screen
-            if audio_type == 'screen' and 'desktopSb' in processed_audio and core_audio_type not in gs_audio_sources:
-                gs_audio_sources[core_audio_type] = processed_audio['desktopSb']['path']
-                print(f"✓ Using soundboard file desktopSb for {core_audio_type}", file=sys.stderr)
+        for audio_type in ['mic1', 'mic2', 'mic3', 'mic4', 'screen', 'game', 'sound_effects', 'bluetooth', 'desktop']:
+            # Check if this audio type was processed (could be from soundboard or VMix)
+            if audio_type in processed_audio:
+                gs_audio_sources[audio_type] = processed_audio[audio_type]['path']
+                # Check if it was a soundboard file by looking at sync_info
+                if 'sync_info' in processed_audio[audio_type] and processed_audio[audio_type].get('sync_info', {}).get('is_soundboard'):
+                    print(f"✓ Using soundboard file for {audio_type}", file=sys.stderr)
+                else:
+                    print(f"Using VMix/regular file for {audio_type}", file=sys.stderr)
 
         # Generate GS Solo
         if should_generate('gsSolo', xml_options) or should_generate('masterSolo', xml_options):

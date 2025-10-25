@@ -46,16 +46,30 @@ export class PythonService {
   }
 
   /**
-   * Find Python - always use system Python
+   * Find Python - prefer conda Python for audio sync compatibility
    */
   private findBundledPython(): void {
-    // Always use system Python - no bundled Python anymore
+    // Prefer conda Python 3.9-3.13 for audio sync (librosa compatibility)
+    const condaPython = '/opt/homebrew/Caskroom/miniconda/base/envs/autocutstudio/bin/python3';
+    const fs = require('fs');
+
+    try {
+      if (fs.existsSync(condaPython)) {
+        this.bundledPythonPath = condaPython;
+        log.info('Using conda Python for audio sync support:', condaPython);
+        return;
+      }
+    } catch (e) {
+      log.warn('Conda Python not found, falling back to system Python');
+    }
+
+    // Fall back to system Python
     this.bundledPythonPath = null;
-    log.info('Using system Python from PATH');
+    log.info('Using system Python from PATH (advanced sync may not be available)');
   }
 
   /**
-   * Get the Python path to use (bundled or system)
+   * Get the Python path to use (conda or system)
    */
   private getPythonPath(): string {
     return this.bundledPythonPath || 'python3';

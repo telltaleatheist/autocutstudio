@@ -120,7 +120,7 @@ export class ProcessingService {
       const updatedJob = {
         ...currentJob,
         progress: data.progress,
-        message: data.data,
+        message: this.truncateMessage(data.data),
         subProgress: data.sub_progress || 0
       };
       this.currentJob$.next(updatedJob);
@@ -222,11 +222,22 @@ export class ProcessingService {
   }
 
   /**
-   * Extract last meaningful message from output
+   * Extract last meaningful message from output and truncate if needed
    */
   private extractLastMessage(output: string[]): string {
     const lines = output.join('').split('\n').filter(line => line.trim());
-    return lines[lines.length - 1] || 'Processing...';
+    const lastLine = lines[lines.length - 1] || 'Processing...';
+    return this.truncateMessage(lastLine);
+  }
+
+  /**
+   * Truncate message to max 100 characters for progress display
+   */
+  private truncateMessage(message: string, maxLength: number = 100): string {
+    if (message.length <= maxLength) {
+      return message;
+    }
+    return message.substring(0, maxLength - 3) + '...';
   }
 
   /**

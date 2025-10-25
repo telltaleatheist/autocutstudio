@@ -15,7 +15,7 @@ Key Features:
 import subprocess
 import json
 from pathlib import Path
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, Callable
 import tempfile
 import sys
 
@@ -264,8 +264,8 @@ class AudioSyncAnalyzer:
         source_duration = self.get_duration(source_path)
 
         print(f"\nDetecting clock drift:")
-        print(f"  Master duration: {master_duration:.3f}s")
-        print(f"  Source duration: {source_duration:.3f}s")
+        print(f"  Master duration: {master_duration:.6f}s ({master_duration / 60:.3f} min)")
+        print(f"  Source duration: {source_duration:.6f}s ({source_duration / 60:.3f} min)")
 
         # Account for offset - source should be measured from where it aligns with master
         effective_source_duration = source_duration
@@ -279,9 +279,12 @@ class AudioSyncAnalyzer:
         # Calculate drift in frames at 29.97fps for reference
         duration_diff = effective_source_duration - effective_master_duration
         drift_frames = duration_diff * 29.97
+        drift_pct = (speed_factor - 1.0) * 100
 
-        print(f"  Duration difference: {duration_diff:.3f}s ({drift_frames:.1f} frames @ 29.97fps)")
-        print(f"  Speed correction factor: {speed_factor:.6f}")
+        print(f"  Duration difference: {duration_diff:.6f}s ({drift_frames:.3f} frames @ 29.97fps)")
+        print(f"  Clock drift: {drift_pct:+.8f}%")
+        print(f"  Speed correction factor: {speed_factor:.10f}")
+        print(f"    (atempo={speed_factor:.10f} will stretch/shrink to match master)")
 
         return speed_factor, drift_frames
 
@@ -335,10 +338,135 @@ class AudioSyncAnalyzer:
 class MediaSyncProcessor:
     """Applies sync corrections to audio and video files."""
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, progress_callback: Optional[Callable] = None):
         # MediaSyncProcessor doesn't need numpy/scipy for applying sync (uses ffmpeg)
         # But it needs AudioSyncAnalyzer for the sync_file method
         self.config = config or {}
+        self.progress_callback = progress_callback
+        self.skip_check_callback = None  # Can be set by caller
+
+    def _has_audio_stream(self, video_path: str) -> bool:
+        """Check if video file has an audio stream.
+
+        Args:
+            video_path: Path to video file
+
+        Returns:
+            True if video has audio, False otherwise
+        """
+        try:
+            cmd = [
+                'ffprobe', '-v', 'error',
+                '-select_streams', 'a:0',
+                '-show_entries', 'stream=codec_type',
+                '-of', 'json',
+                str(video_path)
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            data = json.loads(result.stdout)
+            return 'streams' in data and len(data['streams']) > 0
+        except Exception as e:
+            print(f"Warning: Could not check audio stream: {e}")
+            return False  # Assume no audio if check fails
+
+    def _apply_framerate_sync_only(self, video_path: str, output_path: Optional[str] = None) -> str:
+        """Apply framerate sync only (no audio analysis).
+
+        This is used when the video has no audio track and cross-correlation
+        is not possible. Converts video to 29.97fps.
+
+        Args:
+            video_path: Path to input video
+            output_path: Optional output path
+
+        Returns:
+            Path to synced video file
+        """
+        video_path = Path(video_path)
+
+        if output_path is None:
+            output_path = video_path.parent / f"{video_path.stem}_synced{video_path.suffix}"
+        output_path = Path(output_path)
+
+        print(f"\nApplying framerate-only sync to: {video_path.name}")
+
+        # Detect source framerate
+        source_fps = self._get_video_framerate(str(video_path))
+        target_fps = 29.97
+
+        print(f"  Source framerate: {source_fps:.2f} fps")
+        print(f"  Target framerate: {target_fps} fps")
+
+        # Check if conversion is needed
+        if abs(source_fps - target_fps) < 0.1:
+            print(f"  ✓ Already at {target_fps}fps, copying file")
+            import shutil
+            shutil.copy2(str(video_path), str(output_path))
+            return str(output_path)
+
+        print(f"  Converting {source_fps:.2f}fps → {target_fps}fps")
+
+        # Build ffmpeg command
+        cmd = [
+            'ffmpeg', '-i', str(video_path),
+            '-filter:v', 'fps=fps=29.97',
+            '-c:v', 'libx264',
+            '-crf', '23',
+            '-preset', 'faster',
+            '-y',
+            str(output_path)
+        ]
+
+        try:
+            # Use progress tracking if available
+            if self.progress_callback:
+                from core.ffmpeg_progress import FFmpegProgressTracker
+                tracker = FFmpegProgressTracker(self.progress_callback)
+                tracker.run_ffmpeg_with_progress(
+                    cmd,
+                    str(video_path),
+                    f"Syncing {video_path.name}",
+                    skip_check_callback=self.skip_check_callback
+                )
+            else:
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+            print(f"  ✓ Synced video saved to: {output_path.name}")
+            return str(output_path)
+        except subprocess.CalledProcessError as e:
+            print(f"  ✗ Error syncing video: {e}")
+            print(f"stderr: {e.stderr}")
+            raise
+
+    def _get_video_framerate(self, video_path: str) -> float:
+        """Get framerate of video file.
+
+        Args:
+            video_path: Path to video file
+
+        Returns:
+            Framerate as float
+        """
+        try:
+            cmd = [
+                'ffprobe', '-v', 'error',
+                '-select_streams', 'v:0',
+                '-show_entries', 'stream=r_frame_rate',
+                '-of', 'json',
+                str(video_path)
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            data = json.loads(result.stdout)
+
+            if 'streams' in data and len(data['streams']) > 0:
+                r_frame_rate = data['streams'][0].get('r_frame_rate', '30000/1001')
+                num, den = map(int, r_frame_rate.split('/'))
+                return num / den
+            else:
+                return 29.97
+        except Exception as e:
+            print(f"Warning: Could not detect framerate: {e}")
+            return 29.97
 
     def apply_sync_to_audio(self, input_path: str, offset_seconds: float,
                            speed_factor: float, output_path: Optional[str] = None) -> str:
@@ -359,18 +487,27 @@ class MediaSyncProcessor:
             output_path = input_path.parent / f"{input_path.stem}_synced{input_path.suffix}"
         output_path = Path(output_path)
 
+        # Check if this is a soundboard file (needs dual mono conversion)
+        is_soundboard = 'sb' in input_path.name.lower() and ('sb.' in input_path.name.lower() or input_path.name.lower().endswith('sb.wav'))
+
         print(f"\nApplying sync to audio: {input_path.name}")
         print(f"  Offset: {offset_seconds:.3f}s")
         print(f"  Speed factor: {speed_factor:.6f}")
+        if is_soundboard:
+            print(f"  ⚠️  Soundboard file - will convert to dual mono")
 
         # Build ffmpeg filter
         filters = []
 
         # Apply speed adjustment if needed (allow 0.01% tolerance)
         if abs(speed_factor - 1.0) > 0.0001:
+            print(f"  Applying speed correction: atempo={speed_factor:.10f}")
+            drift_pct = (speed_factor - 1.0) * 100
+            print(f"    Clock drift: {drift_pct:+.6f}%")
+
             # atempo has limits [0.5, 2.0], so chain multiple if needed
             if 0.5 <= speed_factor <= 2.0:
-                filters.append(f'atempo={speed_factor:.6f}')
+                filters.append(f'atempo={speed_factor:.10f}')
             else:
                 # Chain multiple atempo filters
                 remaining = speed_factor
@@ -382,8 +519,10 @@ class MediaSyncProcessor:
                         filters.append('atempo=0.5')
                         remaining /= 0.5
                     else:
-                        filters.append(f'atempo={remaining:.6f}')
+                        filters.append(f'atempo={remaining:.10f}')
                         break
+        else:
+            print(f"  No speed correction needed (drift < 0.01%)")
 
         # Apply offset (delay) if needed
         if abs(offset_seconds) > 0.001:
@@ -395,18 +534,36 @@ class MediaSyncProcessor:
                 # For negative offset, we trim from the start
                 filters.append(f'atrim=start={abs(offset_seconds)}')
 
-        filter_str = ','.join(filters) if filters else 'anull'
+        # For soundboard files, convert to dual mono (same audio in both channels)
+        if is_soundboard:
+            filters.append('pan=stereo|c0=c0|c1=c0')
+
+        filter_str = ','.join(filters) if filters else ('pan=stereo|c0=c0|c1=c0' if is_soundboard else 'anull')
 
         cmd = [
             'ffmpeg', '-i', str(input_path),
             '-filter:a', filter_str,
             '-c:a', 'pcm_s24le',  # High quality PCM
+            '-ac', '2',  # Force 2 channels output
             '-y',
             str(output_path)
         ]
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            # Use progress tracking if available (same as video sync)
+            if self.progress_callback:
+                from core.ffmpeg_progress import FFmpegProgressTracker
+                tracker = FFmpegProgressTracker(self.progress_callback)
+                tracker.run_ffmpeg_with_progress(
+                    cmd,
+                    str(input_path),
+                    f"Syncing {input_path.name}",
+                    skip_check_callback=self.skip_check_callback
+                )
+            else:
+                # Fall back to simple subprocess if no progress callback
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
             print(f"  ✓ Synced audio saved to: {output_path.name}")
             return str(output_path)
         except subprocess.CalledProcessError as e:
@@ -492,7 +649,20 @@ class MediaSyncProcessor:
         ]
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            # Use progress tracking if available (same as audio_processor)
+            if self.progress_callback:
+                from core.ffmpeg_progress import FFmpegProgressTracker
+                tracker = FFmpegProgressTracker(self.progress_callback)
+                tracker.run_ffmpeg_with_progress(
+                    cmd,
+                    str(input_path),
+                    f"Syncing {input_path.name}",
+                    skip_check_callback=self.skip_check_callback
+                )
+            else:
+                # Fall back to simple subprocess if no progress callback
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
             print(f"  ✓ Synced video saved to: {output_path.name}")
             return str(output_path)
         except subprocess.CalledProcessError as e:
@@ -514,6 +684,30 @@ class MediaSyncProcessor:
         Returns:
             Tuple of (synced_file_path, sync_info_dict)
         """
+        # Check if source has audio (required for cross-correlation)
+        source_path_obj = Path(source_path)
+        video_extensions = {'.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.mpg', '.mpeg', '.m4v', '.webm'}
+        is_video = source_path_obj.suffix.lower() in video_extensions
+
+        if is_video:
+            # Check if video has audio stream
+            has_audio = self._has_audio_stream(source_path)
+            if not has_audio:
+                print(f"⚠️  Video has no audio track - using framerate-only sync", file=sys.stderr)
+                # Fall back to basic framerate sync
+                synced_path = self._apply_framerate_sync_only(source_path, output_path)
+                # Return with minimal sync info
+                return synced_path, {
+                    'offset_seconds': 0.0,
+                    'speed_factor': 1.0,
+                    'correlation_score': 0.0,
+                    'drift_frames': 0.0,
+                    'is_soundboard': False,
+                    'source_file': str(source_path),
+                    'master_file': str(master_path),
+                    'sync_method': 'framerate_only'
+                }
+
         # Analyze sync
         analyzer = AudioSyncAnalyzer(self.config)
         sync_info = analyzer.analyze_sync(master_path, source_path, search_window)
