@@ -304,10 +304,26 @@ def main():
                 sb_results = sync_soundboard_files(soundboard_files, vmix_files)
 
                 # Store synced files in processed_audio
+                # Map soundboard types to their regular equivalents for compound generators
+                sb_type_map = {
+                    'mic1Sb': 'mic1',
+                    'mic2Sb': 'mic2',
+                    'mic3Sb': 'mic3',
+                    'mic4Sb': 'mic4',
+                    'screenSb': 'screen',
+                    'desktopSb': 'screen',  # Desktop audio goes to screen slot
+                    'bluetoothSb': 'bluetooth',
+                    'soundEffectsSb': 'sound_effects'
+                }
+
                 for sb_type, sb_info in sb_results.items():
                     if 'path' in sb_info:
                         duration, sample_rate, channels = audio_processor.get_audio_info(sb_info['path'])
-                        processed_audio[sb_type] = {
+
+                        # Use the mapped type for compound generators
+                        mapped_type = sb_type_map.get(sb_type, sb_type)
+
+                        processed_audio[mapped_type] = {
                             'path': sb_info['path'],
                             'duration': duration,
                             'sample_rate': sample_rate,
@@ -320,7 +336,7 @@ def main():
                                 'is_soundboard': True
                             }
                         }
-                        print(f"✓ Soundboard {sb_type} synced via unified detection", file=sys.stderr)
+                        print(f"✓ Soundboard {sb_type} → {mapped_type} synced via unified detection", file=sys.stderr)
 
                 # Save sync params for reference
                 if sb_results:
@@ -592,8 +608,16 @@ def main():
         for audio_type in ['mic1', 'mic2', 'mic3', 'mic4', 'soundEffects']:
             # Map soundEffects to sound_effects for core modules
             core_audio_type = 'sound_effects' if audio_type == 'soundEffects' else audio_type
-            if core_audio_type in processed_audio:
+
+            # ALWAYS prefer soundboard variant if available (individual tracks)
+            # VMix files are pre-mixed combinations - soundboard files are separated tracks
+            sb_variant = f"{audio_type}Sb"
+            if sb_variant in processed_audio:
+                cam_audio_sources[core_audio_type] = processed_audio[sb_variant]['path']
+                print(f"✓ Using soundboard file {sb_variant} for {core_audio_type}", file=sys.stderr)
+            elif core_audio_type in processed_audio:
                 cam_audio_sources[core_audio_type] = processed_audio[core_audio_type]['path']
+                print(f"Using VMix file (pre-mixed) for {core_audio_type}", file=sys.stderr)
 
         # Store paths for master project generation
         cam_solo_path = None
@@ -606,88 +630,97 @@ def main():
         # Generate CAM Solo
         if should_generate('camSolo', xml_options) or should_generate('masterSolo', xml_options):
             emit_progress(current_progress, 'Generating CAM Solo compound clip...')
-            if cam_audio_sources:
-                try:
-                    cam_generator = CamGenerator(config)
-                    cam_solo_path = cam_generator.generate_cam_compound(
-                        compound_xml, cam_audio_sources, 'solo', None, False, video_sources
-                    )
-                    all_xml_files.append(cam_solo_path)
-                    if should_generate('camSolo', xml_options):
-                        generated_clips.append({
-                            'type': 'cam_solo',
-                            'name': 'CAM - Solo Camera',
-                            'path': cam_solo_path
-                        })
-                except Exception as e:
-                    print(f"Error generating CAM Solo: {e}", file=sys.stderr)
+            try:
+                cam_generator = CamGenerator(config)
+                cam_solo_path = cam_generator.generate_cam_compound(
+                    compound_xml, cam_audio_sources, 'solo', None, False, video_sources
+                )
+                all_xml_files.append(cam_solo_path)
+                if should_generate('camSolo', xml_options):
+                    generated_clips.append({
+                        'type': 'cam_solo',
+                        'name': 'CAM - Solo Camera',
+                        'path': cam_solo_path
+                    })
+            except Exception as e:
+                print(f"Error generating CAM Solo: {e}", file=sys.stderr)
         current_progress += progress_per_clip
 
         # Generate CAM Dual
         if should_generate('camDual', xml_options) or should_generate('masterDc', xml_options):
             emit_progress(current_progress, 'Generating CAM Dual Camera compound clip...')
-            if cam_audio_sources:
-                try:
-                    dc_cam_generator = DCCamGenerator(config)
-                    cam_dual_path = dc_cam_generator.generate_dc_cam_compound(
-                        compound_xml, cam_audio_sources, None, False, video_sources
-                    )
-                    all_xml_files.append(cam_dual_path)
-                    if should_generate('camDual', xml_options):
-                        generated_clips.append({
-                            'type': 'cam_dual',
-                            'name': 'CAM - Dual Camera',
-                            'path': cam_dual_path
-                        })
-                except Exception as e:
-                    print(f"Error generating CAM Dual: {e}", file=sys.stderr)
+            try:
+                dc_cam_generator = DCCamGenerator(config)
+                cam_dual_path = dc_cam_generator.generate_dc_cam_compound(
+                    compound_xml, cam_audio_sources, None, False, video_sources
+                )
+                all_xml_files.append(cam_dual_path)
+                if should_generate('camDual', xml_options):
+                    generated_clips.append({
+                        'type': 'cam_dual',
+                        'name': 'CAM - Dual Camera',
+                        'path': cam_dual_path
+                    })
+            except Exception as e:
+                print(f"Error generating CAM Dual: {e}", file=sys.stderr)
         current_progress += progress_per_clip
 
         # Build GS audio sources (all audio types)
         gs_audio_sources = {}
         for audio_type in ['mic1', 'mic2', 'mic3', 'mic4', 'screen', 'game', 'soundEffects', 'bluetooth']:
             core_audio_type = 'sound_effects' if audio_type == 'soundEffects' else audio_type
-            if core_audio_type in processed_audio:
+
+            # ALWAYS prefer soundboard variant if available (individual tracks)
+            # VMix files are pre-mixed combinations - soundboard files are separated tracks
+            sb_variant = f"{audio_type}Sb"
+            if sb_variant in processed_audio:
+                gs_audio_sources[core_audio_type] = processed_audio[sb_variant]['path']
+                print(f"✓ Using soundboard file {sb_variant} for {core_audio_type}", file=sys.stderr)
+            elif core_audio_type in processed_audio:
                 gs_audio_sources[core_audio_type] = processed_audio[core_audio_type]['path']
+                print(f"Using VMix file (pre-mixed) for {core_audio_type}", file=sys.stderr)
+
+            # Special case: desktopSb should also map to screen
+            if audio_type == 'screen' and 'desktopSb' in processed_audio and core_audio_type not in gs_audio_sources:
+                gs_audio_sources[core_audio_type] = processed_audio['desktopSb']['path']
+                print(f"✓ Using soundboard file desktopSb for {core_audio_type}", file=sys.stderr)
 
         # Generate GS Solo
         if should_generate('gsSolo', xml_options) or should_generate('masterSolo', xml_options):
             emit_progress(current_progress, 'Generating GS Solo compound clip...')
-            if gs_audio_sources:
-                try:
-                    gs_generator = GSGenerator(config)
-                    gs_solo_path = gs_generator.generate_gs_compound(
-                        compound_xml, gs_audio_sources, None, False, video_sources
-                    )
-                    all_xml_files.append(gs_solo_path)
-                    if should_generate('gsSolo', xml_options):
-                        generated_clips.append({
-                            'type': 'gs_solo',
-                            'name': 'GS - Solo Game Share',
-                            'path': gs_solo_path
-                        })
-                except Exception as e:
-                    print(f"Error generating GS Solo: {e}", file=sys.stderr)
+            try:
+                gs_generator = GSGenerator(config)
+                gs_solo_path = gs_generator.generate_gs_compound(
+                    compound_xml, gs_audio_sources, None, False, video_sources
+                )
+                all_xml_files.append(gs_solo_path)
+                if should_generate('gsSolo', xml_options):
+                    generated_clips.append({
+                        'type': 'gs_solo',
+                        'name': 'GS - Solo Game Share',
+                        'path': gs_solo_path
+                    })
+            except Exception as e:
+                print(f"Error generating GS Solo: {e}", file=sys.stderr)
         current_progress += progress_per_clip
 
         # Generate GS Dual
         if should_generate('gsDual', xml_options) or should_generate('masterDc', xml_options):
             emit_progress(current_progress, 'Generating GS Dual Camera compound clip...')
-            if gs_audio_sources:
-                try:
-                    dc_gs_generator = DCGSGenerator(config)
-                    gs_dual_path = dc_gs_generator.generate_dc_gs_compound(
-                        compound_xml, gs_audio_sources, None, False, video_sources
-                    )
-                    all_xml_files.append(gs_dual_path)
-                    if should_generate('gsDual', xml_options):
-                        generated_clips.append({
-                            'type': 'gs_dual',
-                            'name': 'GS - Dual Camera',
-                            'path': gs_dual_path
-                        })
-                except Exception as e:
-                    print(f"Error generating GS Dual: {e}", file=sys.stderr)
+            try:
+                dc_gs_generator = DCGSGenerator(config)
+                gs_dual_path = dc_gs_generator.generate_dc_gs_compound(
+                    compound_xml, gs_audio_sources, None, False, video_sources
+                )
+                all_xml_files.append(gs_dual_path)
+                if should_generate('gsDual', xml_options):
+                    generated_clips.append({
+                        'type': 'gs_dual',
+                        'name': 'GS - Dual Camera',
+                        'path': gs_dual_path
+                    })
+            except Exception as e:
+                print(f"Error generating GS Dual: {e}", file=sys.stderr)
         current_progress += progress_per_clip
 
         # Build SSB audio sources (same as GS)
@@ -696,41 +729,39 @@ def main():
         # Generate SSB Solo
         if should_generate('ssbSolo', xml_options) or should_generate('masterSolo', xml_options):
             emit_progress(current_progress, 'Generating SSB Solo compound clip...')
-            if ssb_audio_sources:
-                try:
-                    ssb_generator = SSBGenerator(config)
-                    ssb_solo_path = ssb_generator.generate_ssb_compound(
-                        compound_xml, ssb_audio_sources, 'solo', None, False, video_sources
-                    )
-                    all_xml_files.append(ssb_solo_path)
-                    if should_generate('ssbSolo', xml_options):
-                        generated_clips.append({
-                            'type': 'ssb_solo',
-                            'name': 'SSB - Solo Screen Share Beside',
-                            'path': ssb_solo_path
-                        })
-                except Exception as e:
-                    print(f"Error generating SSB Solo: {e}", file=sys.stderr)
+            try:
+                ssb_generator = SSBGenerator(config)
+                ssb_solo_path = ssb_generator.generate_ssb_compound(
+                    compound_xml, ssb_audio_sources, 'solo', None, False, video_sources
+                )
+                all_xml_files.append(ssb_solo_path)
+                if should_generate('ssbSolo', xml_options):
+                    generated_clips.append({
+                        'type': 'ssb_solo',
+                        'name': 'SSB - Solo Screen Share Beside',
+                        'path': ssb_solo_path
+                    })
+            except Exception as e:
+                print(f"Error generating SSB Solo: {e}", file=sys.stderr)
         current_progress += progress_per_clip
 
         # Generate SSB Dual
         if should_generate('ssbDual', xml_options) or should_generate('masterDc', xml_options):
             emit_progress(current_progress, 'Generating SSB Dual Camera compound clip...')
-            if ssb_audio_sources:
-                try:
-                    dc_ssb_generator = DCSSBGenerator(config)
-                    ssb_dual_path = dc_ssb_generator.generate_dc_ssb_compound(
-                        compound_xml, ssb_audio_sources, None, False, video_sources
-                    )
-                    all_xml_files.append(ssb_dual_path)
-                    if should_generate('ssbDual', xml_options):
-                        generated_clips.append({
-                            'type': 'ssb_dual',
-                            'name': 'SSB - Dual Camera',
-                            'path': ssb_dual_path
-                        })
-                except Exception as e:
-                    print(f"Error generating SSB Dual: {e}", file=sys.stderr)
+            try:
+                dc_ssb_generator = DCSSBGenerator(config)
+                ssb_dual_path = dc_ssb_generator.generate_dc_ssb_compound(
+                    compound_xml, ssb_audio_sources, None, False, video_sources
+                )
+                all_xml_files.append(ssb_dual_path)
+                if should_generate('ssbDual', xml_options):
+                    generated_clips.append({
+                        'type': 'ssb_dual',
+                        'name': 'SSB - Dual Camera',
+                        'path': ssb_dual_path
+                    })
+            except Exception as e:
+                print(f"Error generating SSB Dual: {e}", file=sys.stderr)
         current_progress += progress_per_clip
 
         # Get original name from master video path

@@ -142,34 +142,52 @@ function setupFileSystemHandlers(windowService: WindowService): void {
       const dirPath = path.dirname(masterVideoPath);
       const masterFilename = path.basename(masterVideoPath, path.extname(masterVideoPath));
 
-      // Extract session from master video filename
-      // Pattern 1: YYYY-MM-DD-N (e.g., 2024-01-15-1)
-      // Pattern 2: YYYY-MM-DD-label (e.g., 2024-01-15-morning)
-      const sessionMatch = masterFilename.match(/^(\d{4}-\d{2}-\d{2}(?:-\d+|-[a-zA-Z0-9]+)?)/);
-      if (!sessionMatch) {
-        return { success: false, error: 'Could not extract session from master video filename' };
+      // Extract session/prefix from master video filename
+      // Try multiple patterns:
+      // 1. Date-based: YYYY-MM-DD-N (e.g., 2024-01-15-1 master)
+      // 2. Date-based: YYYY-MM-DD-label (e.g., 2024-01-15-morning master)
+      // 3. Generic prefix: Extract everything before " master" or use full name
+      let session = '';
+      const dateMatch = masterFilename.match(/^(\d{4}-\d{2}-\d{2}(?:-\d+|-[a-zA-Z0-9]+)?)/);
+      if (dateMatch) {
+        // Has date prefix
+        session = dateMatch[1];
+        log.info(`Extracted date-based session: ${session} from master video: ${masterFilename}`);
+      } else {
+        // No date - use generic prefix (everything before "master" or full filename)
+        const masterWordMatch = masterFilename.match(/^(.+?)\s+master$/i);
+        if (masterWordMatch) {
+          session = masterWordMatch[1].trim();
+          log.info(`Extracted generic session: ${session} from master video: ${masterFilename}`);
+        } else {
+          // Use the full filename as session prefix
+          session = masterFilename;
+          log.info(`Using full filename as session: ${session} from master video: ${masterFilename}`);
+        }
       }
-      const session = sessionMatch[1];
-      log.info(`Extracted session: ${session} from master video: ${masterFilename}`);
+
+      // Escape special regex characters in session for safe pattern matching
+      const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const escapedSession = escapeRegex(session);
 
       // Audio file patterns to match
       const audioPatterns: { [key: string]: RegExp } = {
-        'mic-1': new RegExp(`^${session}.*(?:mic\\s*1|mic_1|mic1).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
-        'mic-2': new RegExp(`^${session}.*(?:mic\\s*2|mic_2|mic2).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
-        'mic-3': new RegExp(`^${session}.*(?:mic\\s*3|mic_3|mic3).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
-        'mic-4': new RegExp(`^${session}.*(?:mic\\s*4|mic_4|mic4).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
-        'screen': new RegExp(`^${session}.*(?:screen|desktop).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
-        'game': new RegExp(`^${session}.*(?:game|gameplay).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
-        'sound-effects': new RegExp(`^${session}.*(?:sound[\\s_-]?effects?|sfx).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
-        'bluetooth': new RegExp(`^${session}.*(?:bluetooth|bt).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i')
+        'mic-1': new RegExp(`^${escapedSession}.*(?:mic\\s*1|mic_1|mic1).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'mic-2': new RegExp(`^${escapedSession}.*(?:mic\\s*2|mic_2|mic2).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'mic-3': new RegExp(`^${escapedSession}.*(?:mic\\s*3|mic_3|mic3).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'mic-4': new RegExp(`^${escapedSession}.*(?:mic\\s*4|mic_4|mic4).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'screen': new RegExp(`^${escapedSession}.*(?:screen|desktop).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'game': new RegExp(`^${escapedSession}.*(?:game|gameplay).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'sound-effects': new RegExp(`^${escapedSession}.*(?:sound[\\s_-]?effects?|sfx).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'bluetooth': new RegExp(`^${escapedSession}.*(?:bluetooth|bt).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i')
       };
 
       // Video file patterns to match (only capture files, not share/output files)
       const videoPatterns: { [key: string]: RegExp } = {
-        'cam': new RegExp(`^${session}\\s+cam\\.(mp4|mov|avi|mkv)$`, 'i'),
-        'cam-2': new RegExp(`^${session}\\s+cam\\s*2\\.(mp4|mov|avi|mkv)$`, 'i'),
-        'screen-share': new RegExp(`^${session}\\s+screen\\s*capture\\.(mp4|mov|avi|mkv)$`, 'i'),
-        'game-share': new RegExp(`^${session}\\s+game\\s*capture\\.(mp4|mov|avi|mkv)$`, 'i')
+        'cam': new RegExp(`^${escapedSession}\\s+cam\\.(mp4|mov|avi|mkv)$`, 'i'),
+        'cam-2': new RegExp(`^${escapedSession}\\s+cam\\s*2\\.(mp4|mov|avi|mkv)$`, 'i'),
+        'screen-share': new RegExp(`^${escapedSession}\\s+screen\\s*capture\\.(mp4|mov|avi|mkv)$`, 'i'),
+        'game-share': new RegExp(`^${escapedSession}\\s+game\\s*capture\\.(mp4|mov|avi|mkv)$`, 'i')
       };
 
       // Scan directory for matching audio and video files
@@ -217,7 +235,8 @@ function setupFileSystemHandlers(windowService: WindowService): void {
         // Separate soundboard files from VMix files
         const sbFiles = candidates.filter(file => {
           const basename = path.basename(file);
-          return basename.match(/[\s_-]sb[\s_.-]/i) || basename.match(/[\s_-]sb\.(wav|mp3|aac|flac|ogg|m4a)$/i);
+          // Match: " sb.", "_sb.", "-sb.", " sb ", "_sb ", "-sb "
+          return basename.match(/[\s_-]sb[\s\.]/i) || basename.match(/[\s_-]sb\.(wav|mp3|aac|flac|ogg|m4a)$/i);
         });
 
         const nonSbFiles = candidates.filter(file => !sbFiles.includes(file));
@@ -250,13 +269,14 @@ function setupFileSystemHandlers(windowService: WindowService): void {
 
       // Also look for desktop audio soundboard file
       // Desktop audio is Windows desktop audio, not typically in VMix but on soundboard
-      const desktopPattern = new RegExp(`^${session}.*desktop.*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i');
+      const desktopPattern = new RegExp(`^${escapedSession}.*desktop.*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i');
       for (const item of items) {
         const itemPath = path.join(dirPath, item);
         const stats = fs.statSync(itemPath);
         if (stats.isFile() && desktopPattern.test(item)) {
           const basename = path.basename(item);
-          if (basename.match(/[\s_-]sb[\s_.-]/i) || basename.match(/[\s_-]sb\.(wav|mp3|aac|flac|ogg|m4a)$/i)) {
+          // Match: " sb.", "_sb.", "-sb.", " sb ", "_sb ", "-sb "
+          if (basename.match(/[\s_-]sb[\s\.]/i) || basename.match(/[\s_-]sb\.(wav|mp3|aac|flac|ogg|m4a)$/i)) {
             detectedAudio['desktop-sb'] = itemPath;
             log.info(`Detected desktop-sb (Soundboard): ${basename}`);
           }
