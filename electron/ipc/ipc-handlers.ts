@@ -210,22 +210,57 @@ function setupFileSystemHandlers(windowService: WindowService): void {
         }
       }
 
-      // Second pass: prefer non-sb audio files, fall back to sb files
+      // Second pass: separate VMix and soundboard files
       for (const [audioType, candidates] of Object.entries(audioCandidatesByType)) {
         if (candidates.length === 0) continue;
 
-        // Filter out files with " sb" or "_sb" in the name (case insensitive)
-        const nonSbFiles = candidates.filter(file => {
+        // Separate soundboard files from VMix files
+        const sbFiles = candidates.filter(file => {
           const basename = path.basename(file);
-          return !basename.match(/[\s_-]sb[\s_.-]/i) && !basename.match(/[\s_-]sb\.(wav|mp3|aac|flac|ogg|m4a)$/i);
+          return basename.match(/[\s_-]sb[\s_.-]/i) || basename.match(/[\s_-]sb\.(wav|mp3|aac|flac|ogg|m4a)$/i);
         });
 
-        // Use non-sb file if available, otherwise use first sb file
-        const selectedFile = nonSbFiles.length > 0 ? nonSbFiles[0] : candidates[0];
-        detectedAudio[audioType] = selectedFile;
+        const nonSbFiles = candidates.filter(file => !sbFiles.includes(file));
 
-        const fileType = nonSbFiles.length > 0 ? 'non-sb' : 'sb';
-        log.info(`Detected ${audioType} (${fileType}): ${path.basename(selectedFile)}`);
+        // Assign VMix files (non-sb)
+        if (nonSbFiles.length > 0) {
+          detectedAudio[audioType] = nonSbFiles[0];
+          log.info(`Detected ${audioType} (VMix): ${path.basename(nonSbFiles[0])}`);
+        }
+
+        // Assign soundboard files as separate type
+        if (sbFiles.length > 0) {
+          // Map audio types to soundboard types
+          const sbTypeMap: { [key: string]: string } = {
+            'mic-1': 'mic-1-sb',
+            'mic-2': 'mic-2-sb',
+            'screen': 'screen-sb',
+            'game': 'game-sb',
+            'sound-effects': 'sound-effects-sb',
+            'bluetooth': 'bluetooth-sb'
+          };
+
+          const sbType = sbTypeMap[audioType];
+          if (sbType) {
+            detectedAudio[sbType] = sbFiles[0];
+            log.info(`Detected ${sbType} (Soundboard): ${path.basename(sbFiles[0])}`);
+          }
+        }
+      }
+
+      // Also look for desktop audio soundboard file
+      // Desktop audio is Windows desktop audio, not typically in VMix but on soundboard
+      const desktopPattern = new RegExp(`^${session}.*desktop.*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i');
+      for (const item of items) {
+        const itemPath = path.join(dirPath, item);
+        const stats = fs.statSync(itemPath);
+        if (stats.isFile() && desktopPattern.test(item)) {
+          const basename = path.basename(item);
+          if (basename.match(/[\s_-]sb[\s_.-]/i) || basename.match(/[\s_-]sb\.(wav|mp3|aac|flac|ogg|m4a)$/i)) {
+            detectedAudio['desktop-sb'] = itemPath;
+            log.info(`Detected desktop-sb (Soundboard): ${basename}`);
+          }
+        }
       }
 
       // Process video files - just take the first match

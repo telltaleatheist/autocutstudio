@@ -18,7 +18,7 @@ export class WorkflowComponent implements OnInit {
   audioSourceLabels = AUDIO_SOURCE_LABELS;
   videoSourceLabels = VIDEO_SOURCE_LABELS;
   mediaSourceLabels = MEDIA_SOURCE_LABELS;
-  audioTypes: AudioSourceType[] = ['mic1', 'mic2', 'mic3', 'mic4', 'screen', 'game', 'soundEffects', 'bluetooth'];
+  audioTypes: AudioSourceType[] = ['mic1', 'mic2', 'mic3', 'mic4', 'screen', 'game', 'soundEffects', 'bluetooth', 'mic1Sb', 'mic2Sb', 'screenSb', 'desktopSb', 'bluetoothSb', 'soundEffectsSb'];
   videoTypes: VideoSourceType[] = ['cam1', 'cam2', 'screenVideo', 'gameVideo'];
   allMediaTypes: MediaSourceType[] = [...this.audioTypes, ...this.videoTypes];
 
@@ -196,7 +196,13 @@ export class WorkflowComponent implements OnInit {
           'screen': 'screen',
           'game': 'game',
           'sound-effects': 'soundEffects',
-          'bluetooth': 'bluetooth'
+          'bluetooth': 'bluetooth',
+          'mic-1-sb': 'mic1Sb',
+          'mic-2-sb': 'mic2Sb',
+          'screen-sb': 'screenSb',
+          'desktop-sb': 'desktopSb',
+          'bluetooth-sb': 'bluetoothSb',
+          'sound-effects-sb': 'soundEffectsSb'
         };
 
         const videoTypeMap: { [key: string]: VideoSourceType } = {

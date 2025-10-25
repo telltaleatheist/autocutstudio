@@ -77,6 +77,51 @@ class AudioSyncAnalyzer:
         # Downsample to this rate for faster correlation (still accurate to ~20ms)
         self.analysis_sample_rate = 8000
 
+    def merge_audio_files(self, file1: str, file2: Optional[str] = None) -> str:
+        """Merge two audio files into a temporary combined file.
+
+        If file2 is None or doesn't exist, returns file1 unchanged.
+        If both exist, creates a temporary mixed file.
+
+        Args:
+            file1: Path to first audio file (required)
+            file2: Path to second audio file (optional)
+
+        Returns:
+            Path to merged audio file (temporary if merged, original if not)
+        """
+        # If no second file, just return the first
+        if not file2 or not Path(file2).exists():
+            return file1
+
+        # Create temporary file for merged audio
+        temp_merged = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+        temp_merged.close()
+
+        # Use ffmpeg to mix the two audio files
+        # amix filter adds them together (like a mixer)
+        cmd = [
+            'ffmpeg',
+            '-i', str(file1),
+            '-i', str(file2),
+            '-filter_complex', '[0:a][1:a]amix=inputs=2:duration=longest',
+            '-c:a', 'pcm_s16le',
+            '-y',
+            temp_merged.name
+        ]
+
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, check=True)
+            print(f"Merged audio files for correlation:")
+            print(f"  {Path(file1).name} + {Path(file2).name}")
+            return temp_merged.name
+        except subprocess.CalledProcessError as e:
+            print(f"Warning: Could not merge audio files, using first file only")
+            print(f"  Error: {e.stderr}")
+            # Clean up temp file
+            Path(temp_merged.name).unlink(missing_ok=True)
+            return file1
+
     def extract_audio_segment(self, file_path: str, start_seconds: float = 0,
                              duration_seconds: float = 60) -> Tuple[np.ndarray, int]:
         """Extract audio segment from video or audio file.

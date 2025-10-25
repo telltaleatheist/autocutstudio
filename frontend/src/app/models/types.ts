@@ -18,7 +18,13 @@ export type AudioSourceType =
   | 'screen'
   | 'game'
   | 'soundEffects'
-  | 'bluetooth';
+  | 'bluetooth'
+  | 'mic1Sb'
+  | 'mic2Sb'
+  | 'screenSb'
+  | 'desktopSb'
+  | 'bluetoothSb'
+  | 'soundEffectsSb';
 
 export type VideoSourceType =
   | 'cam1'
@@ -74,7 +80,13 @@ export const AUDIO_SOURCE_LABELS: { [key in AudioSourceType]: string } = {
   screen: 'Screen Audio',
   game: 'Game Audio',
   soundEffects: 'Sound Effects',
-  bluetooth: 'Bluetooth Audio'
+  bluetooth: 'Bluetooth Audio',
+  mic1Sb: 'Mic 1 (Soundboard)',
+  mic2Sb: 'Mic 2 (Soundboard)',
+  screenSb: 'Screen Audio (Soundboard)',
+  desktopSb: 'Desktop Audio (Soundboard)',
+  bluetoothSb: 'Bluetooth (Soundboard)',
+  soundEffectsSb: 'Sound Effects (Soundboard)'
 };
 
 export const VIDEO_SOURCE_LABELS: { [key in VideoSourceType]: string } = {

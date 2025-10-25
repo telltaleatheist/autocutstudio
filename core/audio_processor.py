@@ -265,15 +265,54 @@ class AudioProcessor:
         
         return str(processed_audio_path), duration, sample_rate, channels
     
-    def sync_video_for_2997fps(self, input_path: str, output_path: Optional[str] = None) -> str:
-        """Convert high-fps video (30fps, 60fps, etc.) to 29.97fps timeline.
+    def get_video_framerate(self, file_path: str) -> float:
+        """Get the framerate of a video file.
 
-        This is needed when custom screen/game captures are recorded at higher framerates
-        (commonly 30fps or 60fps) but the master video is 29.97fps. We convert the framerate
-        by dropping frames to match the 29.97fps timeline while maintaining duration.
+        Returns:
+            Frame rate as float (e.g., 29.97, 30.0, 60.0)
+        """
+        try:
+            result = subprocess.run([
+                'ffprobe', '-v', 'quiet', '-print_format', 'json',
+                '-show_streams', '-select_streams', 'v:0', str(file_path)
+            ], capture_output=True, text=True, check=True)
+
+            data = json.loads(result.stdout)
+            video_stream = data['streams'][0]
+
+            # Try r_frame_rate first (most accurate)
+            r_frame_rate = video_stream.get('r_frame_rate', '0/1')
+            if '/' in r_frame_rate:
+                num, den = r_frame_rate.split('/')
+                fps = float(num) / float(den)
+                if fps > 0:
+                    return fps
+
+            # Fallback to avg_frame_rate
+            avg_frame_rate = video_stream.get('avg_frame_rate', '0/1')
+            if '/' in avg_frame_rate:
+                num, den = avg_frame_rate.split('/')
+                fps = float(num) / float(den)
+                return fps
+
+            return 0.0
+
+        except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as e:
+            print(f"Warning: Could not detect framerate for {file_path}: {e}")
+            return 0.0
+
+    def sync_video_for_2997fps(self, input_path: str, output_path: Optional[str] = None) -> str:
+        """Convert video to 29.97fps timeline, auto-detecting source framerate.
+
+        This handles screen/game captures recorded at any framerate (30fps, 60fps, 120fps, etc.)
+        and converts them to match the 29.97fps master timeline. The framerate is automatically
+        detected and appropriate conversion is applied.
+
+        For videos already at 29.97fps, no conversion is needed.
+        For higher framerates, frames are dropped to match 29.97fps while maintaining duration.
 
         Args:
-            input_path: Path to input video file (30fps, 60fps, etc.)
+            input_path: Path to input video file (any fps)
             output_path: Optional output path
 
         Returns:
@@ -286,10 +325,25 @@ class AudioProcessor:
 
         output_path = Path(output_path)
 
-        print(f"Syncing video framerate: {input_path.name}")
-        print(f"  Converting to 29.97fps (dropping frames to match timeline)")
+        # Detect source framerate
+        source_fps = self.get_video_framerate(str(input_path))
+        target_fps = 29.97
 
-        # CORRECT METHOD: Use fps filter to drop frames to 29.97fps
+        print(f"Syncing video framerate: {input_path.name}")
+        print(f"  Source framerate: {source_fps:.2f} fps")
+        print(f"  Target framerate: {target_fps} fps")
+
+        # Check if conversion is needed (with small tolerance for rounding)
+        if abs(source_fps - target_fps) < 0.1:
+            print(f"  ✓ Already at {target_fps}fps, no conversion needed")
+            # Just copy the file or return original path
+            import shutil
+            shutil.copy2(str(input_path), str(output_path))
+            return str(output_path)
+
+        print(f"  Converting {source_fps:.2f}fps → {target_fps}fps (dropping frames)")
+
+        # Use fps filter to drop frames to 29.97fps
         # This keeps the same DURATION but reduces frame count
         # Works for any source fps (30, 60, 120, etc.) → 29.97
         cmd = [

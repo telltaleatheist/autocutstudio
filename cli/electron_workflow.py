@@ -268,8 +268,92 @@ def main():
             sync_processor = None
             use_advanced_sync = False
 
+        # SOUNDBOARD SYNC: Detect and sync all soundboard files together
+        # Soundboard files share the same offset and clock drift since they're
+        # from the same device/recording session
+        soundboard_files = {}
+        vmix_files = {}
+        soundboard_sync_params = None  # Will store offset + speed for all SB files
+
+        # Identify soundboard files (contain 'sb' in filename)
+        for audio_type, audio_path in audio_sources_input.items():
+            if audio_path and Path(audio_path).exists():
+                if 'sb' in Path(audio_path).name.lower():
+                    soundboard_files[audio_type] = audio_path
+                else:
+                    vmix_files[audio_type] = audio_path
+
+        # If we have soundboard files and advanced sync, sync them all at once
+        if soundboard_files and use_advanced_sync:
+            try:
+                from core.soundboard_sync import sync_soundboard_files
+
+                print("="*70, file=sys.stderr)
+                print("SOUNDBOARD FILES DETECTED - Using Unified Sync", file=sys.stderr)
+                print("="*70, file=sys.stderr)
+                print(f"Found {len(soundboard_files)} soundboard files:", file=sys.stderr)
+                for sb_type, sb_path in soundboard_files.items():
+                    print(f"  - {sb_type}: {Path(sb_path).name}", file=sys.stderr)
+                print(file=sys.stderr)
+
+                # Add master to VMix files
+                vmix_files['master'] = master_video
+
+                # Run unified soundboard sync
+                emit_progress(30, 'Syncing soundboard files (unified detection)...')
+                sb_results = sync_soundboard_files(soundboard_files, vmix_files)
+
+                # Store synced files in processed_audio
+                for sb_type, sb_info in sb_results.items():
+                    if 'path' in sb_info:
+                        duration, sample_rate, channels = audio_processor.get_audio_info(sb_info['path'])
+                        processed_audio[sb_type] = {
+                            'path': sb_info['path'],
+                            'duration': duration,
+                            'sample_rate': sample_rate,
+                            'channels': channels,
+                            'sync_info': {
+                                'offset_seconds': sb_info['offset_seconds'],
+                                'speed_factor': sb_info['speed_factor'],
+                                'drift_frames': sb_info['drift_frames'],
+                                'correlation_score': sb_info['correlation'],
+                                'is_soundboard': True
+                            }
+                        }
+                        print(f"✓ Soundboard {sb_type} synced via unified detection", file=sys.stderr)
+
+                # Save sync params for reference
+                if sb_results:
+                    first_result = next(iter(sb_results.values()))
+                    if 'offset_seconds' in first_result:
+                        soundboard_sync_params = {
+                            'offset': first_result['offset_seconds'],
+                            'speed': first_result['speed_factor'],
+                            'drift': first_result['drift_frames']
+                        }
+
+                print("="*70, file=sys.stderr)
+                print(f"Soundboard unified sync complete!", file=sys.stderr)
+                print(f"  Offset: {soundboard_sync_params['offset']:.3f}s", file=sys.stderr)
+                print(f"  Speed: {soundboard_sync_params['speed']:.6f}", file=sys.stderr)
+                print(f"  Drift: {soundboard_sync_params['drift']:.1f} frames", file=sys.stderr)
+                print("="*70, file=sys.stderr)
+                print(file=sys.stderr)
+
+            except Exception as e:
+                print(f"⚠ Warning: Soundboard unified sync failed: {e}", file=sys.stderr)
+                print(f"  Falling back to individual sync for each file", file=sys.stderr)
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+                # Don't add to processed_audio - let them be processed individually
+
         for audio_type, audio_path in audio_sources_input.items():
             if audio_path:
+                # Skip if already processed by soundboard unified sync
+                if audio_type in processed_audio:
+                    print(f"⊷ Skipping {audio_type} - already synced via unified soundboard sync", file=sys.stderr)
+                    continue
+
                 synced_path = None  # Track synced file for cleanup if needed
                 skip_was_requested = False  # Track if skip happened during this operation
 
