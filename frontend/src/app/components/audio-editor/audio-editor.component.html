@@ -18,10 +18,34 @@
           <label class="section-label">Audio Files</label>
         </div>
         <small class="input-hint" style="display: block; margin-bottom: 1rem;">
-          Drop your audio in your editor and align it at the start. Go to the end and measure how far off it is (in seconds and frames).
+          Add audio files below, then adjust the global drift slider. Go to the end of your timeline and measure how far off your audio is (in seconds and frames).
           Drag <strong>left</strong> (negative) to <strong>shrink/speed up</strong> the audio. Drag <strong>right</strong> (positive) to <strong>stretch/slow down</strong> the audio.
-          Range: -20 to +20 seconds, with 30-frame precision per second.
+          Range: -20 to +20 seconds, with 30-frame precision per second. The same correction will be applied to all files.
         </small>
+
+        <!-- Global Drift Slider -->
+        <div class="drift-slider-container">
+          <label class="drift-label">
+            Global Drift Correction: <strong>{{ getDriftDisplay() }}</strong>
+            <span class="drift-hint">{{ getSpeedDescription() }}</span>
+          </label>
+          <div class="slider-wrapper">
+            <span class="slider-label-left">-20s (shrink)</span>
+            <div class="slider-track-container">
+              <input
+                type="range"
+                [(ngModel)]="globalDriftFrames"
+                name="global_drift"
+                class="drift-slider"
+                min="-20"
+                max="20"
+                step="0.0333333"
+              />
+              <div class="slider-center-mark"></div>
+            </div>
+            <span class="slider-label-right">+20s (stretch)</span>
+          </div>
+        </div>
 
         <div class="audio-files-list">
           <div *ngIf="audioFiles.length === 0" class="empty-state">
@@ -32,63 +56,24 @@
 
           <div *ngFor="let file of audioFiles" class="audio-file-item">
             <div class="audio-file-header">
-              <div class="audio-file-name">{{ file.name }}</div>
-              <button type="button" class="btn btn-small btn-danger" (click)="removeAudioFile(file.id)">✕</button>
-            </div>
-
-            <div class="audio-file-controls">
-              <!-- Drift Slider -->
-              <div class="drift-slider-container">
-                <label class="drift-label">
-                  Drift Correction: <strong>{{ getDriftDisplay(file) }}</strong>
-                  <span class="drift-hint">{{ getSpeedDescription(file) }}</span>
-                </label>
-                <div class="slider-wrapper">
-                  <span class="slider-label-left">-20s (shrink)</span>
-                  <div class="slider-track-container">
-                    <input
-                      type="range"
-                      [(ngModel)]="file.driftFrames"
-                      [name]="'drift_' + file.id"
-                      class="drift-slider"
-                      min="-20"
-                      max="20"
-                      step="0.0333333"
-                      [disabled]="file.processing"
-                    />
-                    <div class="slider-center-mark"></div>
-                  </div>
-                  <span class="slider-label-right">+20s (stretch)</span>
+              <div class="audio-file-info">
+                <div class="audio-file-name">{{ file.name }}</div>
+                <div class="audio-file-status">
+                  <span *ngIf="file.processing" class="status-badge status-processing">⏳ Processing...</span>
+                  <span *ngIf="file.completed && !file.error" class="status-badge status-completed">✓ Completed</span>
+                  <span *ngIf="file.error" class="status-badge status-error">⚠️ Error</span>
+                  <span *ngIf="!file.processing && !file.completed && !file.error" class="status-badge status-pending">⏸ Pending</span>
                 </div>
               </div>
+              <button type="button" class="btn btn-small btn-danger" (click)="removeAudioFile(file.id)" title="Remove file">✕</button>
+            </div>
 
-              <div class="action-row">
-                <button
-                  type="button"
-                  class="btn btn-primary btn-small"
-                  (click)="applyDriftCorrection(file)"
-                  [disabled]="file.processing || file.driftFrames === 0"
-                >
-                  {{ file.processing ? '⏳ Processing...' : '🎯 Apply Correction' }}
-                </button>
+            <div *ngIf="file.error" class="error-message">
+              ⚠️ {{ file.error }}
+            </div>
 
-                <button
-                  *ngIf="file.completed && file.outputPath"
-                  type="button"
-                  class="btn btn-secondary btn-small"
-                  (click)="showInFolder(file)"
-                >
-                  📁 Show Output
-                </button>
-              </div>
-
-              <div *ngIf="file.error" class="error-message">
-                ⚠️ {{ file.error }}
-              </div>
-
-              <div *ngIf="file.completed && !file.error" class="success-message">
-                ✓ Saved to: {{ file.outputPath }}
-              </div>
+            <div *ngIf="file.completed && !file.error && file.outputPath" class="success-message">
+              ✓ Saved to: {{ file.outputPath }}
             </div>
           </div>
         </div>
@@ -96,16 +81,16 @@
         <div class="action-row">
           <button type="button" class="btn-secondary-outline" (click)="addAudioFile()">
             <span class="btn-icon">➕</span>
-            <span class="btn-text">Add Audio</span>
+            <span class="btn-text">Add Audio Files</span>
           </button>
           <button
             type="button"
             class="btn-secondary-outline"
             (click)="applyDriftCorrectionToAll()"
-            [disabled]="audioFiles.length === 0"
+            [disabled]="audioFiles.length === 0 || globalDriftFrames === 0"
           >
             <span class="btn-icon">🎯</span>
-            <span class="btn-text">Process All</span>
+            <span class="btn-text">Process All Files</span>
           </button>
         </div>
       </div>

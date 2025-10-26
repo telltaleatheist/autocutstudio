@@ -6,7 +6,7 @@ import { contextBridge, ipcRenderer } from 'electron';
  */
 export interface ElectronAPI {
   // File system operations
-  selectFile: (options?: { title?: string; filters?: any[] }) => Promise<{ canceled: boolean; filePaths: string[] }>;
+  selectFile: (options?: { title?: string; filters?: any[]; properties?: any[] }) => Promise<{ canceled: boolean; filePaths: string[] }>;
   selectDirectory: (options?: { title?: string }) => Promise<{ canceled: boolean; filePaths: string[] }>;
   browseDirectory: (dirPath: string) => Promise<any>;
   showInFolder: (filePath: string) => Promise<any>;
@@ -26,8 +26,6 @@ export interface ElectronAPI {
   applyAudioDrift: (options: {
     inputPath: string;
     driftFrames: number;
-    videoDuration: number;
-    fps: number;
   }) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
   processAudioDucking: (options: {
     audio1: string;

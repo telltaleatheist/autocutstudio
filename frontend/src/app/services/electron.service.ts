@@ -52,7 +52,7 @@ export class ElectronService {
   }
 
   // File system operations
-  async selectFile(options?: { title?: string; filters?: any[] }): Promise<{ canceled: boolean; filePaths: string[] }> {
+  async selectFile(options?: { title?: string; filters?: any[]; properties?: any[] }): Promise<{ canceled: boolean; filePaths: string[] }> {
     if (!this.isElectron()) {
       throw new Error('Not running in Electron');
     }

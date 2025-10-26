@@ -10,14 +10,14 @@
 .audio-file-item {
   background: var(--panel-bg);
   border: 1px solid var(--border-color);
-  border-radius: 8px;
-  padding: 1rem;
-  margin-bottom: 1rem;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
   transition: all 0.2s ease;
 
   &:hover {
     border-color: var(--primary-color);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
   }
 }
 
@@ -25,15 +25,59 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 1rem;
-  padding-bottom: 0.5rem;
-  border-bottom: 1px solid var(--border-color);
+  gap: 0.75rem;
+}
+
+.audio-file-info {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 .audio-file-name {
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text-color);
-  font-size: 0.95rem;
+  font-size: 0.875rem;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audio-file-status {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  white-space: nowrap;
+
+  &.status-pending {
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+  }
+
+  &.status-processing {
+    background: #3b82f6;
+    color: white;
+  }
+
+  &.status-completed {
+    background: #22c55e;
+    color: white;
+  }
+
+  &.status-error {
+    background: #ef4444;
+    color: white;
+  }
 }
 
 .audio-file-controls {
@@ -111,22 +155,24 @@
 }
 
 .error-message {
-  padding: 0.5rem;
+  padding: 0.35rem 0.5rem;
   background: #fee;
   border: 1px solid #fcc;
   border-radius: 4px;
   color: #c33;
-  font-size: 0.85rem;
+  font-size: 0.75rem;
+  margin-top: 0.35rem;
 }
 
 .success-message {
-  padding: 0.5rem;
+  padding: 0.35rem 0.5rem;
   background: #efe;
   border: 1px solid #cfc;
   border-radius: 4px;
   color: #363;
-  font-size: 0.85rem;
+  font-size: 0.75rem;
   word-break: break-all;
+  margin-top: 0.35rem;
 }
 
 .button-row {
@@ -140,10 +186,16 @@
 
 // Drift Slider Styles
 .drift-slider-container {
-  padding: 1rem;
+  padding: 1.5rem;
   background: var(--bg-secondary);
   border-radius: 8px;
-  margin-bottom: 0.5rem;
+  margin-bottom: 1.5rem;
+  border: 2px solid var(--border-color);
+  transition: border-color 0.2s ease;
+
+  &:hover {
+    border-color: var(--primary-color);
+  }
 }
 
 .drift-label {
@@ -224,33 +276,35 @@
   &::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 20px;
-    height: 20px;
-    background: var(--text-color);
-    border: 3px solid var(--primary-color);
+    width: 24px;
+    height: 24px;
+    background: white;
+    border: 4px solid var(--primary-color);
     border-radius: 50%;
     cursor: pointer;
     transition: all 0.2s ease;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
 
     &:hover {
-      transform: scale(1.2);
-      box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
+      transform: scale(1.15);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4), 0 0 0 4px rgba(59, 130, 246, 0.2);
     }
   }
 
   // Firefox
   &::-moz-range-thumb {
-    width: 20px;
-    height: 20px;
-    background: var(--text-color);
-    border: 3px solid var(--primary-color);
+    width: 24px;
+    height: 24px;
+    background: white;
+    border: 4px solid var(--primary-color);
     border-radius: 50%;
     cursor: pointer;
     transition: all 0.2s ease;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
 
     &:hover {
-      transform: scale(1.2);
-      box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
+      transform: scale(1.15);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4), 0 0 0 4px rgba(59, 130, 246, 0.2);
     }
   }
 

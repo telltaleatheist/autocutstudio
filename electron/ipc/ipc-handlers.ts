@@ -32,7 +32,7 @@ export function setupIpcHandlers(windowService: WindowService, pythonSvc: Python
  */
 function setupFileSystemHandlers(windowService: WindowService): void {
   // Select file dialog
-  ipcMain.handle('select-file', async (event, options: { title?: string; filters?: any[] }) => {
+  ipcMain.handle('select-file', async (event, options: { title?: string; filters?: any[]; properties?: any[] }) => {
     const window = windowService.getMainWindow();
     if (!window) return { canceled: true, filePaths: [] };
 
@@ -45,7 +45,7 @@ function setupFileSystemHandlers(windowService: WindowService): void {
     const result = await dialog.showOpenDialog(window, {
       title: options?.title || 'Select File',
       filters: (options?.filters && options.filters.length > 0) ? options.filters : defaultFilters,
-      properties: ['openFile']
+      properties: options?.properties || ['openFile']
     });
 
     log.info('Select file dialog result:', result);

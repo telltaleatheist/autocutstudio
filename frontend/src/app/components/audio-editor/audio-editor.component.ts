@@ -5,7 +5,6 @@ interface AudioFile {
   id: string;
   path: string;
   name: string;
-  driftFrames: number;
   outputPath: string;
   processing: boolean;
   completed: boolean;
@@ -20,36 +19,39 @@ interface AudioFile {
 })
 export class AudioEditorComponent {
   audioFiles: AudioFile[] = [];
+  globalDriftFrames: number = 0;
 
   constructor(private electronService: ElectronService) {}
 
   /**
-   * Add an audio file to the list
+   * Add audio files to the list (supports multiple selection)
    */
   async addAudioFile() {
     try {
       const result = await this.electronService.selectFile({
-        title: 'Select Audio File',
+        title: 'Select Audio Files',
         filters: [
           { name: 'Audio Files', extensions: ['wav', 'mp3', 'aac', 'flac', 'ogg', 'm4a'] }
-        ]
+        ],
+        properties: ['openFile', 'multiSelections']
       });
 
       if (!result.canceled && result.filePaths.length > 0) {
-        const path = result.filePaths[0];
-        const fileName = path.split('/').pop() || '';
+        // Add all selected files
+        for (const path of result.filePaths) {
+          const fileName = path.split('/').pop() || '';
 
-        const audioFile: AudioFile = {
-          id: `audio_${Date.now()}`,
-          path,
-          name: fileName,
-          driftFrames: 0,
-          outputPath: '',
-          processing: false,
-          completed: false
-        };
+          const audioFile: AudioFile = {
+            id: `audio_${Date.now()}_${Math.random()}`,
+            path,
+            name: fileName,
+            outputPath: '',
+            processing: false,
+            completed: false
+          };
 
-        this.audioFiles.push(audioFile);
+          this.audioFiles.push(audioFile);
+        }
       }
     } catch (error) {
       console.error('Error adding audio file:', error);
@@ -65,7 +67,7 @@ export class AudioEditorComponent {
   }
 
   /**
-   * Apply drift correction to a single audio file
+   * Apply drift correction to a single audio file using global drift value
    */
   async applyDriftCorrection(audioFile: AudioFile) {
     if (!audioFile.path) {
@@ -73,7 +75,7 @@ export class AudioEditorComponent {
       return;
     }
 
-    if (audioFile.driftFrames === 0) {
+    if (this.globalDriftFrames === 0) {
       alert('Drift frames must be non-zero to apply correction');
       return;
     }
@@ -84,7 +86,7 @@ export class AudioEditorComponent {
 
       const result = await this.electronService.applyAudioDrift({
         inputPath: audioFile.path,
-        driftFrames: audioFile.driftFrames
+        driftFrames: this.globalDriftFrames
       });
 
       if (result.success && result.outputPath) {
@@ -104,13 +106,18 @@ export class AudioEditorComponent {
   }
 
   /**
-   * Apply drift correction to all audio files
+   * Apply drift correction to all audio files using global drift value
    */
   async applyDriftCorrectionToAll() {
-    const filesToProcess = this.audioFiles.filter(f => !f.completed && f.driftFrames !== 0);
+    if (this.globalDriftFrames === 0) {
+      alert('Drift frames must be non-zero to apply correction. Please adjust the slider.');
+      return;
+    }
+
+    const filesToProcess = this.audioFiles.filter(f => !f.completed);
 
     if (filesToProcess.length === 0) {
-      alert('No files to process. Make sure you have files with non-zero drift frames.');
+      alert('No files to process. All files have already been processed.');
       return;
     }
 
@@ -139,15 +146,15 @@ export class AudioEditorComponent {
   /**
    * Get drift display in seconds + frames format
    */
-  getDriftDisplay(audioFile: AudioFile): string {
-    if (audioFile.driftFrames === 0) {
+  getDriftDisplay(): string {
+    if (this.globalDriftFrames === 0) {
       return '0s 0f';
     }
 
-    const totalSeconds = Math.abs(audioFile.driftFrames);
+    const totalSeconds = Math.abs(this.globalDriftFrames);
     const seconds = Math.floor(totalSeconds);
     const frames = Math.round((totalSeconds - seconds) * 30);
-    const sign = audioFile.driftFrames < 0 ? '-' : '+';
+    const sign = this.globalDriftFrames < 0 ? '-' : '+';
 
     return `${sign}${seconds}s ${frames}f`;
   }
@@ -155,16 +162,16 @@ export class AudioEditorComponent {
   /**
    * Get speed change description
    */
-  getSpeedDescription(audioFile: AudioFile): string {
-    if (audioFile.driftFrames === 0) {
+  getSpeedDescription(): string {
+    if (this.globalDriftFrames === 0) {
       return '→ No change';
     }
 
-    const totalSeconds = Math.abs(audioFile.driftFrames);
+    const totalSeconds = Math.abs(this.globalDriftFrames);
     const seconds = Math.floor(totalSeconds);
     const frames = Math.round((totalSeconds - seconds) * 30);
 
-    if (audioFile.driftFrames > 0) {
+    if (this.globalDriftFrames > 0) {
       return `→ Stretch by ${seconds}s ${frames}f`;
     } else {
       return `→ Shrink by ${seconds}s ${frames}f`;
