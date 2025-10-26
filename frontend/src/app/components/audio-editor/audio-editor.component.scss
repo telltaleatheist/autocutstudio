@@ -137,3 +137,125 @@
 .mt-2 {
   margin-top: 1rem;
 }
+
+// Drift Slider Styles
+.drift-slider-container {
+  padding: 1rem;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  margin-bottom: 0.5rem;
+}
+
+.drift-label {
+  display: block;
+  font-size: 0.95rem;
+  color: var(--text-color);
+  margin-bottom: 1rem;
+  font-weight: 500;
+
+  strong {
+    color: var(--primary-color);
+    font-size: 1.1rem;
+  }
+}
+
+.drift-hint {
+  margin-left: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  font-weight: normal;
+  font-style: italic;
+}
+
+.slider-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.slider-label-left,
+.slider-label-right {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  min-width: 90px;
+}
+
+.slider-label-left {
+  text-align: right;
+}
+
+.slider-label-right {
+  text-align: left;
+}
+
+.drift-slider {
+  flex: 1;
+  height: 8px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: linear-gradient(
+    to right,
+    #ef4444 0%,
+    #f59e0b 25%,
+    #22c55e 50%,
+    #f59e0b 75%,
+    #3b82f6 100%
+  );
+  border-radius: 4px;
+  outline: none;
+  cursor: pointer;
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  // Webkit (Chrome, Safari, Edge)
+  &::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 20px;
+    height: 20px;
+    background: var(--text-color);
+    border: 3px solid var(--primary-color);
+    border-radius: 50%;
+    cursor: pointer;
+    transition: all 0.2s ease;
+
+    &:hover {
+      transform: scale(1.2);
+      box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
+    }
+  }
+
+  // Firefox
+  &::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+    background: var(--text-color);
+    border: 3px solid var(--primary-color);
+    border-radius: 50%;
+    cursor: pointer;
+    transition: all 0.2s ease;
+
+    &:hover {
+      transform: scale(1.2);
+      box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
+    }
+  }
+
+  // Firefox track
+  &::-moz-range-track {
+    height: 8px;
+    background: linear-gradient(
+      to right,
+      #ef4444 0%,
+      #f59e0b 25%,
+      #22c55e 50%,
+      #f59e0b 75%,
+      #3b82f6 100%
+    );
+    border-radius: 4px;
+  }
+}

@@ -18,7 +18,9 @@
           <label class="section-label">Audio Files</label>
         </div>
         <small class="input-hint" style="display: block; margin-bottom: 1rem;">
-          Negative drift values speed up (shrink) audio, positive values slow down (expand) audio.
+          Drop your audio in your editor and align it at the start. Go to the end and measure how far off it is (in seconds and frames).
+          Drag <strong>left</strong> (negative) to <strong>shrink/speed up</strong> the audio. Drag <strong>right</strong> (positive) to <strong>stretch/slow down</strong> the audio.
+          Range: -20 to +20 seconds, with 30-frame precision per second.
         </small>
 
         <div class="audio-files-list">
@@ -35,52 +37,25 @@
             </div>
 
             <div class="audio-file-controls">
-              <div class="control-row">
-                <div class="control-group">
-                  <label class="control-label">Drift (frames):</label>
+              <!-- Drift Slider -->
+              <div class="drift-slider-container">
+                <label class="drift-label">
+                  Drift Correction: <strong>{{ getDriftDisplay(file) }}</strong>
+                  <span class="drift-hint">{{ getSpeedDescription(file) }}</span>
+                </label>
+                <div class="slider-wrapper">
+                  <span class="slider-label-left">-20s (shrink)</span>
                   <input
-                    type="number"
+                    type="range"
                     [(ngModel)]="file.driftFrames"
                     [name]="'drift_' + file.id"
-                    class="input-small"
-                    step="1"
+                    class="drift-slider"
+                    min="-20"
+                    max="20"
+                    step="0.0333333"
                     [disabled]="file.processing"
                   />
-                </div>
-
-                <div class="control-group">
-                  <label class="control-label">Duration (sec):</label>
-                  <input
-                    type="number"
-                    [(ngModel)]="file.videoDuration"
-                    [name]="'duration_' + file.id"
-                    class="input-small"
-                    step="0.1"
-                    [disabled]="file.processing"
-                  />
-                </div>
-
-                <div class="control-group">
-                  <label class="control-label">FPS:</label>
-                  <input
-                    type="number"
-                    [(ngModel)]="file.fps"
-                    [name]="'fps_' + file.id"
-                    class="input-small"
-                    step="0.01"
-                    [disabled]="file.processing"
-                  />
-                </div>
-              </div>
-
-              <div class="info-row">
-                <div class="info-item">
-                  <span class="info-label">Speed:</span>
-                  <span class="info-value">{{ getSpeedDescription(file) }}</span>
-                </div>
-                <div class="info-item">
-                  <span class="info-label">Factor:</span>
-                  <span class="info-value">{{ getCorrectionFactor(file) }}</span>
+                  <span class="slider-label-right">+20s (stretch)</span>
                 </div>
               </div>
 

@@ -149,8 +149,6 @@ export class ElectronService {
   async applyAudioDrift(options: {
     inputPath: string;
     driftFrames: number;
-    videoDuration: number;
-    fps: number;
   }): Promise<{ success: boolean; outputPath?: string; error?: string }> {
     if (!this.isElectron()) {
       throw new Error('Not running in Electron');

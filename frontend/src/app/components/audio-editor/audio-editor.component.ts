@@ -6,8 +6,6 @@ interface AudioFile {
   path: string;
   name: string;
   driftFrames: number;
-  videoDuration: number;
-  fps: number;
   outputPath: string;
   processing: boolean;
   completed: boolean;
@@ -22,10 +20,6 @@ interface AudioFile {
 })
 export class AudioEditorComponent {
   audioFiles: AudioFile[] = [];
-
-  // Default values
-  defaultFps = 29.97;
-  defaultVideoDuration = 120; // 2 minutes in seconds
 
   constructor(private electronService: ElectronService) {}
 
@@ -50,8 +44,6 @@ export class AudioEditorComponent {
           path,
           name: fileName,
           driftFrames: 0,
-          videoDuration: this.defaultVideoDuration,
-          fps: this.defaultFps,
           outputPath: '',
           processing: false,
           completed: false
@@ -92,9 +84,7 @@ export class AudioEditorComponent {
 
       const result = await this.electronService.applyAudioDrift({
         inputPath: audioFile.path,
-        driftFrames: audioFile.driftFrames,
-        videoDuration: audioFile.videoDuration,
-        fps: audioFile.fps
+        driftFrames: audioFile.driftFrames
       });
 
       if (result.success && result.outputPath) {
@@ -147,12 +137,19 @@ export class AudioEditorComponent {
   }
 
   /**
-   * Calculate the correction factor for display
+   * Get drift display in seconds + frames format
    */
-  getCorrectionFactor(audioFile: AudioFile): string {
-    const totalFrames = audioFile.videoDuration * audioFile.fps;
-    const correctionFactor = 1 + (audioFile.driftFrames / totalFrames);
-    return correctionFactor.toFixed(6);
+  getDriftDisplay(audioFile: AudioFile): string {
+    if (audioFile.driftFrames === 0) {
+      return '0s 0f';
+    }
+
+    const totalSeconds = Math.abs(audioFile.driftFrames);
+    const seconds = Math.floor(totalSeconds);
+    const frames = Math.round((totalSeconds - seconds) * 30);
+    const sign = audioFile.driftFrames < 0 ? '-' : '+';
+
+    return `${sign}${seconds}s ${frames}f`;
   }
 
   /**
@@ -160,11 +157,17 @@ export class AudioEditorComponent {
    */
   getSpeedDescription(audioFile: AudioFile): string {
     if (audioFile.driftFrames === 0) {
-      return 'No change';
-    } else if (audioFile.driftFrames > 0) {
-      return 'Slow down (expand)';
+      return '→ No change';
+    }
+
+    const totalSeconds = Math.abs(audioFile.driftFrames);
+    const seconds = Math.floor(totalSeconds);
+    const frames = Math.round((totalSeconds - seconds) * 30);
+
+    if (audioFile.driftFrames > 0) {
+      return `→ Stretch by ${seconds}s ${frames}f`;
     } else {
-      return 'Speed up (shrink)';
+      return `→ Shrink by ${seconds}s ${frames}f`;
     }
   }
 }

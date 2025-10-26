@@ -322,13 +322,11 @@ function setupAudioHandlers(): void {
   ipcMain.handle('apply-audio-drift', async (event, options: {
     inputPath: string;
     driftFrames: number;
-    videoDuration: number;
-    fps: number;
   }) => {
     try {
       log.info('Applying audio drift correction:', options);
 
-      const { inputPath, driftFrames, videoDuration, fps } = options;
+      const { inputPath, driftFrames } = options;
 
       // Validate inputs
       if (!inputPath || !fs.existsSync(inputPath)) {
@@ -352,12 +350,11 @@ function setupAudioHandlers(): void {
         // Execute Python script directly
         const scriptPath = path.join(AppConfig.cliPath, 'apply_audio_drift.py');
 
+        // Python script will auto-detect audio duration
         const pythonProcess = spawn('python3', [
           scriptPath,
           '--input', inputPath,
           '--drift-frames', driftFrames.toString(),
-          '--duration', videoDuration.toString(),
-          '--fps', fps.toString(),
           '--output', outputPath
         ]);
 

@@ -15,8 +15,6 @@ export interface ElectronAPI {
   applyAudioDrift: (options: {
     inputPath: string;
     driftFrames: number;
-    videoDuration: number;
-    fps: number;
   }) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
   processAudioDucking: (options: {
     audio1: string;
