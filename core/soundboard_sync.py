@@ -14,6 +14,7 @@ Strategy:
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import os
+import sys
 
 from core.audio_sync import AudioSyncAnalyzer, MediaSyncProcessor
 

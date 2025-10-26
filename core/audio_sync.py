@@ -338,10 +338,9 @@ class AudioSyncAnalyzer:
             search_window_seconds=search_window
         )
 
-        # Detect clock drift
-        speed_factor, drift_frames = self.detect_clock_drift(
-            master_path, source_path, offset_seconds
-        )
+        # NO automatic drift correction - users will use Audio Editor for manual drift correction
+        speed_factor = 1.0
+        drift_frames = 0.0
 
         result = {
             'offset_seconds': offset_seconds,
@@ -353,8 +352,7 @@ class AudioSyncAnalyzer:
             'master_file': str(master_path)
         }
 
-        if is_soundboard:
-            print(f"  ⚠️  Soundboard file detected - will apply clock drift correction")
+        print(f"  ✓ Offset detected: {offset_seconds:.3f}s (no automatic drift correction)", file=sys.stderr)
 
         return result
 
