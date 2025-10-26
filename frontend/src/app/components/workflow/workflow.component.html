@@ -47,7 +47,7 @@
             <p class="empty-hint">Add audio/video files manually or use auto-detect</p>
           </div>
 
-          <div *ngFor="let source of audioSources" class="audio-source-row">
+          <div *ngFor="let source of sortedAudioSources" class="audio-source-row">
             <div class="audio-source-icon">{{ source.isVideo ? '🎥' : '🎵' }}</div>
             <span class="audio-source-name">{{ source.name }}</span>
             <select class="audio-source-select" [(ngModel)]="source.type" [name]="'type_' + source.id">

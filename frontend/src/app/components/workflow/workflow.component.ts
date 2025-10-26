@@ -269,6 +269,25 @@ export class WorkflowComponent implements OnInit {
     return this.allMediaTypes.filter(type => !usedTypes.includes(type));
   }
 
+  /**
+   * Get sorted media sources: audio sources first, then soundboard audio, then video sources
+   */
+  get sortedAudioSources(): AudioSource[] {
+    return [...this.audioSources].sort((a, b) => {
+      // Helper to determine category: 0 = audio, 1 = soundboard, 2 = video
+      const getCategory = (source: AudioSource): number => {
+        if (source.isVideo) return 2; // Video sources last
+        if (source.type && source.type.toString().endsWith('Sb')) return 1; // Soundboard audio second
+        return 0; // Regular audio first
+      };
+
+      const categoryA = getCategory(a);
+      const categoryB = getCategory(b);
+
+      return categoryA - categoryB;
+    });
+  }
+
   // Video source selection
   async selectVideoSource(sourceType: 'cam1' | 'cam2' | 'screen' | 'game') {
     try {
