@@ -293,12 +293,22 @@ class AudioSyncAnalyzer:
         drift_over_time = offset_at_end - offset_at_start
         drift_frames = drift_over_time * 29.97
 
-        # Calculate speed factor
-        # If drift_over_time is positive: source is falling behind (too slow, needs speedup)
-        # If drift_over_time is negative: source is ahead (too fast, needs slowdown)
-        speed_factor = (end_position + drift_over_time) / end_position
+        # Only apply speed correction if drift is significant
+        # Threshold: More than 10 frames of drift over the recording
+        # (smaller drifts are likely measurement noise, not actual clock drift)
+        DRIFT_THRESHOLD_FRAMES = 10
 
-        print(f"  Drift: {drift_frames:.1f} frames over {end_position / 60:.1f} min → speed={speed_factor:.10f}", file=sys.stderr)
+        if abs(drift_frames) > DRIFT_THRESHOLD_FRAMES:
+            # Calculate speed factor
+            # If drift_over_time is positive: source is falling behind (too slow, needs speedup)
+            # If drift_over_time is negative: source is ahead (too fast, needs slowdown)
+            # INVERTED: Subtract drift instead of add
+            speed_factor = (end_position - drift_over_time) / end_position
+            print(f"  Drift: {drift_frames:.1f} frames over {end_position / 60:.1f} min → speed={speed_factor:.10f}", file=sys.stderr)
+        else:
+            # Drift is negligible, no speed correction needed
+            speed_factor = 1.0
+            print(f"  Drift: {drift_frames:.1f} frames over {end_position / 60:.1f} min → negligible, no speed correction", file=sys.stderr)
 
         return speed_factor, drift_frames
 

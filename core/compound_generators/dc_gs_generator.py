@@ -153,7 +153,7 @@ class DCGSGenerator:
             game_path = video_sources['game']
             game_asset_id = "r_game_video"
             game_name = Path(game_path).stem
-            print(f"DC GS: Using individual game video: {game_path}")
+            pass  # 0
             game_asset = self.xml_utils.create_asset_element(
                 game_asset_id, game_name, game_path, original_duration,
                 'r1_dc_gs', has_audio=False, has_video=True
@@ -167,7 +167,7 @@ class DCGSGenerator:
             cam1_path = video_sources['cam1']
             cam1_asset_id = "r_cam1_video"
             cam1_name = Path(cam1_path).stem
-            print(f"DC GS: Using individual cam1 video: {cam1_path}")
+            pass  # 0
             cam1_asset = self.xml_utils.create_asset_element(
                 cam1_asset_id, cam1_name, cam1_path, original_duration,
                 'r1_dc_gs', has_audio=False, has_video=True
@@ -181,7 +181,7 @@ class DCGSGenerator:
             cam2_path = video_sources['cam2']
             cam2_asset_id = "r_cam2_video"
             cam2_name = Path(cam2_path).stem
-            print(f"DC GS: Using individual cam2 video: {cam2_path}")
+            pass  # 0
             cam2_asset = self.xml_utils.create_asset_element(
                 cam2_asset_id, cam2_name, cam2_path, original_duration,
                 'r1_dc_gs', has_audio=False, has_video=True
@@ -195,7 +195,7 @@ class DCGSGenerator:
             screen_path = video_sources['screen']
             screen_asset_id = "r_screen_video"
             screen_name = Path(screen_path).stem
-            print(f"DC GS: Using individual screen video: {screen_path}")
+            pass  # 0
             screen_asset = self.xml_utils.create_asset_element(
                 screen_asset_id, screen_name, screen_path, original_duration,
                 'r1_dc_gs', has_audio=False, has_video=True
@@ -242,7 +242,7 @@ class DCGSGenerator:
                     enabled=False  # DISABLED for GS
                 )
                 gap.append(mic_clip)
-                print(f"Added {mic_key} to lane {current_audio_lane}")
+                pass  # 0
                 current_audio_lane -= 1
         
         # Add screen audio if present
@@ -259,7 +259,7 @@ class DCGSGenerator:
                 enabled=False  # DISABLED for GS
             )
             gap.append(screen_clip)
-            print(f"Added screen audio to lane {current_audio_lane}")
+            pass  # 0
             current_audio_lane -= 1
         
         # Add game audio if present
@@ -276,7 +276,7 @@ class DCGSGenerator:
                 enabled=False  # DISABLED for GS
             )
             gap.append(game_clip)
-            print(f"Added game audio to lane {current_audio_lane}")
+            pass  # 0
             current_audio_lane -= 1
         
         # Add sound effects if present
@@ -293,7 +293,7 @@ class DCGSGenerator:
                 enabled=False  # DISABLED for GS
             )
             gap.append(sfx_clip)
-            print(f"Added sound_effects to lane {current_audio_lane}")
+            pass  # 0
             current_audio_lane -= 1
         
         # Add master audio clip (disabled, for reference)
@@ -352,7 +352,7 @@ class DCGSGenerator:
                         'scale': 0.563  # 56.3%
                     }
                 }
-                print(f"DC GS: Using screen video with scale-only transform")
+                pass  # 0
             else:
                 # Use master video - WITH CROPPING
                 screen_video_asset = original_asset_id
@@ -365,7 +365,7 @@ class DCGSGenerator:
                         'scale': 1.17903
                     }
                 }
-                print(f"DC GS: Using master video for screen with crop")
+                pass  # 0
 
             screen_clip = self.xml_utils.create_video_clip(
                 screen_name_for_clip,
@@ -425,7 +425,7 @@ class DCGSGenerator:
                         'scale': 0.38  # 38%
                     }
                 }
-                print(f"DC GS: Using cam1 video with scale-only transform")
+                pass  # 0
             else:
                 # Use master video - WITH CROPPING
                 camera1_asset = original_asset_id
@@ -438,7 +438,7 @@ class DCGSGenerator:
                         'scale': 0.800813
                     }
                 }
-                print(f"DC GS: Using master video for cam1 with crop")
+                pass  # 0
 
             camera_clip = self.xml_utils.create_video_clip(
                 camera1_name_for_clip,
@@ -494,7 +494,7 @@ class DCGSGenerator:
                         'scale': 0.5843  # 58.43%
                     }
                 }
-                print(f"DC GS: Using game video with scale-only")
+                pass  # 0
             else:
                 # Use master video - WITH CROPPING
                 game_video_asset = original_asset_id
@@ -507,7 +507,7 @@ class DCGSGenerator:
                         'scale': 1.23
                     }
                 }
-                print(f"DC GS: Using master video for game with crop")
+                pass  # 0
 
             game_clip = self.xml_utils.create_video_clip(
                 game_name_for_clip,
@@ -563,7 +563,7 @@ class DCGSGenerator:
                         'scale': 0.358  # 35.8%
                     }
                 }
-                print(f"DC GS: Using cam2 video with scale-only transform")
+                pass  # 0
             else:
                 # Use master video - WITH CROPPING
                 camera2_asset = original_asset_id
@@ -576,7 +576,7 @@ class DCGSGenerator:
                         'scale': 0.755554
                     }
                 }
-                print(f"DC GS: Using master video for cam2 with crop")
+                pass  # 0
 
             cam2_clip = self.xml_utils.create_video_clip(
                 camera2_name_for_clip,
@@ -696,7 +696,7 @@ class DCGSGenerator:
                 mic_path = Path(args.mic_audio)
                 if mic_path.exists():
                     audio_sources['mic1'] = str(mic_path)
-                    print(f"Using mic1 audio: {mic_path}")
+                    pass  # 0
                 else:
                     print(f"Error: Mic1 audio file not found: {mic_path}")
                     return 1
@@ -705,7 +705,7 @@ class DCGSGenerator:
                 mic2_path = Path(args.mic2_audio)
                 if mic2_path.exists():
                     audio_sources['mic2'] = str(mic2_path)
-                    print(f"Using mic2 audio: {mic2_path}")
+                    pass  # 0
                 else:
                     print(f"Warning: Mic2 audio file not found: {mic2_path}")
 
@@ -713,7 +713,7 @@ class DCGSGenerator:
                 mic3_path = Path(args.mic3_audio)
                 if mic3_path.exists():
                     audio_sources['mic3'] = str(mic3_path)
-                    print(f"Using mic3 audio: {mic3_path}")
+                    pass  # 0
                 else:
                     print(f"Warning: Mic3 audio file not found: {mic3_path}")
 
@@ -721,7 +721,7 @@ class DCGSGenerator:
                 mic4_path = Path(args.mic4_audio)
                 if mic4_path.exists():
                     audio_sources['mic4'] = str(mic4_path)
-                    print(f"Using mic4 audio: {mic4_path}")
+                    pass  # 0
                 else:
                     print(f"Warning: Mic4 audio file not found: {mic4_path}")
 
@@ -729,7 +729,7 @@ class DCGSGenerator:
                 screen_path = Path(args.screen_audio)
                 if screen_path.exists():
                     audio_sources['screen'] = str(screen_path)
-                    print(f"Using screen audio: {screen_path}")
+                    pass  # 0
                 else:
                     print(f"Warning: Screen audio file not found: {screen_path}")
 
@@ -737,7 +737,7 @@ class DCGSGenerator:
                 game_path = Path(args.game_audio)
                 if game_path.exists():
                     audio_sources['game'] = str(game_path)
-                    print(f"Using game audio: {game_path}")
+                    pass  # 0
                 else:
                     print(f"Warning: Game audio file not found: {game_path}")
 
@@ -745,7 +745,7 @@ class DCGSGenerator:
                 sfx_path = Path(args.sound_effects)
                 if sfx_path.exists():
                     audio_sources['sound_effects'] = str(sfx_path)
-                    print(f"Using sound effects: {sfx_path}")
+                    pass  # 0
                 else:
                     print(f"Warning: Sound effects file not found: {sfx_path}")
 

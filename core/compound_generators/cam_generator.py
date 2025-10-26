@@ -105,7 +105,7 @@ class CamGenerator:
         noise_gate_effect.set('name', 'Noise Gate')
         noise_gate_effect.set('uid', 'AudioUnit: 0x61756678000000b3454d4147')
 
-        print(f"Added effect resources r4 and r5 to resources")
+        pass  # 0
 
         # Create format elements
         # Get original format from compound XML for timeline compatibility
@@ -175,7 +175,7 @@ class CamGenerator:
             cam1_asset_id = "r_cam1_video"
             cam1_name = Path(cam1_path).stem
 
-            print(f"Using individual camera video: {cam1_path}")
+            pass  # 0
 
             # Create asset for the cam1 video
             cam1_asset = self.xml_utils.create_asset_element(
@@ -220,7 +220,7 @@ class CamGenerator:
             enabled=False  # Disabled by default for Cam
         )
         gap.append(master_audio_clip)
-        print(f"Added master audio to lane -1 (disabled)")
+        pass  # 0
 
         # Add audio sources to gap structure (negative lanes starting at -2)
         audio_lane = -2  # Start with lane -2 for first audio source (below master at -1)
@@ -240,7 +240,7 @@ class CamGenerator:
                     channels=audio_info['channels']
                 )
                 gap.append(audio_clip)
-                print(f"Added {audio_type} audio to lane {audio_lane}")
+                pass  # 0
                 audio_lane -= 1  # Move to next audio lane
         
         # Add space background if specified (lane 1 - bottom layer)
@@ -282,7 +282,7 @@ class CamGenerator:
                 camera_asset = cam1_asset_id
                 camera_name_for_clip = cam1_name
                 transforms = None  # No transforms for individual video
-                print(f"Using cam1 video source - no transforms applied (full 1920x1080)")
+                pass  # 0
             else:
                 # Use master video - WITH CROPPING AND TRANSFORMS
                 camera_asset = original_asset_id
@@ -295,7 +295,7 @@ class CamGenerator:
                         'scale': camera_config.get('scale', 1.0)
                     }
                 }
-                print(f"Using master video with crop and transform")
+                pass  # 0
 
             video_lane = "2" if background_asset_key else "1"  # Lane 2 if background exists, otherwise lane 1
 
@@ -424,7 +424,7 @@ class CamGenerator:
                 mic_path = Path(args.mic_audio)
                 if mic_path.exists():
                     audio_sources['mic1'] = str(mic_path)
-                    print(f"Using mic1 audio: {mic_path}")
+                    pass  # 0
                 else:
                     print(f"Error: Mic1 audio file not found: {mic_path}")
                     return 1
@@ -433,7 +433,7 @@ class CamGenerator:
                 mic2_path = Path(args.mic2_audio)
                 if mic2_path.exists():
                     audio_sources['mic2'] = str(mic2_path)
-                    print(f"Using mic2 audio: {mic2_path}")
+                    pass  # 0
                 else:
                     print(f"Warning: Mic2 audio file not found: {mic2_path}")
             
@@ -441,7 +441,7 @@ class CamGenerator:
                 mic3_path = Path(args.mic3_audio)
                 if mic3_path.exists():
                     audio_sources['mic3'] = str(mic3_path)
-                    print(f"Using mic3 audio: {mic3_path}")
+                    pass  # 0
                 else:
                     print(f"Warning: Mic3 audio file not found: {mic3_path}")
             
@@ -449,7 +449,7 @@ class CamGenerator:
                 mic4_path = Path(args.mic4_audio)
                 if mic4_path.exists():
                     audio_sources['mic4'] = str(mic4_path)
-                    print(f"Using mic4 audio: {mic4_path}")
+                    pass  # 0
                 else:
                     print(f"Warning: Mic4 audio file not found: {mic4_path}")
             
@@ -457,7 +457,7 @@ class CamGenerator:
                 sfx_path = Path(args.sound_effects)
                 if sfx_path.exists():
                     audio_sources['sound_effects'] = str(sfx_path)
-                    print(f"Using sound effects: {sfx_path}")
+                    pass  # 0
                 else:
                     print(f"Warning: Sound effects file not found: {sfx_path}")
             

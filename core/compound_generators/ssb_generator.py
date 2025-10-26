@@ -168,7 +168,7 @@ class SSBGenerator:
                 cam1_asset_id = "r_cam1_video"
                 cam1_name = Path(cam1_path).stem
 
-                print(f"SSB: Using individual camera video: {cam1_path}")
+                pass  # 0
 
                 # Create asset for the cam1 video
                 cam1_asset = self.xml_utils.create_asset_element(
@@ -190,7 +190,7 @@ class SSBGenerator:
                 screen_asset_id = "r_screen_video"
                 screen_name = Path(screen_path).stem
 
-                print(f"SSB: Using individual screen video: {screen_path}")
+                pass  # 0
 
                 # Create asset for the screen video
                 screen_asset = self.xml_utils.create_asset_element(
@@ -243,7 +243,7 @@ class SSBGenerator:
                         channels=audio_info['channels']
                     )
                     gap.append(audio_clip)
-                    print(f"Added {audio_type} audio to lane {current_audio_lane}")
+                    pass  # 0
                     current_audio_lane -= 1
             
             # Add master audio clip (disabled, for reference)
@@ -303,7 +303,7 @@ class SSBGenerator:
                             'scale': 0.565  # 56.5%
                         }
                     }
-                    print(f"SSB: Using cam1 video with scale-only transform (no crop)")
+                    pass  # 0
                 else:
                     # Use master video - WITH CROPPING
                     camera_asset = original_asset_id
@@ -316,7 +316,7 @@ class SSBGenerator:
                             'scale': 1.1936
                         }
                     }
-                    print(f"SSB: Using master video with crop and transform")
+                    pass  # 0
 
                 camera_clip = self.xml_utils.create_video_clip(
                     camera_name_for_clip,
@@ -374,7 +374,7 @@ class SSBGenerator:
                             'scale': 0.5843  # 58.43%
                         }
                     }
-                    print(f"SSB: Using screen video with scale-only transform (no crop)")
+                    pass  # 0
                 else:
                     # Use master video - WITH CROPPING
                     screen_video_asset = original_asset_id
@@ -387,7 +387,7 @@ class SSBGenerator:
                             'scale': 1.26677
                         }
                     }
-                    print(f"SSB: Using master video for screen with crop and transform")
+                    pass  # 0
 
                 screen_clip = self.xml_utils.create_video_clip(
                     screen_name_for_clip,
@@ -509,7 +509,7 @@ class SSBGenerator:
                 screen_path = Path(args.screen_audio)
                 if screen_path.exists():
                     audio_sources['screen'] = str(screen_path)
-                    print(f"Using screen audio: {screen_path}")
+                    pass  # 0
                 else:
                     print(f"Error: Screen audio file not found: {screen_path}")
                     return 1
@@ -518,7 +518,7 @@ class SSBGenerator:
                 game_path = Path(args.game_audio)
                 if game_path.exists():
                     audio_sources['game'] = str(game_path)
-                    print(f"Using game audio: {game_path}")
+                    pass  # 0
                 else:
                     print(f"Warning: Game audio file not found: {game_path}")
             

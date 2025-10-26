@@ -166,7 +166,7 @@ class DCSSBGenerator:
             cam1_path = video_sources['cam1']
             cam1_asset_id = "r_cam1_video"
             cam1_name = Path(cam1_path).stem
-            print(f"DC SSB: Using individual camera 1 video: {cam1_path}")
+            pass  # 0
             cam1_asset = self.xml_utils.create_asset_element(
                 cam1_asset_id, cam1_name, cam1_path, original_duration,
                 'r1_dc_ssb', has_audio=False, has_video=True
@@ -179,7 +179,7 @@ class DCSSBGenerator:
             cam2_path = video_sources['cam2']
             cam2_asset_id = "r_cam2_video"
             cam2_name = Path(cam2_path).stem
-            print(f"DC SSB: Using individual camera 2 video: {cam2_path}")
+            pass  # 0
             cam2_asset = self.xml_utils.create_asset_element(
                 cam2_asset_id, cam2_name, cam2_path, original_duration,
                 'r1_dc_ssb', has_audio=False, has_video=True
@@ -192,7 +192,7 @@ class DCSSBGenerator:
             screen_path = video_sources['screen']
             screen_asset_id = "r_screen_video"
             screen_name = Path(screen_path).stem
-            print(f"DC SSB: Using individual screen video: {screen_path}")
+            pass  # 0
             screen_asset = self.xml_utils.create_asset_element(
                 screen_asset_id, screen_name, screen_path, original_duration,
                 'r1_dc_ssb', has_audio=False, has_video=True
@@ -232,7 +232,7 @@ class DCSSBGenerator:
                 resources    # Pass resources (though not used in simplified version)
             )
             gap.append(screen_audio_clip)
-            print("Added screen audio to lane -2")
+            pass  # 0
                     
         # Add master audio clip (disabled, for reference)
         master_audio_clip = self.xml_utils.create_audio_only_clip(
@@ -281,12 +281,12 @@ class DCSSBGenerator:
                 camera1_asset = cam1_asset_id
                 camera1_name = cam1_name
                 cam1_transforms = {'crop': None, 'crop_mode': None, 'transform': {'position': [-36.481, 19.63], 'scale': 0.565}}  # -394 / 10.8, 212 / 10.8
-                print(f"DC SSB: Using cam1 video with scale-only")
+                pass  # 0
             else:
                 camera1_asset = original_asset_id
                 camera1_name = f"{original_name} - Camera 1"
                 cam1_transforms = {'crop': [2.77778, 51.7584, 91.1816, 1.37531], 'crop_mode': 'trim', 'transform': {'position': [16.7616, 49.9968], 'scale': 1.2026}}
-                print(f"DC SSB: Using master for cam1 with crop")
+                pass  # 0
 
             cam1_clip = self.xml_utils.create_video_clip(camera1_name, camera1_asset, "2", "0s", original_duration, cam1_transforms)
             gap.append(cam1_clip)
@@ -328,12 +328,12 @@ class DCSSBGenerator:
                 screen_video_asset = screen_asset_id
                 screen_video_name = screen_name
                 screen_transforms = {'crop': None, 'crop_mode': None, 'transform': {'position': [34.63, -18.75], 'scale': 0.5843}}  # 374 / 10.8, -202.5 / 10.8
-                print(f"DC SSB: Using screen video with scale-only")
+                pass  # 0
             else:
                 screen_video_asset = original_asset_id
                 screen_video_name = f"{original_name} - Screen"
                 screen_transforms = {'crop': [2.02365, 1.18815, 90.863, 51.1176], 'crop_mode': 'trim', 'transform': {'position': [89.3201, -49.442], 'scale': 1.23001}}
-                print(f"DC SSB: Using master for screen with crop")
+                pass  # 0
 
             screen_clip = self.xml_utils.create_video_clip(screen_video_name, screen_video_asset, "4", "0s", original_duration, screen_transforms)
             gap.append(screen_clip)
@@ -375,12 +375,12 @@ class DCSSBGenerator:
                 camera2_asset = cam2_asset_id
                 camera2_name = cam2_name
                 cam2_transforms = {'crop': None, 'crop_mode': None, 'transform': {'position': [-52.963, -29.074], 'scale': 0.38}}  # -572 / 10.8, -314 / 10.8
-                print(f"DC SSB: Using cam2 video with scale-only")
+                pass  # 0
             else:
                 camera2_asset = original_asset_id
                 camera2_name = f"{original_name} - Camera 2"
                 cam2_transforms = {'crop': [91.3865, 1.12389, 2.04329, 51.3326], 'crop_mode': 'trim', 'transform': {'position': [-88.6903, -49.2458], 'scale': 0.801898}}
-                print(f"DC SSB: Using master for cam2 with crop")
+                pass  # 0
 
             cam2_clip = self.xml_utils.create_video_clip(camera2_name, camera2_asset, "6", "0s", original_duration, cam2_transforms)
             gap.append(cam2_clip)
@@ -495,7 +495,7 @@ class DCSSBGenerator:
                 screen_path = Path(args.screen_audio)
                 if screen_path.exists():
                     audio_sources['screen'] = str(screen_path)
-                    print(f"Using screen audio: {screen_path}")
+                    pass  # 0
                 else:
                     print(f"Error: Screen audio file not found: {screen_path}")
                     return 1
@@ -503,7 +503,7 @@ class DCSSBGenerator:
                 game_path = Path(args.game_audio)
                 if game_path.exists():
                     audio_sources['game'] = str(game_path)
-                    print(f"Using game audio: {game_path}")
+                    pass  # 0
                 else:
                     print(f"Warning: Game audio file not found: {game_path}")
             

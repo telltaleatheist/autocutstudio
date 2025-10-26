@@ -246,10 +246,8 @@ def main():
             Args:
                 progress_info: Dict with keys: frame, fps, time, speed, progress_percent
             """
-            # Get current overall progress from the step we're on
-            current_overall = 35  # We're in the video processing step
-            percent = progress_info.get('progress_percent', 0)
-            emit_progress(current_overall, 'Processing media sources...', sub_progress=percent)
+            # Disabled to reduce console spam
+            pass
 
         audio_processor = AudioProcessor(config, progress_callback=ffmpeg_progress_callback)
         # Attach skip check callback so FFmpeg can check for skip signals
