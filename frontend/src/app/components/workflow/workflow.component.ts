@@ -41,6 +41,9 @@ export class WorkflowComponent implements OnInit {
   masterSolo = true;
   masterDc = true;
 
+  // Auto ducking
+  autoDuck = false;
+
   // Processing
   isProcessing = false;
   consoleOutput: string[] = [];
@@ -345,9 +348,21 @@ export class WorkflowComponent implements OnInit {
             const backendType = typeMap[source.type] || source.type;
             videoSourcesObj[backendType] = source.path;
           } else {
-            // Audio source
-            audioSourcesObj[source.type] = source.path;
-            audioSyncSettings[source.type] = source.syncFix || source.applyDrift;
+            // Audio source - convert camelCase to snake_case for backend
+            const audioTypeMap: { [key: string]: string } = {
+              'mic1Sb': 'mic1_sb',
+              'mic2Sb': 'mic2_sb',
+              'mic3Sb': 'mic3_sb',
+              'mic4Sb': 'mic4_sb',
+              'screenSb': 'screen_sb',
+              'desktopSb': 'desktop_sb',
+              'bluetoothSb': 'bluetooth_sb',
+              'soundEffectsSb': 'sound_effects_sb',
+              'soundEffects': 'sound_effects'
+            };
+            const backendType = audioTypeMap[source.type] || source.type;
+            audioSourcesObj[backendType] = source.path;
+            audioSyncSettings[backendType] = source.syncFix || source.applyDrift;
           }
         }
       });
@@ -370,7 +385,8 @@ export class WorkflowComponent implements OnInit {
         audioSources: audioSourcesObj,
         audioSyncSettings,
         videoSources: mergedVideoSources,
-        xmlOptions: xmlOptionsToSend.length > 0 ? xmlOptionsToSend : undefined
+        xmlOptions: xmlOptionsToSend.length > 0 ? xmlOptionsToSend : undefined,
+        autoDuck: this.autoDuck
       };
 
       // Start workflow

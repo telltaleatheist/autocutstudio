@@ -299,8 +299,8 @@ class SSBGenerator:
                         'crop': None,  # No crop for individual video
                         'crop_mode': None,
                         'transform': {
-                            'position': [-36.481, 19.63],  # -394 / 10.8, 212 / 10.8
-                            'scale': 0.565  # 56.5%
+                            'position': [-25, 25],  # Top-left quadrant
+                            'scale': 0.5  # 50% - perfect quadrant
                         }
                     }
                     pass  # 0
@@ -370,8 +370,8 @@ class SSBGenerator:
                         'crop': None,  # No crop for individual video
                         'crop_mode': None,
                         'transform': {
-                            'position': [34.63, -18.75],  # 374 / 10.8, -202.5 / 10.8
-                            'scale': 0.5843  # 58.43%
+                            'position': [25, -25],  # Bottom-right quadrant
+                            'scale': 0.5  # 50% - perfect quadrant
                         }
                     }
                     pass  # 0

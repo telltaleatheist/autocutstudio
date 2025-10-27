@@ -7,17 +7,19 @@ Uses ffmpeg sidechaingate to duck one audio when another is loud.
 import subprocess
 import shutil
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Callable
 
 
 class AudioDucker:
     """Handle audio ducking operations using ffmpeg."""
 
-    def __init__(self):
+    def __init__(self, progress_callback: Optional[Callable] = None):
         # Find ffmpeg executable in PATH
         self.ffmpeg_path = self._find_ffmpeg()
         if not self.ffmpeg_path:
             raise RuntimeError("ffmpeg not found in PATH. Please install ffmpeg.")
+        self.progress_callback = progress_callback
+        self.skip_check_callback = None  # Can be set by caller
 
     def _find_ffmpeg(self) -> Optional[str]:
         """Find ffmpeg executable in system PATH."""
@@ -69,6 +71,7 @@ class AudioDucker:
         # Hard knee = more aggressive compression = more dramatic effect
         cmd = [
             self.ffmpeg_path,  # Use the found ffmpeg path
+            '-progress', 'pipe:2',  # Enable progress output
             '-i', str(audio_to_duck),    # Input audio to be ducked (lowered)
             '-i', str(trigger_audio),     # Trigger audio (when this is loud, duck the other)
             '-filter_complex',
@@ -85,12 +88,24 @@ class AudioDucker:
         ]
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True
-            )
+            # Use progress tracking if available
+            if self.progress_callback:
+                from core.ffmpeg_progress import FFmpegProgressTracker
+                tracker = FFmpegProgressTracker(self.progress_callback)
+                tracker.run_ffmpeg_with_progress(
+                    cmd,
+                    str(audio_to_duck),
+                    f"Ducking {Path(audio_to_duck).name}",
+                    skip_check_callback=self.skip_check_callback
+                )
+            else:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+
             print(f"✓ Ducked audio saved to: {output_path}")
             return str(output_path)
 
@@ -129,8 +144,8 @@ class AudioDucker:
 
         if mode == 'duck1' or mode == 'mutual':
             # Duck audio1 when audio2 is loud
-            # Always output as WAV for compatibility with PCM codec
-            output1 = audio1.parent / f"{audio1.stem}_ducked.wav"
+            # Always output as WAV with _processed name
+            output1 = audio1.parent / f"{audio1.stem}_processed.wav"
             ducked1 = self.duck_audio(
                 audio_to_duck=str(audio1),
                 trigger_audio=str(audio2),
@@ -141,8 +156,8 @@ class AudioDucker:
 
         if mode == 'duck2' or mode == 'mutual':
             # Duck audio2 when audio1 is loud
-            # Always output as WAV for compatibility with PCM codec
-            output2 = audio2.parent / f"{audio2.stem}_ducked.wav"
+            # Always output as WAV with _processed name
+            output2 = audio2.parent / f"{audio2.stem}_processed.wav"
             ducked2 = self.duck_audio(
                 audio_to_duck=str(audio2),
                 trigger_audio=str(audio1),

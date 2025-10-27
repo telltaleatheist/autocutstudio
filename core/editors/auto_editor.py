@@ -5,17 +5,19 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 import json
 import datetime
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Callable
 
 from .base_editor import BaseEditor
 from ..xml_utils import FCPXMLUtils
 
 class AutoEditor(BaseEditor):
     """Auto-editor implementation for cutting silence/pauses."""
-    
-    def __init__(self, config):
+
+    def __init__(self, config, progress_callback: Optional[Callable] = None):
         self.config = config
         self.xml_utils = FCPXMLUtils()
+        self.progress_callback = progress_callback
+        self.skip_check_callback = None  # Can be set by caller
     
     def cut_silence(self, input_file: str, threshold: str = None,
                    output_format: str = "final-cut-pro", auto_fix_errors: bool = True) -> str:
@@ -100,8 +102,9 @@ class AutoEditor(BaseEditor):
 
         try:
             # Use ffmpeg with error concealment to fix corrupted frames
-            result = subprocess.run([
+            cmd = [
                 'ffmpeg',
+                '-progress', 'pipe:2',  # Enable progress output
                 '-err_detect', 'ignore_err',  # Ignore decoding errors
                 '-i', str(input_path),
                 '-c:v', 'libx264',  # Re-encode video
@@ -111,14 +114,28 @@ class AutoEditor(BaseEditor):
                 '-b:a', '192k',  # Audio bitrate
                 '-y',  # Overwrite output
                 str(output_path)
-            ], capture_output=True, text=True)
+            ]
+
+            # Use progress tracking if available
+            if self.progress_callback:
+                from core.ffmpeg_progress import FFmpegProgressTracker
+                tracker = FFmpegProgressTracker(self.progress_callback)
+                tracker.run_ffmpeg_with_progress(
+                    cmd,
+                    str(input_path),
+                    f"Re-encoding {input_path.name}",
+                    skip_check_callback=self.skip_check_callback
+                )
+            else:
+                result = subprocess.run(cmd, capture_output=True, text=True)
 
             if output_path.exists():
                 print("Re-encoding completed successfully")
                 return str(output_path)
             else:
                 print("Re-encoding failed: output file not created")
-                print(f"ffmpeg stderr: {result.stderr}")
+                if not self.progress_callback:
+                    print(f"ffmpeg stderr: {result.stderr}")
                 return None
 
         except Exception as e:

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import uuid
 import datetime
+import shutil
 
 from ..xml_utils import FCPXMLUtils
 from ..audio_processor import AudioProcessor
@@ -19,7 +20,8 @@ class GSGenerator:
     
     def generate_gs_compound(self, compound_xml_path: str, audio_sources: Dict[str, str],
                             output_path: Optional[str] = None,
-                            apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None) -> str:
+                            apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None,
+                            auto_duck: bool = False) -> str:
         """Generate gs compound clip from existing compound clip XML.
 
         Args:
@@ -28,6 +30,7 @@ class GSGenerator:
             output_path: Optional custom output path
             apply_audio_sync: Whether to apply 29.97fps sync correction
             video_sources: Optional dictionary of video source paths (e.g., {'game': '/path/to/game.mp4'})
+            auto_duck: Whether to apply universal auto ducking
         """
         video_sources = video_sources or {}
         
@@ -59,7 +62,7 @@ class GSGenerator:
                 except Exception as e:
                     print(f"Warning: Failed to process {audio_type} audio ({audio_path}): {e}")
                     processed_audio_sources[audio_type] = None
-        
+
         # Get original compound info
         original_compound = root.find('.//media[@id="compound1"]')
         original_asset = root.find('.//asset[@id="r_original"]')
@@ -338,8 +341,8 @@ class GSGenerator:
                     'crop': None,
                     'crop_mode': None,
                     'transform': {
-                        'position': [-52.963, -29.167],  # -572 / 10.8, -315 / 10.8
-                        'scale': 0.38  # 38%
+                        'position': [-25, -25],  # Bottom-left quadrant
+                        'scale': 0.5  # 50% - perfect quadrant
                     }
                 }
                 pass  # 0
@@ -406,8 +409,8 @@ class GSGenerator:
                     'crop': None,
                     'crop_mode': None,
                     'transform': {
-                        'position': [34.537, -18.75],  # 373 / 10.8, -202.5 / 10.8
-                        'scale': 0.5843  # 58.43%
+                        'position': [25, -25],  # Bottom-right quadrant
+                        'scale': 0.5  # 50% - perfect quadrant
                     }
                 }
                 pass  # 0
@@ -474,8 +477,8 @@ class GSGenerator:
                     'crop': None,
                     'crop_mode': None,
                     'transform': {
-                        'position': [-36.481, 19.722],  # -394 / 10.8, 213 / 10.8
-                        'scale': 0.563  # 56.3%
+                        'position': [-25, 25],  # Top-left quadrant
+                        'scale': 0.5  # 50% - perfect quadrant
                     }
                 }
                 pass  # 0
@@ -750,3 +753,129 @@ class GSGenerator:
             snapped_den = frame_den
 
         return f"{snapped_num}/{snapped_den}s"
+
+    def _apply_auto_ducking(self, processed_audio_sources: Dict[str, Optional[Dict]]) -> None:
+        """Apply universal auto ducking to audio sources.
+
+        Rules:
+        1. If NO sb files: duck mic1 and screen, favoring screen (max settings)
+        2. If sb files exist:
+           - Duck mic1_sb and mic2_sb, favoring mic1_sb
+           - Duck mic1_sb and screen_sb, favoring screen_sb
+
+        Args:
+            processed_audio_sources: Dictionary of processed audio sources (modified in place)
+        """
+        from cli.audio_ducking import AudioDucker
+
+        # Check if we have any soundboard files by looking at the is_soundboard flag
+        def is_soundboard_file(audio_info):
+            """Check if this audio source is from soundboard"""
+            if not audio_info:
+                return False
+            return audio_info.get('sync_info', {}).get('is_soundboard', False)
+
+        has_sb_files = any(is_soundboard_file(info) for info in processed_audio_sources.values() if info)
+
+        # Max ducking settings
+        threshold = -40  # dB
+        ratio = 20  # 20:1 (maximum)
+        attack = 10  # ms
+        release = 100  # ms
+
+        ducker = AudioDucker()
+
+        if not has_sb_files:
+            # Case 1: No soundboard files - duck mic1 and screen, favoring screen
+            print("No soundboard files detected - applying standard ducking")
+
+            mic1_info = processed_audio_sources.get('mic1')
+            screen_info = processed_audio_sources.get('screen')
+
+            if mic1_info and screen_info:
+                print(f"Ducking mic1 when screen is loud (favoring screen)")
+
+                # Duck mic1 when screen is loud - overwrite the processed file
+                original_path = mic1_info['path']
+                temp_ducked_path = str(Path(original_path).parent / f"{Path(original_path).stem}_temp_ducked.wav")
+
+                ducker.duck_audio(
+                    audio_to_duck=original_path,
+                    trigger_audio=screen_info['path'],
+                    output_path=temp_ducked_path,
+                    threshold=threshold,
+                    ratio=ratio,
+                    attack=attack,
+                    release=release
+                )
+
+                # Replace original processed file with ducked version
+                shutil.move(temp_ducked_path, original_path)
+                print(f"✓ Replaced {Path(original_path).name} with ducked version")
+            else:
+                if not mic1_info:
+                    print("⚠ mic1 audio not found - skipping ducking")
+                if not screen_info:
+                    print("⚠ screen audio not found - skipping ducking")
+        else:
+            # Case 2: Soundboard files exist
+            # Note: Soundboard files are stored with normalized keys (mic1, mic2, screen)
+            # but have is_soundboard=True in sync_info
+            print("Soundboard files detected - applying soundboard ducking")
+
+            # Get soundboard file info (they're stored as mic1, mic2, screen with is_soundboard flag)
+            mic1_info = processed_audio_sources.get('mic1') if is_soundboard_file(processed_audio_sources.get('mic1')) else None
+            mic2_info = processed_audio_sources.get('mic2') if is_soundboard_file(processed_audio_sources.get('mic2')) else None
+            screen_info = processed_audio_sources.get('screen') if is_soundboard_file(processed_audio_sources.get('screen')) else None
+
+            # Step 1: Duck mic2 when mic1 is loud (favor mic1)
+            if mic1_info and mic2_info:
+                print(f"Ducking mic2 (soundboard) when mic1 (soundboard) is loud (favoring mic1)")
+
+                original_path = mic2_info['path']
+                temp_ducked_path = str(Path(original_path).parent / f"{Path(original_path).stem}_temp_ducked.wav")
+
+                ducker.duck_audio(
+                    audio_to_duck=original_path,
+                    trigger_audio=mic1_info['path'],
+                    output_path=temp_ducked_path,
+                    threshold=threshold,
+                    ratio=ratio,
+                    attack=attack,
+                    release=release
+                )
+
+                # Replace original processed file with ducked version
+                shutil.move(temp_ducked_path, original_path)
+                print(f"✓ Replaced {Path(original_path).name} with ducked version")
+            else:
+                if not mic1_info:
+                    print("⚠ mic1 (soundboard) audio not found - skipping mic1/mic2 ducking")
+                if not mic2_info:
+                    print("⚠ mic2 (soundboard) audio not found - skipping mic1/mic2 ducking")
+
+            # Step 2: Duck mic1 when screen is loud (favor screen)
+            if mic1_info and screen_info:
+                print(f"Ducking mic1 (soundboard) when screen (soundboard) is loud (favoring screen)")
+
+                original_path = mic1_info['path']
+                temp_ducked_path = str(Path(original_path).parent / f"{Path(original_path).stem}_temp_ducked.wav")
+
+                ducker.duck_audio(
+                    audio_to_duck=original_path,
+                    trigger_audio=screen_info['path'],
+                    output_path=temp_ducked_path,
+                    threshold=threshold,
+                    ratio=ratio,
+                    attack=attack,
+                    release=release
+                )
+
+                # Replace original processed file with ducked version
+                shutil.move(temp_ducked_path, original_path)
+                print(f"✓ Replaced {Path(original_path).name} with ducked version")
+            else:
+                if not mic1_info:
+                    print("⚠ mic1 (soundboard) audio not found - skipping mic1/screen ducking")
+                if not screen_info:
+                    print("⚠ screen (soundboard) audio not found - skipping mic1/screen ducking")

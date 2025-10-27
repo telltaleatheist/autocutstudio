@@ -19,7 +19,8 @@ class DCGSGenerator:
 
     def generate_dc_gs_compound(self, compound_xml_path: str, audio_sources: Dict[str, str],
                             output_path: Optional[str] = None,
-                            apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None) -> str:
+                            apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None,
+                            auto_duck: bool = False) -> str:
         """Generate dc gs compound clip from existing compound clip XML.
 
         Args:
@@ -28,6 +29,7 @@ class DCGSGenerator:
             output_path: Optional custom output path
             apply_audio_sync: Whether to apply 29.97fps sync correction
             video_sources: Optional dictionary of video source paths (e.g., {'game': '/path/to/game.mp4'})
+            auto_duck: Whether to apply universal auto ducking
         """
         video_sources = video_sources or {}
         
@@ -59,7 +61,7 @@ class DCGSGenerator:
                 except Exception as e:
                     print(f"Warning: Failed to process {audio_type} audio ({audio_path}): {e}")
                     processed_audio_sources[audio_type] = None
-        
+
         # Get original compound info
         original_compound = root.find('.//media[@id="compound1"]')
         original_asset = root.find('.//asset[@id="r_original"]')

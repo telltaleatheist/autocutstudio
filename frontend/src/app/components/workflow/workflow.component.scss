@@ -1,3 +1,37 @@
+// Checkbox styles
+.checkbox-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  cursor: pointer;
+  user-select: none;
+
+  input[type="checkbox"] {
+    width: 1.125rem;
+    height: 1.125rem;
+    cursor: pointer;
+    accent-color: var(--primary-orange, #ff6b35);
+    flex-shrink: 0;
+  }
+
+  .checkbox-text {
+    font-size: 0.9375rem;
+    font-weight: 500;
+    color: var(--text-primary, #1f2937);
+  }
+
+  &:hover .checkbox-text {
+    color: var(--primary-orange, #ff6b35);
+  }
+}
+
 // Operation Progress Section (Sub-progress and Skip Button)
 .operation-progress {
   margin-top: 1rem;

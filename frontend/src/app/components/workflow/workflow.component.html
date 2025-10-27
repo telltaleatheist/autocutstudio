@@ -73,6 +73,21 @@
         </div>
       </div>
 
+      <!-- Auto Ducking Option -->
+      <div class="form-section">
+        <div class="form-section-header">
+          <div class="section-icon">🔊</div>
+          <label class="section-label">Audio Processing</label>
+        </div>
+        <div class="checkbox-row">
+          <label class="checkbox-label">
+            <input type="checkbox" [(ngModel)]="autoDuck" />
+            <span class="checkbox-custom"></span>
+            <span class="checkbox-text">Universal Auto Ducking</span>
+          </label>
+          <small class="input-hint">Automatically duck audio tracks in priority order (mic1 > screen, mic1 > mic2)</small>
+        </div>
+      </div>
 
       <!-- Progress Section -->
       <div class="progress-section" [class.active]="isProcessing">

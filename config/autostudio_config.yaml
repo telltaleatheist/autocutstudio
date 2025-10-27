@@ -8,7 +8,7 @@ server:
 paths:
   templates_dir: ./templates
   output_dir: ./output
-  temp_dir: ./temp
+  temp_dir: /tmp/autocutstudio
   assets:
     backgrounds:
       space_background: /Volumes/Callisto/Movies/FCPX/assets/earth background.png

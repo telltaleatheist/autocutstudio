@@ -126,6 +126,11 @@ class FFmpegProgressTracker:
             bufsize=1
         )
 
+        # Track last progress update time to avoid spam
+        import time
+        last_callback_time = 0
+        CALLBACK_INTERVAL = 0.5  # Only callback every 0.5 seconds
+
         # Read stderr in real-time (FFmpeg outputs progress to stderr)
         for line in self.process.stderr:
             # Check for skip signal
@@ -143,7 +148,11 @@ class FFmpegProgressTracker:
             # Parse progress
             progress = self.parse_progress_line(line)
             if progress and self.progress_callback:
-                self.progress_callback(progress)
+                # Rate limit callbacks to avoid spam
+                current_time = time.time()
+                if current_time - last_callback_time >= CALLBACK_INTERVAL:
+                    self.progress_callback(progress)
+                    last_callback_time = current_time
 
         # Wait for completion
         stdout, stderr = self.process.communicate()

@@ -105,12 +105,12 @@ def sync_soundboard_files(
         if not sb_file or not Path(sb_file).exists():
             continue
 
-        # Determine output path
+        # Determine output path - always use _processed.wav
         sb_path = Path(sb_file)
         if output_dir:
-            output_path = Path(output_dir) / f"{sb_path.stem}_synced{sb_path.suffix}"
+            output_path = Path(output_dir) / f"{sb_path.stem}_processed.wav"
         else:
-            output_path = sb_path.parent / f"{sb_path.stem}_synced{sb_path.suffix}"
+            output_path = sb_path.parent / f"{sb_path.stem}_processed.wav"
 
         # Apply the sync corrections
         try:

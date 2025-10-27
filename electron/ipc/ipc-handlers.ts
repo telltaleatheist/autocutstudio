@@ -445,11 +445,21 @@ function setupAudioHandlers(): void {
           log.info('Audio ducking output:', output);
         });
 
-        // Handle stderr
+        // Handle stderr (progress info goes here)
         pythonProcess.stderr.on('data', (data: Buffer) => {
           const error = data.toString();
           errorData += error;
           log.info('Audio ducking info:', error); // Often progress info goes to stderr
+
+          // Parse and forward progress updates
+          const lines = error.split('\n');
+          for (const line of lines) {
+            // Look for ffmpeg progress lines (e.g., "time=00:01:23.45")
+            if (line.includes('time=') && line.includes('speed=')) {
+              // Send progress notification to renderer
+              event.sender.send('audio-ducking-progress', { message: line.trim() });
+            }
+          }
         });
 
         // Handle process completion
@@ -458,10 +468,10 @@ function setupAudioHandlers(): void {
             // Parse output files from the output
             const outputFiles: string[] = [];
 
-            // Extract file paths from output (look for lines with ducked files)
+            // Extract file paths from output (look for lines with processed files)
             const lines = errorData.split('\n');
             for (const line of lines) {
-              if (line.includes('_ducked')) {
+              if (line.includes('_processed')) {
                 const match = line.match(/saved to: (.+)/i) || line.match(/• (.+)/);
                 if (match) {
                   outputFiles.push(match[1].trim());
@@ -475,10 +485,10 @@ function setupAudioHandlers(): void {
               const audio2File = path.parse(audio2);
 
               if (mode === 'duck1' || mode === 'mutual') {
-                outputFiles.push(path.join(audio1File.dir, `${audio1File.name}_ducked${audio1File.ext}`));
+                outputFiles.push(path.join(audio1File.dir, `${audio1File.name}_processed.wav`));
               }
               if (mode === 'duck2' || mode === 'mutual') {
-                outputFiles.push(path.join(audio2File.dir, `${audio2File.name}_ducked${audio2File.ext}`));
+                outputFiles.push(path.join(audio2File.dir, `${audio2File.name}_processed.wav`));
               }
             }
 

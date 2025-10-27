@@ -206,6 +206,7 @@ def main():
         threshold = data.get('threshold', config.default_threshold)
         xml_options = data.get('xmlOptions')
         video_sources = data.get('videoSources', {})
+        auto_duck = data.get('autoDuck', False)
 
         # Step 0.5: Analyze skip capabilities and emit to frontend
         emit_progress(3, 'Analyzing which operations can be skipped...')
@@ -219,10 +220,32 @@ def main():
         emit_progress(5, 'Detecting framerate...')
         detected_framerate = detect_framerate(master_video)
 
+        # Create progress callback for FFmpeg operations (emits sub-progress)
+        # This needs to be defined early since auto-editor may use it
+        def ffmpeg_progress_callback(progress_info: dict):
+            """Callback for FFmpeg progress updates.
+
+            Args:
+                progress_info: Dict with keys: frame, fps, time, speed, progress_percent
+            """
+            if 'progress_percent' in progress_info:
+                percent = progress_info['progress_percent']
+                speed = progress_info.get('speed', 0)
+
+                # Build message with speed info if available
+                if speed > 0:
+                    message = f"Processing: {percent:.1f}% (speed: {speed:.1f}x)"
+                else:
+                    message = f"Processing: {percent:.1f}%"
+
+                # Emit as sub-progress so it doesn't interfere with main workflow progress
+                emit_progress(35, "Processing custom video sources...", sub_progress=percent)
+
         emit_progress(10, 'Running auto-editor to identify cuts...')
 
         # Step 1: Run auto-editor
-        editor = AutoEditor(config)
+        editor = AutoEditor(config, progress_callback=ffmpeg_progress_callback)
+        editor.skip_check_callback = check_for_skip_signal
         altered_xml = editor.cut_silence(str(master_video), threshold or config.default_threshold)
 
         all_xml_files = [altered_xml]
@@ -239,16 +262,6 @@ def main():
         emit_progress(30, 'Processing audio sources...')
 
         # Step 3: Process audio files with optional advanced sync
-        # Create progress callback for FFmpeg operations (emits sub-progress)
-        def ffmpeg_progress_callback(progress_info: dict):
-            """Callback for FFmpeg progress updates.
-
-            Args:
-                progress_info: Dict with keys: frame, fps, time, speed, progress_percent
-            """
-            # Disabled to reduce console spam
-            pass
-
         audio_processor = AudioProcessor(config, progress_callback=ffmpeg_progress_callback)
         # Attach skip check callback so FFmpeg can check for skip signals
         audio_processor.skip_check_callback = check_for_skip_signal
@@ -643,6 +656,18 @@ def main():
             if vpath:
                 print(f"  {vtype}: {Path(vpath).name}", file=sys.stderr)
 
+        # Step 3.5: Apply auto ducking if enabled (BEFORE generating any compounds)
+        if auto_duck:
+            emit_progress(38, 'Applying universal auto ducking...')
+            print("\n=== Universal Auto Ducking Enabled ===", file=sys.stderr)
+
+            # Use the GSGenerator's ducking method
+            from core.compound_generators.gs_generator import GSGenerator
+            temp_gs = GSGenerator(config)
+            temp_gs._apply_auto_ducking(processed_audio)
+
+            print("=== Auto Ducking Complete ===\n", file=sys.stderr)
+
         # Step 4: Generate compound clips
         generated_clips = []
         progress_per_clip = 50 / 6
@@ -724,7 +749,7 @@ def main():
             try:
                 gs_generator = GSGenerator(config)
                 gs_solo_path = gs_generator.generate_gs_compound(
-                    compound_xml, gs_audio_sources, None, False, video_sources
+                    compound_xml, gs_audio_sources, None, False, video_sources, auto_duck
                 )
                 all_xml_files.append(gs_solo_path)
                 if should_generate('gsSolo', xml_options):
@@ -743,7 +768,7 @@ def main():
             try:
                 dc_gs_generator = DCGSGenerator(config)
                 gs_dual_path = dc_gs_generator.generate_dc_gs_compound(
-                    compound_xml, gs_audio_sources, None, False, video_sources
+                    compound_xml, gs_audio_sources, None, False, video_sources, auto_duck
                 )
                 all_xml_files.append(gs_dual_path)
                 if should_generate('gsDual', xml_options):

@@ -407,7 +407,7 @@ class MediaSyncProcessor:
         video_path = Path(video_path)
 
         if output_path is None:
-            output_path = video_path.parent / f"{video_path.stem}_synced{video_path.suffix}"
+            output_path = video_path.parent / f"{video_path.stem}_processed{video_path.suffix}"
         output_path = Path(output_path)
 
         print(f"\nApplying framerate-only sync to: {video_path.name}")
@@ -430,7 +430,9 @@ class MediaSyncProcessor:
 
         # Build ffmpeg command
         cmd = [
-            'ffmpeg', '-i', str(video_path),
+            'ffmpeg',
+            '-progress', 'pipe:2',  # Enable progress output to stderr
+            '-i', str(video_path),
             '-filter:v', 'fps=fps=29.97',
             '-c:v', 'libx264',
             '-crf', '23',
@@ -506,7 +508,7 @@ class MediaSyncProcessor:
         input_path = Path(input_path)
 
         if output_path is None:
-            output_path = input_path.parent / f"{input_path.stem}_synced{input_path.suffix}"
+            output_path = input_path.parent / f"{input_path.stem}_processed.wav"
         output_path = Path(output_path)
 
         # Check if this is a soundboard file (needs dual mono conversion)
@@ -599,7 +601,7 @@ class MediaSyncProcessor:
         input_path = Path(input_path)
 
         if output_path is None:
-            output_path = input_path.parent / f"{input_path.stem}_synced{input_path.suffix}"
+            output_path = input_path.parent / f"{input_path.stem}_processed{input_path.suffix}"
         output_path = Path(output_path)
 
         print(f"\nApplying sync to video: {input_path.name}")

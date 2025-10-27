@@ -8,15 +8,59 @@ from pathlib import Path
 from typing import Optional, Tuple, Callable
 import tempfile
 import os
+import shutil
 
 class AudioProcessor:
     """Handle audio extraction, format conversion, and sync adjustments."""
 
     def __init__(self, config, progress_callback: Optional[Callable] = None):
         self.config = config
-        self.temp_dir = Path(config.get('paths.temp_dir', './temp'))
-        self.temp_dir.mkdir(parents=True, exist_ok=True)
+
+        # Use system temp directory if not configured, avoiding quarantine issues
+        temp_dir_config = config.get('paths.temp_dir', None)
+
+        # Try to use configured temp dir, but fall back to system temp if it fails
+        if temp_dir_config and not temp_dir_config.startswith('./'):
+            # Absolute path specified
+            self.temp_dir = Path(temp_dir_config)
+        else:
+            # Relative path or not specified - use system temp
+            self.temp_dir = Path(tempfile.gettempdir()) / 'autocutstudio'
+
+        # Try to create the directory, fall back to system temp if it fails (e.g., read-only filesystem)
+        try:
+            self.temp_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            print(f"Warning: Could not create temp directory at {self.temp_dir}: {e}")
+            print(f"Falling back to system temp directory")
+            # Fall back to system temp
+            self.temp_dir = Path(tempfile.gettempdir()) / 'autocutstudio'
+            self.temp_dir.mkdir(parents=True, exist_ok=True)
+
         self.progress_callback = progress_callback
+
+        # Find ffprobe executable
+        self.ffprobe_path = self._find_ffprobe()
+        if not self.ffprobe_path:
+            print("Warning: ffprobe not found in PATH")
+
+    def _find_ffprobe(self) -> Optional[str]:
+        """Find ffprobe executable in system PATH."""
+        # Try common locations
+        ffprobe = shutil.which('ffprobe')
+        if ffprobe:
+            return ffprobe
+
+        # Try homebrew locations on macOS
+        homebrew_paths = [
+            '/opt/homebrew/bin/ffprobe',
+            '/usr/local/bin/ffprobe'
+        ]
+        for path in homebrew_paths:
+            if Path(path).exists():
+                return path
+
+        return None
     
     def apply_drift_correction(self, input_path: str, drift_frames: float, 
                               video_duration: float, fps: float = 29.97,
@@ -41,13 +85,8 @@ class AudioProcessor:
         correction_factor = 1 + (drift_frames / total_frames)
         
         if output_path is None:
-            # Generate output filename with drift information
-            # Negative values shrink (speed up), positive values expand (slow down)
-            if drift_frames < 0:
-                drift_suffix = f"_drift_minus{abs(int(drift_frames))}f"
-            else:
-                drift_suffix = f"_drift_plus{int(drift_frames)}f"
-            output_path = input_path.parent / f"{input_path.stem}{drift_suffix}{input_path.suffix}"
+            # Always use _processed to consolidate all operations
+            output_path = input_path.parent / f"{input_path.stem}_processed.wav"
         
         output_path = Path(output_path)
         
@@ -103,8 +142,8 @@ class AudioProcessor:
         video_path = Path(video_path)
         
         if output_path is None:
-            output_path = self.temp_dir / f"{video_path.stem}_extracted.wav"
-        
+            output_path = self.temp_dir / f"{video_path.stem}_processed.wav"
+
         output_path = Path(output_path)
         
         # Use ffmpeg to extract audio
@@ -132,8 +171,8 @@ class AudioProcessor:
         input_path = Path(input_path)
         
         if output_path is None:
-            output_path = input_path.parent / f"{input_path.stem}_synced{input_path.suffix}"
-        
+            output_path = input_path.parent / f"{input_path.stem}_processed.wav"
+
         output_path = Path(output_path)
         sync_factor = self.config.get('audio.sync_correction', 1.001)
         
@@ -162,9 +201,14 @@ class AudioProcessor:
                 print(f"Warning: Audio file does not exist: {file_path}")
                 # Return default values that allow processing to continue
                 return "3600000/30000s", 48000, 2  # Default 2 minute duration
-            
+
+            # Check if ffprobe is available
+            if not self.ffprobe_path:
+                print(f"Warning: ffprobe not available, using default audio info")
+                return "3600000/30000s", 48000, 2
+
             result = subprocess.run([
-                'ffprobe', '-v', 'quiet', '-print_format', 'json',
+                self.ffprobe_path, '-v', 'quiet', '-print_format', 'json',
                 '-show_format', '-show_streams', str(file_path)
             ], capture_output=True, text=True, check=True)
             
@@ -250,14 +294,14 @@ class AudioProcessor:
         
         processed_audio_path = source_path
         
-        # Extract audio if source is video
+        # Extract audio if source is video (directly to _processed name)
         if source_path.suffix.lower() in video_extensions:
-            audio_path = output_dir / f"{source_path.stem}_extracted.wav"
+            audio_path = output_dir / f"{source_path.stem}_processed.wav"
             processed_audio_path = Path(self.extract_audio_from_video(str(source_path), str(audio_path)))
-        
-        # Apply sync correction if requested
+
+        # Apply sync correction if requested (overwrite the same _processed file)
         if apply_sync:
-            synced_path = output_dir / f"{processed_audio_path.stem}_synced{processed_audio_path.suffix}"
+            synced_path = output_dir / f"{source_path.stem}_processed.wav"
             processed_audio_path = Path(self.sync_audio_for_2997fps(str(processed_audio_path), str(synced_path)))
         
         # Get audio info
@@ -321,7 +365,7 @@ class AudioProcessor:
         input_path = Path(input_path)
 
         if output_path is None:
-            output_path = input_path.parent / f"{input_path.stem}_synced{input_path.suffix}"
+            output_path = input_path.parent / f"{input_path.stem}_processed{input_path.suffix}"
 
         output_path = Path(output_path)
 
@@ -403,7 +447,7 @@ class AudioProcessor:
         # Apply framerate sync if requested
         # This assumes the input is 30fps and needs to be synced to 29.97fps
         if apply_sync:
-            synced_path = output_dir / f"{source_path.stem}_synced{source_path.suffix}"
+            synced_path = output_dir / f"{source_path.stem}_processed{source_path.suffix}"
             processed_video_path = Path(self.sync_video_for_2997fps(str(source_path), str(synced_path)))
 
         return str(processed_video_path)

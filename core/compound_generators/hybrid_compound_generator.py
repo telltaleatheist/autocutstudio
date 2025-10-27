@@ -16,7 +16,13 @@ class HybridCompoundGenerator:
     def __init__(self, config):
         self.config = config
         self.xml_utils = FCPXMLUtils()
-        self.camera_detector = CameraDetector(sample_interval=30)
+
+        # Only initialize camera detector if available (requires numpy)
+        if CameraDetector is not None:
+            self.camera_detector = CameraDetector(sample_interval=30)
+        else:
+            self.camera_detector = None
+            print("Warning: Camera detection not available (numpy not installed)", file=sys.stderr)
 
     def generate_hybrid_compounds(self, dc_cam_path: str, dc_gs_path: str, dc_ssb_path: str,
                                    cut_master_video_path: str,
@@ -37,6 +43,10 @@ class HybridCompoundGenerator:
             Tuple of (hybrid_cam_path, hybrid_gs_path, hybrid_ssb_path)
         """
         print(f"\n=== Generating Hybrid Compounds ===", file=sys.stderr)
+
+        # Check if camera detector is available
+        if self.camera_detector is None:
+            raise RuntimeError("Cannot generate hybrid compounds: Camera detection not available (numpy not installed)")
 
         # Step 1: Detect camera segments
         print(f"\n[1/4] Detecting camera activity...", file=sys.stderr)
