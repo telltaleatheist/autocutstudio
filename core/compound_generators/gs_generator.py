@@ -807,6 +807,14 @@ class GSGenerator:
 
         has_sb_files = any(is_soundboard_file(info) for info in processed_audio_sources.values() if info)
 
+        # DEBUG: Log what we detected
+        print(f"\n🎚️  Auto Ducking Analysis:", file=sys.stderr)
+        print(f"  Soundboard files detected: {has_sb_files}", file=sys.stderr)
+        if has_sb_files:
+            sb_files = [key for key, info in processed_audio_sources.items() if is_soundboard_file(info)]
+            print(f"  Soundboard sources: {', '.join(sb_files)}", file=sys.stderr)
+        print(file=sys.stderr)
+
         # Max ducking settings
         threshold = -40  # dB
         ratio = 20  # 20:1 (maximum)
@@ -817,13 +825,13 @@ class GSGenerator:
 
         if not has_sb_files:
             # Case 1: No soundboard files - duck mic1 and screen, favoring screen
-            print("No soundboard files detected - applying standard ducking")
+            print("No soundboard files detected - applying standard ducking", file=sys.stderr)
 
             mic1_info = processed_audio_sources.get('mic1')
             screen_info = processed_audio_sources.get('screen')
 
             if mic1_info and screen_info:
-                print(f"Ducking mic1 when screen is loud (favoring screen)")
+                print(f"Ducking mic1 when screen is loud (favoring screen)", file=sys.stderr)
 
                 # Duck mic1 when screen is loud - overwrite the processed file
                 original_path = mic1_info['path']
@@ -841,17 +849,17 @@ class GSGenerator:
 
                 # Replace original processed file with ducked version
                 shutil.move(temp_ducked_path, original_path)
-                print(f"✓ Replaced {Path(original_path).name} with ducked version")
+                print(f"✓ Replaced {Path(original_path).name} with ducked version", file=sys.stderr)
             else:
                 if not mic1_info:
-                    print("⚠ mic1 audio not found - skipping ducking")
+                    print("⚠ mic1 audio not found - skipping ducking", file=sys.stderr)
                 if not screen_info:
-                    print("⚠ screen audio not found - skipping ducking")
+                    print("⚠ screen audio not found - skipping ducking", file=sys.stderr)
         else:
             # Case 2: Soundboard files exist
             # Note: Soundboard files are stored with normalized keys (mic1, mic2, screen)
             # but have is_soundboard=True in sync_info
-            print("Soundboard files detected - applying soundboard ducking")
+            print("Soundboard files detected - applying soundboard ducking", file=sys.stderr)
 
             # Get soundboard file info (they're stored as mic1, mic2, screen with is_soundboard flag)
             mic1_info = processed_audio_sources.get('mic1') if is_soundboard_file(processed_audio_sources.get('mic1')) else None
@@ -860,7 +868,7 @@ class GSGenerator:
 
             # Step 1: Duck mic2 when mic1 is loud (favor mic1)
             if mic1_info and mic2_info:
-                print(f"Ducking mic2 (soundboard) when mic1 (soundboard) is loud (favoring mic1)")
+                print(f"Ducking mic2 (soundboard) when mic1 (soundboard) is loud (favoring mic1)", file=sys.stderr)
 
                 original_path = mic2_info['path']
                 temp_ducked_path = str(Path(original_path).parent / f"{Path(original_path).stem}_temp_ducked.wav")
@@ -877,16 +885,16 @@ class GSGenerator:
 
                 # Replace original processed file with ducked version
                 shutil.move(temp_ducked_path, original_path)
-                print(f"✓ Replaced {Path(original_path).name} with ducked version")
+                print(f"✓ Replaced {Path(original_path).name} with ducked version", file=sys.stderr)
             else:
                 if not mic1_info:
-                    print("⚠ mic1 (soundboard) audio not found - skipping mic1/mic2 ducking")
+                    print("⚠ mic1 (soundboard) audio not found - skipping mic1/mic2 ducking", file=sys.stderr)
                 if not mic2_info:
-                    print("⚠ mic2 (soundboard) audio not found - skipping mic1/mic2 ducking")
+                    print("⚠ mic2 (soundboard) audio not found - skipping mic1/mic2 ducking", file=sys.stderr)
 
             # Step 2: Duck mic1 when screen is loud (favor screen)
             if mic1_info and screen_info:
-                print(f"Ducking mic1 (soundboard) when screen (soundboard) is loud (favoring screen)")
+                print(f"Ducking mic1 (soundboard) when screen (soundboard) is loud (favoring screen)", file=sys.stderr)
 
                 original_path = mic1_info['path']
                 temp_ducked_path = str(Path(original_path).parent / f"{Path(original_path).stem}_temp_ducked.wav")
@@ -903,9 +911,9 @@ class GSGenerator:
 
                 # Replace original processed file with ducked version
                 shutil.move(temp_ducked_path, original_path)
-                print(f"✓ Replaced {Path(original_path).name} with ducked version")
+                print(f"✓ Replaced {Path(original_path).name} with ducked version", file=sys.stderr)
             else:
                 if not mic1_info:
-                    print("⚠ mic1 (soundboard) audio not found - skipping mic1/screen ducking")
+                    print("⚠ mic1 (soundboard) audio not found - skipping mic1/screen ducking", file=sys.stderr)
                 if not screen_info:
-                    print("⚠ screen (soundboard) audio not found - skipping mic1/screen ducking")
+                    print("⚠ screen (soundboard) audio not found - skipping mic1/screen ducking", file=sys.stderr)

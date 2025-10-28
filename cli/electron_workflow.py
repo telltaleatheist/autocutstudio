@@ -661,6 +661,15 @@ def main():
             emit_progress(38, 'Applying universal auto ducking...')
             print("\n=== Universal Auto Ducking Enabled ===", file=sys.stderr)
 
+            # DEBUG: Show what's in processed_audio before ducking
+            print(f"\nProcessed audio sources available for ducking:", file=sys.stderr)
+            for audio_type, audio_info in processed_audio.items():
+                if audio_info:
+                    is_sb = audio_info.get('sync_info', {}).get('is_soundboard', False)
+                    sb_tag = " [SOUNDBOARD]" if is_sb else " [VMIX/REGULAR]"
+                    print(f"  {audio_type}: {Path(audio_info['path']).name}{sb_tag}", file=sys.stderr)
+            print(file=sys.stderr)
+
             # Use the GSGenerator's ducking method
             from core.compound_generators.gs_generator import GSGenerator
             temp_gs = GSGenerator(config)
