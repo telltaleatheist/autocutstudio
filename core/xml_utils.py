@@ -473,17 +473,89 @@ class FCPXMLUtils:
         return clip
     
     @staticmethod
-    def create_video_clip(name: str, ref: str, lane: str, offset: str, 
+    def calculate_retime_map(clip_duration: str, source_fps: float, target_fps: float = 29.97) -> Optional[Dict]:
+        """Calculate timeMap values for retiming a clip.
+
+        Args:
+            clip_duration: Duration in FCPX format (e.g., "3000000/30000s")
+            source_fps: Original video framerate
+            target_fps: Target timeline framerate (default 29.97)
+
+        Returns:
+            Dictionary with timeMap data or None if no retiming needed:
+            {
+                'start_time': '0s',
+                'start_value': '0s',
+                'end_time': '<clip_duration>',
+                'end_value': '<adjusted_source_duration>'
+            }
+        """
+        # Check if retiming is needed
+        if abs(source_fps - target_fps) < 0.01:
+            return None
+
+        # Calculate speed factor (how much to slow down/speed up)
+        speed_factor = target_fps / source_fps
+
+        # Parse clip duration from FCPX format to seconds
+        num, den = FCPXMLUtils.parse_time(clip_duration)
+        clip_duration_seconds = num / den
+
+        # Calculate adjusted source duration
+        # source_duration = clip_duration / speed_factor
+        source_duration_seconds = clip_duration_seconds / speed_factor
+
+        # Convert back to FCPX time format (keep same denominator for consistency)
+        source_duration_num = int(source_duration_seconds * den)
+        source_duration_str = f"{source_duration_num}/{den}s"
+
+        return {
+            'start_time': '0s',
+            'start_value': '0s',
+            'end_time': clip_duration,
+            'end_value': source_duration_str
+        }
+
+    @staticmethod
+    def create_video_clip(name: str, ref: str, lane: str, offset: str,
                         duration: str, transforms: Optional[Dict] = None,
-                        keywords: Optional[List[Dict]] = None) -> ET.Element:
-        """Create a video element with proper transform handling."""
+                        keywords: Optional[List[Dict]] = None,
+                        retime_map: Optional[Dict] = None) -> ET.Element:
+        """Create a video element with proper transform handling.
+
+        Args:
+            name: Clip name
+            ref: Asset reference ID
+            lane: Lane number
+            offset: Time offset
+            duration: Clip duration
+            transforms: Optional transform dictionary
+            keywords: Optional keywords list
+            retime_map: Optional retime map for framerate conversion
+        """
         video = ET.Element('video')
         video.set('ref', ref)
         video.set('lane', lane)
         video.set('offset', offset)
         video.set('name', name)
         video.set('duration', duration)
-        
+
+        # Add timeMap for retiming if provided (must come before adjust- elements per DTD)
+        if retime_map:
+            time_map = ET.SubElement(video, 'timeMap')
+
+            # Start point
+            start_pt = ET.SubElement(time_map, 'timept')
+            start_pt.set('time', retime_map['start_time'])
+            start_pt.set('value', retime_map['start_value'])
+            start_pt.set('interp', 'smooth2')
+
+            # End point
+            end_pt = ET.SubElement(time_map, 'timept')
+            end_pt.set('time', retime_map['end_time'])
+            end_pt.set('value', retime_map['end_value'])
+            end_pt.set('interp', 'smooth2')
+
         # Add transform elements if provided
         if transforms:
             # Add crop adjustment if specified

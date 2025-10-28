@@ -151,11 +151,20 @@ class GSGenerator:
         # Check if optional cam1 video source is provided
         cam1_asset_id = None
         cam1_name = None
+        cam1_retime_map = None
         if 'cam1' in video_sources and video_sources['cam1']:
             cam1_path = video_sources['cam1']
             cam1_asset_id = "r_cam1_video"
             cam1_name = Path(cam1_path).stem
-            pass  # 0
+
+            # Detect framerate and calculate retime map if needed
+            cam1_fps = self.audio_processor.get_video_framerate(cam1_path)
+            cam1_retime_map = self.xml_utils.calculate_retime_map(original_duration, cam1_fps, 29.97)
+            if cam1_retime_map:
+                print(f"  cam1 video: {cam1_fps:.2f}fps → 29.97fps (will apply timeMap)")
+            else:
+                print(f"  cam1 video: {cam1_fps:.2f}fps (no retiming needed)")
+
             cam1_asset = self.xml_utils.create_asset_element(
                 cam1_asset_id, cam1_name, cam1_path, original_duration,
                 'r1_gs', has_audio=False, has_video=True
@@ -165,11 +174,20 @@ class GSGenerator:
         # Check if optional game video source is provided
         game_asset_id = None
         game_name = None
+        game_retime_map = None
         if 'game' in video_sources and video_sources['game']:
             game_path = video_sources['game']
             game_asset_id = "r_game_video"
             game_name = Path(game_path).stem
-            pass  # 0
+
+            # Detect framerate and calculate retime map if needed
+            game_fps = self.audio_processor.get_video_framerate(game_path)
+            game_retime_map = self.xml_utils.calculate_retime_map(original_duration, game_fps, 29.97)
+            if game_retime_map:
+                print(f"  game video: {game_fps:.2f}fps → 29.97fps (will apply timeMap)")
+            else:
+                print(f"  game video: {game_fps:.2f}fps (no retiming needed)")
+
             game_asset = self.xml_utils.create_asset_element(
                 game_asset_id, game_name, game_path, original_duration,
                 'r1_gs', has_audio=False, has_video=True
@@ -179,11 +197,20 @@ class GSGenerator:
         # Check if optional screen video source is provided
         screen_asset_id = None
         screen_name = None
+        screen_retime_map = None
         if 'screen' in video_sources and video_sources['screen']:
             screen_path = video_sources['screen']
             screen_asset_id = "r_screen_video"
             screen_name = Path(screen_path).stem
-            pass  # 0
+
+            # Detect framerate and calculate retime map if needed
+            screen_fps = self.audio_processor.get_video_framerate(screen_path)
+            screen_retime_map = self.xml_utils.calculate_retime_map(original_duration, screen_fps, 29.97)
+            if screen_retime_map:
+                print(f"  screen video: {screen_fps:.2f}fps → 29.97fps (will apply timeMap)")
+            else:
+                print(f"  screen video: {screen_fps:.2f}fps (no retiming needed)")
+
             screen_asset = self.xml_utils.create_asset_element(
                 screen_asset_id, screen_name, screen_path, original_duration,
                 'r1_gs', has_audio=False, has_video=True
@@ -366,7 +393,8 @@ class GSGenerator:
                 "2",
                 "0s",
                 original_duration,
-                camera_transforms
+                camera_transforms,
+                retime_map=cam1_retime_map if cam1_asset_id else None
             )
             gap.append(camera_clip)
             
@@ -434,7 +462,8 @@ class GSGenerator:
                 "4",
                 "0s",
                 original_duration,
-                game_transforms
+                game_transforms,
+                retime_map=game_retime_map if game_asset_id else None
             )
             gap.append(game_clip)
             
@@ -502,7 +531,8 @@ class GSGenerator:
                 "6",
                 "0s",
                 original_duration,
-                screen_transforms
+                screen_transforms,
+                retime_map=screen_retime_map if screen_asset_id else None
             )
             gap.append(screen_clip)
             

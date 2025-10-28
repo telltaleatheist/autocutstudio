@@ -164,11 +164,20 @@ class DCCamGenerator:
         # Check if optional cam1 video source is provided
         cam1_asset_id = None
         cam1_name = None
+        cam1_retime_map = None
         if 'cam1' in video_sources and video_sources['cam1']:
             cam1_path = video_sources['cam1']
             cam1_asset_id = "r_cam1_video"
             cam1_name = Path(cam1_path).stem
-            pass  # 0
+
+            # Detect framerate and calculate retime map if needed
+            cam1_fps = self.audio_processor.get_video_framerate(cam1_path)
+            cam1_retime_map = self.xml_utils.calculate_retime_map(original_duration, cam1_fps, 29.97)
+            if cam1_retime_map:
+                print(f"  cam1 video: {cam1_fps:.2f}fps → 29.97fps (will apply timeMap)")
+            else:
+                print(f"  cam1 video: {cam1_fps:.2f}fps (no retiming needed)")
+
             cam1_asset = self.xml_utils.create_asset_element(
                 cam1_asset_id, cam1_name, cam1_path, original_duration,
                 'r1_dc_cam', has_audio=False, has_video=True
@@ -178,11 +187,20 @@ class DCCamGenerator:
         # Check if optional cam2 video source is provided
         cam2_asset_id = None
         cam2_name = None
+        cam2_retime_map = None
         if 'cam2' in video_sources and video_sources['cam2']:
             cam2_path = video_sources['cam2']
             cam2_asset_id = "r_cam2_video"
             cam2_name = Path(cam2_path).stem
-            pass  # 0
+
+            # Detect framerate and calculate retime map if needed
+            cam2_fps = self.audio_processor.get_video_framerate(cam2_path)
+            cam2_retime_map = self.xml_utils.calculate_retime_map(original_duration, cam2_fps, 29.97)
+            if cam2_retime_map:
+                print(f"  cam2 video: {cam2_fps:.2f}fps → 29.97fps (will apply timeMap)")
+            else:
+                print(f"  cam2 video: {cam2_fps:.2f}fps (no retiming needed)")
+
             cam2_asset = self.xml_utils.create_asset_element(
                 cam2_asset_id, cam2_name, cam2_path, original_duration,
                 'r1_dc_cam', has_audio=False, has_video=True
@@ -329,7 +347,8 @@ class DCCamGenerator:
                 "2",  # Lane 2 to match template
                 "0s",
                 original_duration,
-                cam1_transforms
+                cam1_transforms,
+                retime_map=cam1_retime_map if cam1_asset_id else None
             )
             gap.append(cam1_clip)
             
@@ -400,7 +419,8 @@ class DCCamGenerator:
                 "4",  # Lane 4 to match template
                 "0s",
                 original_duration,
-                cam2_transforms
+                cam2_transforms,
+                retime_map=cam2_retime_map if cam2_asset_id else None
             )
             gap.append(cam2_clip)
             

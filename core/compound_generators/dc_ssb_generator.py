@@ -188,11 +188,20 @@ class DCSSBGenerator:
 
         screen_asset_id = None
         screen_name = None
+        screen_retime_map = None
         if 'screen' in video_sources and video_sources['screen']:
             screen_path = video_sources['screen']
             screen_asset_id = "r_screen_video"
             screen_name = Path(screen_path).stem
-            pass  # 0
+
+            # Detect framerate and calculate retime map if needed
+            screen_fps = self.audio_processor.get_video_framerate(screen_path)
+            screen_retime_map = self.xml_utils.calculate_retime_map(original_duration, screen_fps, 29.97)
+            if screen_retime_map:
+                print(f"  screen video: {screen_fps:.2f}fps → 29.97fps (will apply timeMap)")
+            else:
+                print(f"  screen video: {screen_fps:.2f}fps (no retiming needed)")
+
             screen_asset = self.xml_utils.create_asset_element(
                 screen_asset_id, screen_name, screen_path, original_duration,
                 'r1_dc_ssb', has_audio=False, has_video=True
@@ -335,7 +344,7 @@ class DCSSBGenerator:
                 screen_transforms = {'crop': [2.02365, 1.18815, 90.863, 51.1176], 'crop_mode': 'trim', 'transform': {'position': [89.3201, -49.442], 'scale': 1.23001}}
                 pass  # 0
 
-            screen_clip = self.xml_utils.create_video_clip(screen_video_name, screen_video_asset, "4", "0s", original_duration, screen_transforms)
+            screen_clip = self.xml_utils.create_video_clip(screen_video_name, screen_video_asset, "4", "0s", original_duration, screen_transforms, retime_map=screen_retime_map if screen_asset_id else None)
             gap.append(screen_clip)
             
             # Add screen border if specified (lane 5 - immediately above screen)
