@@ -39,6 +39,7 @@ export interface ElectronAPI {
   onWorkflowOutput: (callback: (data: any) => void) => void;
   onWorkflowComplete: (callback: (data: any) => void) => void;
   removeWorkflowListeners: () => void;
+  onDependencyStatus: (callback: (status: any) => void) => void;
 
   // Utility
   getAppVersion: () => Promise<string>;
@@ -83,6 +84,9 @@ const electronAPI: ElectronAPI = {
   removeWorkflowListeners: () => {
     ipcRenderer.removeAllListeners('workflow-output');
     ipcRenderer.removeAllListeners('workflow-complete');
+  },
+  onDependencyStatus: (callback) => {
+    ipcRenderer.on('dependency-status', (event, status) => callback(status));
   },
 
   // Utility

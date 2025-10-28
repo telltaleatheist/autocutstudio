@@ -42,29 +42,66 @@ app.whenReady().then(async () => {
     pythonService = new PythonService();
     dependencyService = new DependencyService();
 
-    // Check dependencies
-    log.info('Checking system dependencies...');
-    const depCheck = await dependencyService.checkAllDependencies();
-
-    if (!depCheck.allAvailable) {
-      const missingDeps: string[] = [];
-      if (!depCheck.python.available) missingDeps.push('Python 3');
-      if (!depCheck.ffmpeg.available) missingDeps.push('ffmpeg');
-      if (!depCheck.ffprobe.available) missingDeps.push('ffprobe');
-      if (!depCheck.autoEditor.available) missingDeps.push('auto-editor');
-
-      log.error('Missing dependencies:', missingDeps);
-      windowService.showDependencyErrorWindow(missingDeps);
-      return;
-    }
-
-    log.info('All dependencies available');
-
-    // Set up IPC handlers
+    // Set up IPC handlers (do this BEFORE checking dependencies so the window can load)
     setupIpcHandlers(windowService, pythonService, dependencyService);
 
-    // Create main window
+    // Create main window (always create the window, even if dependencies are missing)
     windowService.createMainWindow();
+
+    // Check dependencies in the background (non-blocking)
+    log.info('Checking system dependencies in background...');
+    dependencyService.checkAllDependencies(true).then(depCheck => {
+      if (!depCheck.allAvailable) {
+        const missingDeps: string[] = [];
+        const missingPythonPackages: string[] = [];
+
+        // Check system dependencies
+        if (!depCheck.python.available) missingDeps.push('Python 3');
+        if (!depCheck.ffmpeg.available) missingDeps.push('ffmpeg');
+        if (!depCheck.ffprobe.available) missingDeps.push('ffprobe');
+        if (!depCheck.autoEditor.available) missingDeps.push('auto-editor');
+
+        // Check Python packages
+        if (depCheck.pythonPackages) {
+          if (!depCheck.pythonPackages.numpy.available) {
+            missingPythonPackages.push('numpy');
+          }
+          if (!depCheck.pythonPackages.pillow.available) {
+            missingPythonPackages.push('pillow (PIL)');
+          }
+          if (!depCheck.pythonPackages.scipy.available) {
+            missingPythonPackages.push('scipy');
+          }
+          if (!depCheck.pythonPackages.librosa.available) {
+            missingPythonPackages.push('librosa');
+          }
+        }
+
+        if (missingDeps.length > 0 || missingPythonPackages.length > 0) {
+          log.warn('Some dependencies missing, but app will continue to run');
+          log.warn('Missing system dependencies:', missingDeps);
+          log.warn('Missing Python packages:', missingPythonPackages);
+
+          // Show a notification in the app instead of blocking
+          const mainWindow = windowService.getMainWindow();
+          if (mainWindow) {
+            mainWindow.webContents.send('dependency-status', {
+              allAvailable: false,
+              missingSystemDeps: missingDeps,
+              missingPythonPackages: missingPythonPackages,
+              pythonPackagesInfo: depCheck.pythonPackages
+            });
+          }
+        } else {
+          log.info('All dependencies available');
+        }
+      } else {
+        log.info('All dependencies available');
+      }
+    }).catch(error => {
+      log.error('Error checking dependencies:', error);
+      // Don't block the app - just log the error
+    });
 
     // macOS-specific behavior
     app.on('activate', () => {

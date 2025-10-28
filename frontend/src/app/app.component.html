@@ -43,6 +43,31 @@
 
     <!-- Main Content Area -->
     <main class="main-content">
+      <!-- Dependency Status Banner -->
+      <div class="dependency-banner" *ngIf="showDependencyBanner">
+        <div class="banner-content">
+          <div class="banner-icon">⚙️</div>
+          <div class="banner-text">
+            <div class="banner-title">
+              {{ pythonPackagesInstalling ? 'Installing Python Packages...' : 'Setup In Progress' }}
+            </div>
+            <div class="banner-message" *ngIf="!pythonPackagesInstalling">
+              <span *ngIf="missingPythonPackages.length > 0">
+                Installing Python packages: {{ missingPythonPackages.join(', ') }}
+              </span>
+              <span *ngIf="missingSystemDeps.length > 0">
+                <br>Missing system dependencies: {{ missingSystemDeps.join(', ') }}
+                <br><small>Please install these using Homebrew: <code>brew install ffmpeg</code> and <code>pip3 install auto-editor</code></small>
+              </span>
+            </div>
+            <div class="banner-message" *ngIf="pythonPackagesInstalling">
+              Python packages are being installed automatically. This may take a minute...
+            </div>
+          </div>
+          <button class="banner-close" (click)="dismissDependencyBanner()" title="Dismiss">×</button>
+        </div>
+      </div>
+
       <router-outlet></router-outlet>
     </main>
   </div>
