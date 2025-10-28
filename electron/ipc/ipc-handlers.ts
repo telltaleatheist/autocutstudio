@@ -132,6 +132,72 @@ function setupFileSystemHandlers(windowService: WindowService): void {
     }
   });
 
+  // Recursively search for files in directory
+  ipcMain.handle('search-files-recursive', async (event, options: {
+    rootPath: string;
+    filenames: string[];
+    maxDepth?: number;
+  }) => {
+    try {
+      const { rootPath, filenames, maxDepth = 5 } = options;
+
+      if (!fs.existsSync(rootPath)) {
+        return { success: false, error: 'Root path does not exist' };
+      }
+
+      log.info(`Searching recursively for ${filenames.length} files in: ${rootPath}`);
+
+      const foundFiles: { [filename: string]: string } = {};
+      const normalizedFilenames = filenames.map(f => f.toLowerCase());
+
+      // Recursive search function
+      const searchDirectory = (dirPath: string, depth: number): void => {
+        if (depth > maxDepth) return;
+
+        try {
+          const items = fs.readdirSync(dirPath, { withFileTypes: true });
+
+          for (const item of items) {
+            // Skip hidden files and system folders
+            if (item.name.startsWith('.') || item.name === 'node_modules') continue;
+
+            const itemPath = path.join(dirPath, item.name);
+
+            if (item.isDirectory()) {
+              // Recurse into subdirectory
+              searchDirectory(itemPath, depth + 1);
+            } else if (item.isFile()) {
+              // Check if this file matches any of our target filenames
+              const itemNameLower = item.name.toLowerCase();
+              const matchIndex = normalizedFilenames.indexOf(itemNameLower);
+
+              if (matchIndex !== -1) {
+                const originalFilename = filenames[matchIndex];
+                // Only store if we haven't found this file yet (first match wins)
+                if (!foundFiles[originalFilename]) {
+                  foundFiles[originalFilename] = itemPath;
+                  log.info(`Found: ${originalFilename} at ${itemPath}`);
+                }
+              }
+            }
+          }
+        } catch (error: any) {
+          // Skip directories we can't read (permissions, etc.)
+          log.debug(`Skipping directory ${dirPath}: ${error.message}`);
+        }
+      };
+
+      // Start recursive search
+      searchDirectory(rootPath, 0);
+
+      log.info(`Search complete. Found ${Object.keys(foundFiles).length} of ${filenames.length} files`);
+      return { success: true, foundFiles };
+    } catch (error: any) {
+      log.error('Error searching files recursively:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
   // Auto-detect audio files from master video directory
   ipcMain.handle('auto-detect-audio', async (event, masterVideoPath: string) => {
     try {

@@ -7,6 +7,7 @@ export interface ElectronAPI {
   showInFolder: (filePath: string) => Promise<any>;
   openFile: (filePath: string) => Promise<any>;
   checkFileExists: (filePath: string) => Promise<{ exists: boolean }>;
+  searchFilesRecursive: (options: { rootPath: string; filenames: string[]; maxDepth?: number }) => Promise<{ success: boolean; foundFiles?: { [filename: string]: string }; error?: string }>;
   autoDetectAudio: (masterVideoPath: string) => Promise<{ success: boolean; audioFiles?: { [key: string]: string }; error?: string }>;
   checkDependencies: () => Promise<any>;
   executeWorkflow: (options: any) => Promise<any>;

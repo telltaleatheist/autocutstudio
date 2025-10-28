@@ -18,6 +18,8 @@ interface AssetPath {
 export class RelinkingComponent implements OnInit {
   assetsFolder: string = '';
   assets: AssetPath[] = [];
+  isSearching: boolean = false;
+  searchProgress: string = '';
 
   constructor(private electronService: ElectronService) {}
 
@@ -196,18 +198,63 @@ export class RelinkingComponent implements OnInit {
   }
 
   async autoRelinkAssets() {
-    // Try to find matching files in the selected folder
+    // Try to find matching files in the selected folder (recursively)
     if (!this.assetsFolder) return;
 
-    for (const asset of this.assets) {
-      const filename = this.getFilename(asset.currentPath);
-      const newPath = `${this.assetsFolder}/${filename}`;
+    this.isSearching = true;
+    this.searchProgress = 'Searching recursively for asset files...';
 
-      const result = await this.electronService.checkFileExists(newPath);
-      if (result.exists) {
-        asset.currentPath = newPath;
-        asset.isValid = true;
+    try {
+      // Collect all filenames we're searching for
+      const filenames = this.assets
+        .map(asset => this.getFilename(asset.currentPath))
+        .filter(filename => filename !== '');
+
+      console.log('Searching for files:', filenames);
+
+      // Use recursive search
+      const result = await this.electronService.searchFilesRecursive({
+        rootPath: this.assetsFolder,
+        filenames: filenames,
+        maxDepth: 5 // Search up to 5 levels deep
+      });
+
+      if (result.success && result.foundFiles) {
+        console.log('Found files:', result.foundFiles);
+
+        let foundCount = 0;
+
+        // Update asset paths with found files
+        for (const asset of this.assets) {
+          const filename = this.getFilename(asset.currentPath);
+          if (filename && result.foundFiles[filename]) {
+            asset.currentPath = result.foundFiles[filename];
+            asset.isValid = true;
+            foundCount++;
+          }
+        }
+
+        this.searchProgress = `Found ${foundCount} of ${filenames.length} files`;
+
+        // Re-validate all paths
+        await this.validateAllPaths();
+
+        // Show result message
+        if (foundCount === filenames.length) {
+          alert(`Success! Found all ${foundCount} asset files.`);
+        } else {
+          alert(`Found ${foundCount} of ${filenames.length} files. Some assets may still need manual linking.`);
+        }
+      } else {
+        console.error('Search failed:', result.error);
+        alert(`Search failed: ${result.error || 'Unknown error'}`);
       }
+    } catch (error) {
+      console.error('Error during recursive search:', error);
+      alert('An error occurred during search. Check console for details.');
+    } finally {
+      this.isSearching = false;
+      this.searchProgress = '';
     }
   }
 

@@ -19,16 +19,20 @@
   <div class="auto-detect-section">
     <div class="section-header">
       <h2>Auto-Detect from Folder</h2>
-      <p>Select a folder containing your assets to automatically find matching files</p>
+      <p>Select a folder containing your assets to automatically find matching files (searches recursively in subfolders)</p>
     </div>
     <div class="folder-selector">
-      <button class="btn btn-primary btn-large" (click)="selectAssetsFolder()">
+      <button class="btn btn-primary btn-large" (click)="selectAssetsFolder()" [disabled]="isSearching">
         <span class="btn-icon">📁</span>
-        Browse Folder...
+        {{ isSearching ? 'Searching...' : 'Browse Folder...' }}
       </button>
       <div class="folder-path" *ngIf="assetsFolder">
         <span class="label">Selected folder:</span>
         <span class="path">{{ assetsFolder }}</span>
+      </div>
+      <div class="search-progress" *ngIf="isSearching">
+        <div class="spinner"></div>
+        <span class="progress-text">{{ searchProgress }}</span>
       </div>
     </div>
   </div>

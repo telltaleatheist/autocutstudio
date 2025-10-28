@@ -94,6 +94,13 @@ export class ElectronService {
     return window.electron.checkFileExists(filePath);
   }
 
+  async searchFilesRecursive(options: { rootPath: string; filenames: string[]; maxDepth?: number }): Promise<{ success: boolean; foundFiles?: { [filename: string]: string }; error?: string }> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return window.electron.searchFilesRecursive(options);
+  }
+
   async autoDetectAudio(masterVideoPath: string): Promise<{ success: boolean; audioFiles?: { [key: string]: string }; videoFiles?: { [key: string]: string }; error?: string }> {
     if (!this.isElectron()) {
       throw new Error('Not running in Electron');
