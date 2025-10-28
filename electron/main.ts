@@ -49,8 +49,23 @@ app.whenReady().then(async () => {
     windowService.createMainWindow();
 
     // Check dependencies in the background (non-blocking)
+    // Pass FALSE to disable auto-install - we'll ask the user first
     log.info('Checking system dependencies in background...');
-    dependencyService.checkAllDependencies(true).then(depCheck => {
+    dependencyService.checkAllDependencies(false).then(depCheck => {
+      log.info('Dependency check complete:', {
+        allAvailable: depCheck.allAvailable,
+        python: depCheck.python.available,
+        ffmpeg: depCheck.ffmpeg.available,
+        ffprobe: depCheck.ffprobe.available,
+        autoEditor: depCheck.autoEditor.available,
+        pythonPackages: depCheck.pythonPackages ? {
+          numpy: depCheck.pythonPackages.numpy.available,
+          pillow: depCheck.pythonPackages.pillow.available,
+          scipy: depCheck.pythonPackages.scipy.available,
+          librosa: depCheck.pythonPackages.librosa.available
+        } : 'not checked'
+      });
+
       if (!depCheck.allAvailable) {
         const missingDeps: string[] = [];
         const missingPythonPackages: string[] = [];
@@ -61,30 +76,30 @@ app.whenReady().then(async () => {
         if (!depCheck.ffprobe.available) missingDeps.push('ffprobe');
         if (!depCheck.autoEditor.available) missingDeps.push('auto-editor');
 
-        // Check Python packages
+        // Check Python packages - only include if NOT available AND installation wasn't attempted
+        // (If installation was attempted and succeeded, it will be available)
         if (depCheck.pythonPackages) {
-          if (!depCheck.pythonPackages.numpy.available) {
-            missingPythonPackages.push('numpy');
-          }
-          if (!depCheck.pythonPackages.pillow.available) {
-            missingPythonPackages.push('pillow (PIL)');
-          }
-          if (!depCheck.pythonPackages.scipy.available) {
-            missingPythonPackages.push('scipy');
-          }
-          if (!depCheck.pythonPackages.librosa.available) {
-            missingPythonPackages.push('librosa');
-          }
+          const np = depCheck.pythonPackages.numpy;
+          const pil = depCheck.pythonPackages.pillow;
+          const sp = depCheck.pythonPackages.scipy;
+          const lr = depCheck.pythonPackages.librosa;
+
+          if (!np.available) missingPythonPackages.push('numpy');
+          if (!pil.available) missingPythonPackages.push('pillow (PIL)');
+          if (!sp.available) missingPythonPackages.push('scipy');
+          if (!lr.available) missingPythonPackages.push('librosa');
         }
 
+        // ONLY send notification if there are ACTUALLY missing dependencies
+        // (Don't send if auto-install succeeded)
         if (missingDeps.length > 0 || missingPythonPackages.length > 0) {
-          log.warn('Some dependencies missing, but app will continue to run');
+          log.warn('Some dependencies missing after auto-install attempt');
           log.warn('Missing system dependencies:', missingDeps);
           log.warn('Missing Python packages:', missingPythonPackages);
 
-          // Show a notification in the app instead of blocking
+          // Show a notification in the app
           const mainWindow = windowService.getMainWindow();
-          if (mainWindow) {
+          if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.send('dependency-status', {
               allAvailable: false,
               missingSystemDeps: missingDeps,
@@ -93,7 +108,7 @@ app.whenReady().then(async () => {
             });
           }
         } else {
-          log.info('All dependencies available');
+          log.info('All dependencies available after auto-install');
         }
       } else {
         log.info('All dependencies available');

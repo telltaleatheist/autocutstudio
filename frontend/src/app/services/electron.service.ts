@@ -116,6 +116,13 @@ export class ElectronService {
     return window.electron.checkDependencies();
   }
 
+  async installPythonPackages(packages: string[]): Promise<{ success: boolean; results?: any; error?: string }> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return window.electron.installPythonPackages(packages);
+  }
+
   // Python execution
   async executeWorkflow(options: any): Promise<any> {
     if (!this.isElectron()) {

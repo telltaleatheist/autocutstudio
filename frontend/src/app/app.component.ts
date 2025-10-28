@@ -17,6 +17,7 @@ export class AppComponent implements OnInit {
   missingSystemDeps: string[] = [];
   missingPythonPackages: string[] = [];
   pythonPackagesInstalling = false;
+  showInstallDialog = false;
 
   constructor(private electronService: ElectronService) {}
 
@@ -31,29 +32,84 @@ export class AppComponent implements OnInit {
 
       // Listen for dependency status updates
       (window as any).electron?.onDependencyStatus?.((status: any) => {
-        if (!status.allAvailable) {
-          this.showDependencyBanner = true;
+        console.log('[Dependency Status]', status);
+
+        // Only show banner if there are ACTUALLY missing dependencies
+        const hasMissingSystemDeps = status.missingSystemDeps && status.missingSystemDeps.length > 0;
+        const hasMissingPythonPackages = status.missingPythonPackages && status.missingPythonPackages.length > 0;
+
+        if (hasMissingSystemDeps || hasMissingPythonPackages) {
           this.missingSystemDeps = status.missingSystemDeps || [];
           this.missingPythonPackages = status.missingPythonPackages || [];
 
-          // Auto-install Python packages if they're the only thing missing
-          if (this.missingSystemDeps.length === 0 && this.missingPythonPackages.length > 0) {
-            this.autoInstallPythonPackages();
+          // Check if any Python packages are currently being installed
+          const pythonPackagesInfo = status.pythonPackagesInfo || {};
+          const anyInstalling = Object.values(pythonPackagesInfo).some(
+            (info: any) => info.installAttempted && !info.available
+          );
+
+          if (anyInstalling) {
+            // Installation in progress
+            this.pythonPackagesInstalling = true;
+            this.showDependencyBanner = true;
+            this.showInstallDialog = false;
+          } else if (hasMissingPythonPackages) {
+            // Missing Python packages - show install dialog to ask user
+            this.pythonPackagesInstalling = false;
+            this.showInstallDialog = true;
+            this.showDependencyBanner = false;
+          } else if (hasMissingSystemDeps) {
+            // Only system deps missing - show banner
+            this.pythonPackagesInstalling = false;
+            this.showDependencyBanner = true;
+            this.showInstallDialog = false;
           }
+        } else {
+          // Everything is available - hide everything
+          this.showDependencyBanner = false;
+          this.pythonPackagesInstalling = false;
+          this.showInstallDialog = false;
         }
       });
     }
   }
 
-  async autoInstallPythonPackages() {
-    // Python packages will be auto-installed by the dependency service
-    // Just show a message to the user
-    this.pythonPackagesInstalling = true;
-    console.log('Python packages are being installed automatically...');
-  }
-
   dismissDependencyBanner() {
     this.showDependencyBanner = false;
+  }
+
+  dismissInstallDialog() {
+    this.showInstallDialog = false;
+  }
+
+  async installPythonPackages() {
+    // User confirmed - start installation
+    this.showInstallDialog = false;
+    this.pythonPackagesInstalling = true;
+    this.showDependencyBanner = true;
+
+    // Trigger installation via IPC
+    try {
+      const result = await this.electronService.installPythonPackages(this.missingPythonPackages);
+      if (result?.success) {
+        console.log('Python packages installed successfully');
+        // Hide banner after short delay
+        setTimeout(() => {
+          this.pythonPackagesInstalling = false;
+          this.showDependencyBanner = false;
+        }, 2000);
+      } else {
+        console.error('Failed to install Python packages:', result?.error);
+        alert(`Failed to install packages: ${result?.error || 'Unknown error'}`);
+        this.pythonPackagesInstalling = false;
+        this.showDependencyBanner = false;
+      }
+    } catch (error) {
+      console.error('Error installing packages:', error);
+      alert('Error installing packages. Check console for details.');
+      this.pythonPackagesInstalling = false;
+      this.showDependencyBanner = false;
+    }
   }
 
   toggleTheme() {

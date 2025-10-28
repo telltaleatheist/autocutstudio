@@ -10,6 +10,8 @@ export interface ElectronAPI {
   searchFilesRecursive: (options: { rootPath: string; filenames: string[]; maxDepth?: number }) => Promise<{ success: boolean; foundFiles?: { [filename: string]: string }; error?: string }>;
   autoDetectAudio: (masterVideoPath: string) => Promise<{ success: boolean; audioFiles?: { [key: string]: string }; error?: string }>;
   checkDependencies: () => Promise<any>;
+  installPythonPackages: (packages: string[]) => Promise<{ success: boolean; results?: any; error?: string }>;
+  onDependencyStatus: (callback: (status: any) => void) => void;
   executeWorkflow: (options: any) => Promise<any>;
   cancelJob: (jobId: string) => Promise<any>;
   sendSkipSignal: () => Promise<void>;

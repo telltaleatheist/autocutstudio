@@ -371,10 +371,38 @@ function setupFileSystemHandlers(windowService: WindowService): void {
 function setupDependencyHandlers(): void {
   ipcMain.handle('check-dependencies', async () => {
     try {
-      const result = await dependencyService.checkAllDependencies();
+      const result = await dependencyService.checkAllDependencies(false);
       return { success: true, dependencies: result };
     } catch (error: any) {
       log.error('Error checking dependencies:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Install Python packages (only when user explicitly requests)
+  ipcMain.handle('install-python-packages', async (event, packages: string[]) => {
+    try {
+      log.info('User requested installation of Python packages:', packages);
+      const results: any = {};
+
+      for (const pkg of packages) {
+        log.info(`Installing ${pkg}...`);
+        const result = await dependencyService.installPythonPackage(pkg);
+        results[pkg] = result;
+
+        if (!result.available) {
+          log.error(`Failed to install ${pkg}:`, result.error);
+        }
+      }
+
+      const allInstalled = Object.values(results).every((r: any) => r.available);
+      return {
+        success: allInstalled,
+        results,
+        error: allInstalled ? undefined : 'Some packages failed to install'
+      };
+    } catch (error: any) {
+      log.error('Error installing Python packages:', error);
       return { success: false, error: error.message };
     }
   });

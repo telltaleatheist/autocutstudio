@@ -17,6 +17,7 @@ export interface ElectronAPI {
 
   // Dependency checking
   checkDependencies: () => Promise<any>;
+  installPythonPackages: (packages: string[]) => Promise<{ success: boolean; results?: any; error?: string }>;
 
   // Python execution
   executeWorkflow: (options: any) => Promise<any>;
@@ -64,6 +65,7 @@ const electronAPI: ElectronAPI = {
 
   // Dependencies
   checkDependencies: () => ipcRenderer.invoke('check-dependencies'),
+  installPythonPackages: (packages) => ipcRenderer.invoke('install-python-packages', packages),
 
   // Python execution
   executeWorkflow: (options) => ipcRenderer.invoke('execute-workflow', options),

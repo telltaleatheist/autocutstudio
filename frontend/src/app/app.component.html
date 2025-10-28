@@ -43,28 +43,38 @@
 
     <!-- Main Content Area -->
     <main class="main-content">
-      <!-- Dependency Status Banner -->
-      <div class="dependency-banner" *ngIf="showDependencyBanner">
-        <div class="banner-content">
-          <div class="banner-icon">⚙️</div>
-          <div class="banner-text">
-            <div class="banner-title">
-              {{ pythonPackagesInstalling ? 'Installing Python Packages...' : 'Setup In Progress' }}
-            </div>
-            <div class="banner-message" *ngIf="!pythonPackagesInstalling">
-              <span *ngIf="missingPythonPackages.length > 0">
-                Installing Python packages: {{ missingPythonPackages.join(', ') }}
-              </span>
-              <span *ngIf="missingSystemDeps.length > 0">
-                <br>Missing system dependencies: {{ missingSystemDeps.join(', ') }}
-                <br><small>Please install these using Homebrew: <code>brew install ffmpeg</code> and <code>pip3 install auto-editor</code></small>
-              </span>
-            </div>
-            <div class="banner-message" *ngIf="pythonPackagesInstalling">
-              Python packages are being installed automatically. This may take a minute...
-            </div>
+      <!-- Install Confirmation Dialog -->
+      <div class="install-dialog-overlay" *ngIf="showInstallDialog" (click)="dismissInstallDialog()">
+        <div class="install-dialog" (click)="$event.stopPropagation()">
+          <div class="dialog-header">
+            <h3>Install Python Packages?</h3>
+            <button class="dialog-close" (click)="dismissInstallDialog()">×</button>
           </div>
-          <button class="banner-close" (click)="dismissDependencyBanner()" title="Dismiss">×</button>
+          <div class="dialog-body">
+            <p>AutoCutStudio needs the following Python packages to work properly:</p>
+            <ul class="package-list">
+              <li *ngFor="let pkg of missingPythonPackages">{{ pkg }}</li>
+            </ul>
+            <p class="dialog-note">These will be installed using <code>pip3 install</code>. This is safe and won't affect your system.</p>
+          </div>
+          <div class="dialog-footer">
+            <button class="btn-secondary" (click)="dismissInstallDialog()">Not Now</button>
+            <button class="btn-primary" (click)="installPythonPackages()">Install Packages</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Dependency Status Banner - Subtle Notification -->
+      <div class="dependency-notification" *ngIf="showDependencyBanner">
+        <div class="notification-content">
+          <span class="notification-icon">{{ pythonPackagesInstalling ? '⏳' : 'ℹ️' }}</span>
+          <span class="notification-text">
+            <span *ngIf="pythonPackagesInstalling">Installing Python packages in background...</span>
+            <span *ngIf="!pythonPackagesInstalling && missingSystemDeps.length > 0">
+              Some dependencies need to be installed manually. <a href="#" (click)="$event.preventDefault(); dismissDependencyBanner()" class="notification-link">Learn more</a>
+            </span>
+          </span>
+          <button class="notification-close" (click)="dismissDependencyBanner()" title="Dismiss">×</button>
         </div>
       </div>
 
