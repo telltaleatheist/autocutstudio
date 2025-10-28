@@ -194,6 +194,45 @@ export class ProcessingService {
   }
 
   /**
+   * Extract error details from console output
+   */
+  private extractErrorDetails(output: string[]): string {
+    const allOutput = output.join('\n');
+    const lines = allOutput.split('\n').filter(line => line.trim());
+
+    // Look for common error patterns
+    const errorPatterns = [
+      /Error:/i,
+      /Exception:/i,
+      /Traceback/i,
+      /ModuleNotFoundError:/i,
+      /ImportError:/i,
+      /FileNotFoundError:/i,
+      /PermissionError:/i,
+      /failed/i,
+      /cannot/i
+    ];
+
+    // Find lines with errors (last 20 lines for context)
+    const recentLines = lines.slice(-20);
+    const errorLines: string[] = [];
+
+    for (const line of recentLines) {
+      if (errorPatterns.some(pattern => pattern.test(line))) {
+        errorLines.push(line);
+      }
+    }
+
+    // If we found error lines, return them
+    if (errorLines.length > 0) {
+      return errorLines.join('\n');
+    }
+
+    // Otherwise return last 5 lines as context
+    return recentLines.slice(-5).join('\n');
+  }
+
+  /**
    * Handle workflow completion
    */
   private handleWorkflowComplete(data: { jobId: string; exitCode: number }): void {
@@ -207,18 +246,56 @@ export class ProcessingService {
     }
 
     console.log(`[ProcessingService] Marking job as ${data.exitCode === 0 ? 'completed' : 'error'}`);
+
+    // Extract detailed error information if workflow failed
+    let errorMessage = '';
+    let errorDetails = '';
+
+    if (data.exitCode !== 0) {
+      errorDetails = this.extractErrorDetails(currentJob.output);
+
+      // Create a user-friendly error message
+      if (errorDetails.includes('ModuleNotFoundError') || errorDetails.includes('ImportError')) {
+        const match = errorDetails.match(/No module named '([^']+)'/);
+        const moduleName = match ? match[1] : 'unknown';
+        errorMessage = `Missing Python package: ${moduleName}. The system will attempt to install it automatically on next run.`;
+      } else if (errorDetails.includes('FileNotFoundError')) {
+        errorMessage = 'A required file was not found. Please check your input files and try again.';
+      } else if (errorDetails.includes('PermissionError')) {
+        errorMessage = 'Permission denied. Please check file permissions and try again.';
+      } else {
+        errorMessage = 'Workflow failed. See error details below.';
+      }
+    }
+
     const updatedJob = {
       ...currentJob,
       status: data.exitCode === 0 ? 'completed' as const : 'error' as const,
       progress: 100,
-      message: data.exitCode === 0 ? 'Workflow completed successfully!' : 'Workflow failed',
-      error: data.exitCode !== 0 ? `Process exited with code ${data.exitCode}` : undefined,
+      message: data.exitCode === 0 ? 'Workflow completed successfully!' : errorMessage,
+      error: data.exitCode !== 0 ? errorDetails : undefined,
       endTime: new Date()
     };
 
     this.currentJob$.next(updatedJob);
     this.addToHistory(updatedJob);
     console.log('[ProcessingService] Job marked as complete and added to history');
+
+    // Show detailed error dialog for failures
+    if (data.exitCode !== 0) {
+      this.showErrorDialog(errorMessage, errorDetails);
+    }
+  }
+
+  /**
+   * Show error dialog with details
+   */
+  private showErrorDialog(message: string, details: string): void {
+    // Create a more detailed error message
+    const fullMessage = `${message}\n\n━━━ Error Details ━━━\n${details}\n\n📋 This error has been logged. Check the console output for more information.`;
+
+    // Use alert for now (can be replaced with a custom dialog component)
+    alert(fullMessage);
   }
 
   /**

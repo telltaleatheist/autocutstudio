@@ -74,18 +74,25 @@
       </div>
 
       <!-- Auto Ducking Option -->
-      <div class="form-section">
-        <div class="form-section-header">
-          <div class="section-icon">🔊</div>
-          <label class="section-label">Audio Processing</label>
-        </div>
-        <div class="checkbox-row">
-          <label class="checkbox-label">
-            <input type="checkbox" [(ngModel)]="autoDuck" />
-            <span class="checkbox-custom"></span>
-            <span class="checkbox-text">Universal Auto Ducking</span>
-          </label>
-          <small class="input-hint">Automatically duck audio tracks in priority order (mic1 > screen, mic1 > mic2)</small>
+      <div class="form-section auto-duck-section">
+        <div class="auto-duck-card" [class.enabled]="autoDuck">
+          <div class="auto-duck-toggle">
+            <label class="toggle-switch">
+              <input type="checkbox" [(ngModel)]="autoDuck" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="auto-duck-content">
+            <div class="auto-duck-header">
+              <div class="auto-duck-icon">🔊</div>
+              <h3 class="auto-duck-title">Universal Auto Ducking</h3>
+              <span class="auto-duck-badge" *ngIf="autoDuck">Enabled</span>
+            </div>
+            <p class="auto-duck-description">
+              Automatically balance audio levels by ducking background tracks when foreground audio is active.
+              Priority order: mic1 > screen, mic1 > mic2
+            </p>
+          </div>
         </div>
       </div>
 

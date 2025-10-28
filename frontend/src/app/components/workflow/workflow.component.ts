@@ -41,8 +41,8 @@ export class WorkflowComponent implements OnInit {
   masterSolo = true;
   masterDc = true;
 
-  // Auto ducking
-  autoDuck = false;
+  // Auto ducking - enabled by default
+  autoDuck = true;
 
   // Processing
   isProcessing = false;
