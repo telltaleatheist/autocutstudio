@@ -4,6 +4,7 @@ Audio Ducking Module
 Uses ffmpeg sidechaingate to duck one audio when another is loud.
 """
 
+import sys
 import subprocess
 import shutil
 from pathlib import Path
@@ -176,8 +177,6 @@ class AudioDucker:
 
 if __name__ == '__main__':
     # Test the audio ducker
-    import sys
-
     if len(sys.argv) < 3:
         print("Usage: python audio_ducking.py <audio1> <audio2> [mode] [threshold]")
         print("  mode: duck1, duck2, or mutual (default: mutual)")
