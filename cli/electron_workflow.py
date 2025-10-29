@@ -547,87 +547,37 @@ def main():
                     print(f"  ⚠️  {vtype} file does not exist: {vpath}", file=sys.stderr)
 
         # Process screen and game captures
+        # NOTE: We do NOT re-render these with ffmpeg. Instead, we pass the original files
+        # to the compound generators which will apply XML retiming (timeMap) to sync them.
+        # This is much faster and avoids quality loss from re-encoding.
         for video_type in ['screen', 'game']:
             if video_type in video_sources and video_sources[video_type]:
                 print(f"\n  Found {video_type} video: {Path(video_sources[video_type]).name}", file=sys.stderr)
-                synced_path = None  # Track synced file for cleanup if needed
                 original_path = video_sources[video_type]
-                skip_was_requested = False  # Track if skip happened during this operation
 
                 try:
                     # Clear any previous skip signal
                     clear_skip_signal()
 
                     # Emit operation start - these are skippable (can use master quadrant)
-                    emit_operation_start(f"Syncing {video_type} video", can_skip=True)
+                    emit_operation_start(f"Preparing {video_type} video for XML retiming", can_skip=True)
 
-                    # NOTE: Skip checking happens during FFmpeg encoding via skip_check_callback
-                    # Don't check immediately - give user time to see the button and click it
+                    # Check if skip was requested
+                    if check_for_skip_signal():
+                        raise InterruptedError("Skip requested - will use master quadrant")
 
-                    if use_advanced_sync:
-                        # Advanced sync using cross-correlation
-                        emit_progress(35, f'Syncing {video_type} video with master...')
-                        print(f"\n{'='*60}", file=sys.stderr)
-                        print(f"Processing {video_type}: {Path(video_sources[video_type]).name}", file=sys.stderr)
+                    # Just use the original file - compound generators will apply XML retiming
+                    processed_video_sources[video_type] = original_path
 
-                        try:
-                            synced_path, sync_info = sync_processor.sync_file(
-                                master_path=master_video,
-                                source_path=video_sources[video_type],
-                                search_window=30
-                            )
-                        except InterruptedError:
-                            skip_was_requested = True
-                            raise  # Re-raise to be caught by outer handler
-
-                        # Check if skip was requested during processing (even if FFmpeg completed)
-                        if check_for_skip_signal():
-                            skip_was_requested = True
-                            raise InterruptedError("Skip requested after processing completed")
-
-                        processed_video_sources[video_type] = synced_path
-
-                        print(f"✓ {video_type} video synced successfully:", file=sys.stderr)
-                        print(f"  Offset: {sync_info['offset_seconds']:.3f}s", file=sys.stderr)
-                        print(f"  Speed correction: {sync_info['speed_factor']:.6f}", file=sys.stderr)
-                        print(f"  Drift: {sync_info['drift_frames']:.1f} frames", file=sys.stderr)
-                        print(f"{'='*60}\n", file=sys.stderr)
-
-                    else:
-                        # Basic framerate sync (30fps -> 29.97fps)
-                        print(f"Processing {video_type} video for framerate sync...", file=sys.stderr)
-                        try:
-                            synced_path = audio_processor.process_video_source(
-                                original_path,
-                                apply_sync=True
-                            )
-                        except InterruptedError:
-                            skip_was_requested = True
-                            raise  # Re-raise to be caught by outer handler
-
-                        # Check if skip was requested during processing (even if FFmpeg completed)
-                        if check_for_skip_signal():
-                            skip_was_requested = True
-                            raise InterruptedError("Skip requested after processing completed")
-
-                        processed_video_sources[video_type] = synced_path
-                        print(f"Synced {video_type} video: {synced_path}", file=sys.stderr)
+                    # Detect framerate for logging
+                    video_fps = audio_processor.get_video_framerate(original_path)
+                    print(f"✓ {video_type} video prepared for XML retiming:", file=sys.stderr)
+                    print(f"  Source framerate: {video_fps:.2f}fps", file=sys.stderr)
+                    print(f"  Will retime to 29.97fps in XML (no re-encoding)", file=sys.stderr)
 
                 except InterruptedError as e:
-                    # Skip was requested - delete the synced file if it was created
+                    # Skip was requested - will use master quadrant
                     print(f"\n⏩ SKIP CONFIRMED - {video_type} video will use master quadrant\n", file=sys.stderr)
-
-                    # Delete the synced file if it exists
-                    if synced_path and synced_path != original_path:
-                        if Path(synced_path).exists():
-                            print(f"🗑️  Deleting skipped file: {Path(synced_path).name}", file=sys.stderr)
-                            try:
-                                Path(synced_path).unlink()
-                                print(f"✓ Successfully deleted: {Path(synced_path).name}", file=sys.stderr)
-                            except Exception as del_err:
-                                print(f"⚠️  Could not delete {synced_path}: {del_err}", file=sys.stderr)
-                        else:
-                            print(f"ℹ️  No synced file to delete (processing was interrupted early)", file=sys.stderr)
 
                     # Clear the skip signal for next operation
                     clear_skip_signal()
@@ -635,10 +585,10 @@ def main():
                     # Don't add to processed_video_sources - will use master quadrant
                     continue
                 except Exception as e:
-                    print(f"Warning: Failed to sync {video_type} video: {e}", file=sys.stderr)
+                    print(f"Warning: Failed to prepare {video_type} video: {e}", file=sys.stderr)
                     import traceback
                     traceback.print_exc(file=sys.stderr)
-                    print(f"Using original video without sync", file=sys.stderr)
+                    print(f"Using original video", file=sys.stderr)
                     processed_video_sources[video_type] = video_sources[video_type]
 
         # Copy cam1 and cam2 without processing (they're from master video, already aligned)

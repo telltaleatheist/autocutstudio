@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 import uuid
 import datetime
 import shutil
+import sys
 
 from ..xml_utils import FCPXMLUtils
 from ..audio_processor import AudioProcessor
