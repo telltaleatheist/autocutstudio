@@ -158,13 +158,10 @@ class GSGenerator:
             cam1_asset_id = "r_cam1_video"
             cam1_name = Path(cam1_path).stem
 
-            # Detect framerate and calculate retime map if needed
+            # Detect framerate (no retiming applied - duration-based sync)
             cam1_fps = self.audio_processor.get_video_framerate(cam1_path)
             cam1_retime_map = self.xml_utils.calculate_retime_map(original_duration, cam1_fps, 29.97)
-            if cam1_retime_map:
-                print(f"  cam1 video: {cam1_fps:.2f}fps → 29.97fps (will apply timeMap)")
-            else:
-                print(f"  cam1 video: {cam1_fps:.2f}fps (no retiming needed)")
+            print(f"  cam1 video: {cam1_fps:.2f}fps (synced by duration, not framerate)", file=sys.stderr)
 
             cam1_asset = self.xml_utils.create_asset_element(
                 cam1_asset_id, cam1_name, cam1_path, original_duration,
@@ -181,13 +178,10 @@ class GSGenerator:
             game_asset_id = "r_game_video"
             game_name = Path(game_path).stem
 
-            # Detect framerate and calculate retime map if needed
+            # Detect framerate (no retiming applied - duration-based sync)
             game_fps = self.audio_processor.get_video_framerate(game_path)
             game_retime_map = self.xml_utils.calculate_retime_map(original_duration, game_fps, 29.97)
-            if game_retime_map:
-                print(f"  game video: {game_fps:.2f}fps → 29.97fps (will apply timeMap)")
-            else:
-                print(f"  game video: {game_fps:.2f}fps (no retiming needed)")
+            print(f"  game video: {game_fps:.2f}fps (synced by duration, not framerate)", file=sys.stderr)
 
             game_asset = self.xml_utils.create_asset_element(
                 game_asset_id, game_name, game_path, original_duration,
@@ -204,13 +198,10 @@ class GSGenerator:
             screen_asset_id = "r_screen_video"
             screen_name = Path(screen_path).stem
 
-            # Detect framerate and calculate retime map if needed
+            # Detect framerate (no retiming applied - duration-based sync)
             screen_fps = self.audio_processor.get_video_framerate(screen_path)
             screen_retime_map = self.xml_utils.calculate_retime_map(original_duration, screen_fps, 29.97)
-            if screen_retime_map:
-                print(f"  screen video: {screen_fps:.2f}fps → 29.97fps (will apply timeMap)")
-            else:
-                print(f"  screen video: {screen_fps:.2f}fps (no retiming needed)")
+            print(f"  screen video: {screen_fps:.2f}fps (synced by duration, not framerate)", file=sys.stderr)
 
             screen_asset = self.xml_utils.create_asset_element(
                 screen_asset_id, screen_name, screen_path, original_duration,

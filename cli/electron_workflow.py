@@ -560,20 +560,22 @@ def main():
                     clear_skip_signal()
 
                     # Emit operation start - these are skippable (can use master quadrant)
-                    emit_operation_start(f"Preparing {video_type} video for XML retiming", can_skip=True)
+                    emit_operation_start(f"Preparing {video_type} video", can_skip=True)
 
                     # Check if skip was requested
                     if check_for_skip_signal():
                         raise InterruptedError("Skip requested - will use master quadrant")
 
-                    # Just use the original file - compound generators will apply XML retiming
+                    # Just use the original file - no retiming needed!
+                    # Screen/game captures recorded simultaneously with master have matching
+                    # durations despite different framerates. FCPX will handle the playback.
                     processed_video_sources[video_type] = original_path
 
                     # Detect framerate for logging
                     video_fps = audio_processor.get_video_framerate(original_path)
-                    print(f"✓ {video_type} video prepared for XML retiming:", file=sys.stderr)
+                    print(f"✓ {video_type} video prepared (no re-encoding):", file=sys.stderr)
                     print(f"  Source framerate: {video_fps:.2f}fps", file=sys.stderr)
-                    print(f"  Will retime to 29.97fps in XML (no re-encoding)", file=sys.stderr)
+                    print(f"  Duration matches master - FCPX will handle playback", file=sys.stderr)
 
                 except InterruptedError as e:
                     # Skip was requested - will use master quadrant

@@ -476,13 +476,22 @@ class FCPXMLUtils:
     def calculate_retime_map(clip_duration: str, source_fps: float, target_fps: float = 29.97) -> Optional[Dict]:
         """Calculate timeMap values for retiming a clip.
 
+        IMPORTANT: This function should NOT be used for screen/game captures that were
+        recorded simultaneously with the master video. Those files have matching durations
+        despite different framerates, and adding a timeMap will desync them!
+
+        This function is only useful for clips that need frame-count preservation
+        (e.g., slow-motion footage at 120fps that should play slower).
+
         Args:
             clip_duration: Duration in FCPX format (e.g., "3000000/30000s")
             source_fps: Original video framerate
             target_fps: Target timeline framerate (default 29.97)
 
         Returns:
-            Dictionary with timeMap data or None if no retiming needed:
+            None - timeMap retiming is disabled because it causes sync issues
+
+            For reference, the old calculation was:
             {
                 'start_time': '0s',
                 'start_value': '0s',
@@ -490,31 +499,30 @@ class FCPXMLUtils:
                 'end_value': '<adjusted_source_duration>'
             }
         """
+        # DISABLED: timeMap retiming causes sync issues with simultaneously recorded files
+        # Screen/game captures recorded at the same time as master have matching durations
+        # even if recorded at different framerates (e.g., 60fps screen, 29.97fps master)
+        # Applying timeMap tries to preserve frame count but breaks duration sync
+        return None
+
+        # Old broken logic kept for reference:
         # Check if retiming is needed
-        if abs(source_fps - target_fps) < 0.01:
-            return None
-
-        # Calculate speed factor (how much to slow down/speed up)
-        speed_factor = target_fps / source_fps
-
-        # Parse clip duration from FCPX format to seconds
-        num, den = FCPXMLUtils.parse_time(clip_duration)
-        clip_duration_seconds = num / den
-
-        # Calculate adjusted source duration
-        # source_duration = clip_duration / speed_factor
-        source_duration_seconds = clip_duration_seconds / speed_factor
-
-        # Convert back to FCPX time format (keep same denominator for consistency)
-        source_duration_num = int(source_duration_seconds * den)
-        source_duration_str = f"{source_duration_num}/{den}s"
-
-        return {
-            'start_time': '0s',
-            'start_value': '0s',
-            'end_time': clip_duration,
-            'end_value': source_duration_str
-        }
+        # if abs(source_fps - target_fps) < 0.01:
+        #     return None
+        #
+        # speed_factor = source_fps / target_fps
+        # num, den = FCPXMLUtils.parse_time(clip_duration)
+        # clip_duration_seconds = num / den
+        # source_duration_seconds = clip_duration_seconds * speed_factor
+        # source_duration_num = int(source_duration_seconds * den)
+        # source_duration_str = f"{source_duration_num}/{den}s"
+        #
+        # return {
+        #     'start_time': '0s',
+        #     'start_value': '0s',
+        #     'end_time': clip_duration,
+        #     'end_value': source_duration_str
+        # }
 
     @staticmethod
     def create_video_clip(name: str, ref: str, lane: str, offset: str,
