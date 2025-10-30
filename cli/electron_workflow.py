@@ -290,9 +290,11 @@ def main():
         for audio_type, audio_path in audio_sources_input.items():
             if audio_path and Path(audio_path).exists():
                 # Check if this is a soundboard file by:
-                # 1. Type name ends with 'Sb' (e.g., mic1Sb, mic2Sb)
-                # 2. Or filename contains 'sb' (backwards compatibility)
+                # 1. Type name ends with 'Sb' (e.g., mic1Sb, mic2Sb) - camelCase
+                # 2. Type name ends with '_sb' (e.g., mic1_sb, screen_sb) - snake_case
+                # 3. Or filename contains 'sb' (backwards compatibility)
                 is_soundboard = (audio_type.endswith('Sb') or
+                                audio_type.endswith('_sb') or
                                 'sb' in Path(audio_path).name.lower())
 
                 if is_soundboard:
@@ -316,11 +318,11 @@ def main():
 
                 # Normalize soundboard keys for the sync function
                 # The sync function expects keys like 'mic1', 'mic2', 'screen', etc.
-                # but we have 'mic1Sb', 'mic2Sb', 'screenSb', etc.
+                # but we have 'mic1Sb', 'mic2Sb', 'screenSb', or 'mic1_sb', 'screen_sb', etc.
                 normalized_sb_files = {}
                 for sb_type, sb_path in soundboard_files.items():
-                    # Remove the 'Sb' suffix to get the base type
-                    base_type = sb_type.replace('Sb', '').lower()
+                    # Remove the 'Sb' or '_sb' suffix to get the base type
+                    base_type = sb_type.replace('Sb', '').replace('_sb', '').lower()
                     # Handle special cases
                     if base_type == 'soundeffects':
                         base_type = 'sound_effects'
@@ -384,8 +386,8 @@ def main():
         for audio_type, audio_path in audio_sources_input.items():
             if audio_path:
                 # Skip if already processed by soundboard unified sync
-                # Need to normalize the type to check (remove 'Sb' suffix)
-                normalized_type = audio_type.replace('Sb', '').lower()
+                # Need to normalize the type to check (remove 'Sb' or '_sb' suffix)
+                normalized_type = audio_type.replace('Sb', '').replace('_sb', '').lower()
                 if normalized_type == 'soundeffects':
                     normalized_type = 'sound_effects'
 

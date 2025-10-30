@@ -77,6 +77,21 @@ class AudioSyncAnalyzer:
         # Downsample to this rate for faster correlation (still accurate to ~20ms)
         self.analysis_sample_rate = 8000
 
+    def _load_drift_config(self) -> dict:
+        """Load drift correction configuration from config file."""
+        config_path = Path(__file__).parent.parent / 'config' / 'drift_corrections.json'
+        try:
+            with open(config_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Warning: Could not load drift config: {e}", file=sys.stderr)
+            # Return defaults
+            return {
+                'vmix_outputs': {'enabled': True, 'speed_factor': 1.0},
+                'vmix_sources': {'enabled': True, 'speed_factor': 0.9999763884},
+                'soundboard': {'enabled': True, 'speed_factor': 1.0000158402}
+            }
+
     def merge_audio_files(self, file1: str, file2: Optional[str] = None) -> str:
         """Merge two audio files into a temporary combined file.
 
@@ -338,9 +353,31 @@ class AudioSyncAnalyzer:
             search_window_seconds=search_window
         )
 
-        # NO automatic drift correction - users will use Audio Editor for manual drift correction
+        # Apply device-specific drift correction if this is a soundboard file
         speed_factor = 1.0
         drift_frames = 0.0
+
+        if is_soundboard:
+            # Load drift corrections config
+            drift_config = self._load_drift_config()
+            sb_config = drift_config.get('soundboard', {})
+
+            if sb_config.get('enabled', True):
+                speed_factor = sb_config.get('speed_factor', 1.0)
+                # Calculate drift frames (assuming typical 4-hour recording at 29.97fps)
+                # drift_frames represents how many frames of drift over the recording length
+                # For a 4-hour recording: 4 * 3600 * 29.97 = 431,712 frames
+                # drift = (speed_factor - 1.0) * total_frames
+                # We'll use the master duration to estimate
+                from .audio_processor import AudioProcessor
+                processor = AudioProcessor(self.config if hasattr(self, 'config') else None)
+                try:
+                    master_duration = processor.get_duration_seconds(master_path)
+                    drift_frames = (speed_factor - 1.0) * master_duration * 29.97
+                    print(f"  🎚️  Soundboard device-specific drift correction: {speed_factor:.10f} ({drift_frames:.1f} frames over {master_duration/3600:.1f}h)", file=sys.stderr)
+                except:
+                    # If we can't get duration, just note the correction
+                    print(f"  🎚️  Soundboard device-specific drift correction: {speed_factor:.10f}", file=sys.stderr)
 
         result = {
             'offset_seconds': offset_seconds,
@@ -352,7 +389,10 @@ class AudioSyncAnalyzer:
             'master_file': str(master_path)
         }
 
-        print(f"  ✓ Offset detected: {offset_seconds:.3f}s (no automatic drift correction)", file=sys.stderr)
+        if speed_factor != 1.0:
+            print(f"  ✓ Offset detected: {offset_seconds:.3f}s (with drift correction: {speed_factor:.10f})", file=sys.stderr)
+        else:
+            print(f"  ✓ Offset detected: {offset_seconds:.3f}s (no drift correction needed)", file=sys.stderr)
 
         return result
 
