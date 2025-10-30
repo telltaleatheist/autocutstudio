@@ -1,0 +1,141 @@
+<div class="workflow-container">
+  <div class="workflow-header">
+    <div class="workflow-header-content">
+      <div class="workflow-icon">⚙️</div>
+      <div class="workflow-header-text">
+        <h2 class="workflow-title">Settings</h2>
+        <p class="workflow-subtitle">Configure drift correction settings for different recording devices</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="workflow-card">
+    <div class="workflow-body">
+      <div class="loading-overlay" *ngIf="loading">
+        <div class="spinner"></div>
+      </div>
+
+      <div class="save-notification success" *ngIf="saveSuccess">
+        Settings saved successfully!
+      </div>
+
+      <div class="save-notification error" *ngIf="saveError">
+        {{ saveError }}
+      </div>
+
+      <div class="settings-section" *ngIf="config">
+        <div class="form-section-header">
+          <div class="section-icon">⚙️</div>
+          <label class="section-label">Drift Correction Settings</label>
+        </div>
+
+        <p class="input-hint" style="margin-bottom: 1.5rem;">
+          Device-specific clock drift corrections are applied to ensure perfect sync over long recordings (4+ hours).
+        </p>
+
+    <!-- vMix Outputs -->
+    <div class="drift-category">
+      <div class="category-header">
+        <label class="category-label">vMix Outputs (29.97 converted)</label>
+        <label class="toggle-switch">
+          <input type="checkbox" [(ngModel)]="config.vmix_outputs.enabled">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p class="applies-to">Applied to: {{ getAppliesTo(config.vmix_outputs) }}</p>
+
+      <div class="speed-factor-group">
+        <label for="vmix-outputs-speed">Speed Factor:</label>
+        <input
+          type="number"
+          id="vmix-outputs-speed"
+          [(ngModel)]="config.vmix_outputs.speed_factor"
+          step="0.0000000001"
+          [disabled]="!config.vmix_outputs.enabled"
+          class="speed-input">
+        <span class="factor-note">(no correction)</span>
+      </div>
+    </div>
+
+    <!-- vMix Sources -->
+    <div class="drift-category">
+      <div class="category-header">
+        <label class="category-label">vMix Sources (direct recording)</label>
+        <label class="toggle-switch">
+          <input type="checkbox" [(ngModel)]="config.vmix_sources.enabled">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p class="applies-to">Applied to: {{ getAppliesTo(config.vmix_sources) }}</p>
+
+      <div class="speed-factor-group">
+        <label for="vmix-sources-speed">Speed Factor:</label>
+        <input
+          type="number"
+          id="vmix-sources-speed"
+          [(ngModel)]="config.vmix_sources.speed_factor"
+          step="0.0000000001"
+          [disabled]="!config.vmix_sources.enabled"
+          class="speed-input">
+      </div>
+
+      <p class="info-note">
+        <span class="info-icon">ℹ</span>
+        Empirically measured: {{ getDriftPercentage(config.vmix_sources.speed_factor) }}
+      </p>
+    </div>
+
+    <!-- Soundboard -->
+    <div class="drift-category">
+      <div class="category-header">
+        <label class="category-label">Soundboard Device</label>
+        <label class="toggle-switch">
+          <input type="checkbox" [(ngModel)]="config.soundboard.enabled">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p class="applies-to">Applied to: {{ getAppliesTo(config.soundboard) }}</p>
+
+      <div class="speed-factor-group">
+        <label for="soundboard-speed">Speed Factor:</label>
+        <input
+          type="number"
+          id="soundboard-speed"
+          [(ngModel)]="config.soundboard.speed_factor"
+          step="0.0000000001"
+          [disabled]="!config.soundboard.enabled"
+          class="speed-input">
+      </div>
+
+      <p class="info-note">
+        <span class="info-icon">ℹ</span>
+        Empirically measured: {{ getDriftPercentage(config.soundboard.speed_factor) }}
+      </p>
+    </div>
+
+    <!-- Action Buttons -->
+    <div class="action-buttons">
+      <button class="btn btn-secondary" (click)="resetToDefaults()" [disabled]="loading">
+        Reset to Defaults
+      </button>
+      <button class="btn btn-primary" (click)="saveConfig()" [disabled]="loading">
+        Save
+      </button>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- Help Section -->
+    <div class="help-section">
+      <label class="section-label">How to Measure Drift:</label>
+      <ol>
+        <li>Record a 4+ hour session</li>
+        <li>Check sync at the end of the recording</li>
+        <li>Calculate: speed_factor = T / (T - drift_seconds)</li>
+        <li>Update the appropriate setting above</li>
+      </ol>
+    </div>
+      </div>
+    </div>
+  </div>
+</div>

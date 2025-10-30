@@ -1,0 +1,318 @@
+// Settings component uses workflow-container structure for consistency
+// Most styles are inherited from global workflow styles
+
+.category-label {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-primary, #ffffff);
+}
+
+.loading-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  border-radius: 8px;
+
+  .spinner {
+    width: 50px;
+    height: 50px;
+    border: 4px solid rgba(255, 107, 53, 0.2);
+    border-top: 4px solid #ff6b35;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.save-notification {
+  padding: 1rem 1.5rem;
+  margin-bottom: 1.5rem;
+  border-radius: 8px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  border: 1px solid;
+
+  &.success {
+    background: #f0fdf4;
+    border-color: #22c55e;
+    color: #166534;
+
+    &::before {
+      content: '✅';
+      font-size: 1.2rem;
+    }
+  }
+
+  &.error {
+    background: #fef2f2;
+    border-color: #ef4444;
+    color: #991b1b;
+
+    &::before {
+      content: '⚠️';
+      font-size: 1.2rem;
+    }
+  }
+}
+
+.settings-section {
+  // Content section - no extra styling needed as workflow-body handles it
+}
+
+.section-divider {
+  border: none;
+  border-top: 2px solid var(--border-color, #374151);
+  margin: 2rem 0;
+}
+
+.section-description {
+  color: var(--text-secondary, #d1d5db);
+  line-height: 1.6;
+  margin-bottom: 2rem;
+  font-size: 1rem;
+}
+
+.drift-category {
+  background: var(--bg-secondary, #1a1a1a);
+  border: 1px solid var(--border-color, #374151);
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+  transition: all 0.3s ease;
+
+  &:hover {
+    border-color: #ff6b35;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 6px -1px rgba(255, 107, 53, 0.2);
+  }
+
+  .category-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+  }
+
+  .applies-to {
+    color: var(--text-muted, #9ca3af);
+    font-size: 0.9rem;
+    margin-bottom: 1rem;
+    font-style: italic;
+  }
+
+  .speed-factor-group {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+
+    label {
+      font-weight: 500;
+      color: var(--text-secondary, #d1d5db);
+      min-width: 100px;
+    }
+
+    .speed-input {
+      flex: 0 0 200px;
+      padding: 0.75rem;
+      background: var(--bg-primary, #0f0f0f);
+      border: 1px solid var(--border-color, #374151);
+      border-radius: 8px;
+      font-family: 'Courier New', monospace;
+      font-size: 1rem;
+      color: var(--text-primary, #ffffff);
+      transition: all 0.3s ease;
+
+      &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      &:focus {
+        outline: none;
+        border-color: #ff6b35;
+        box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.2);
+      }
+    }
+
+    .factor-note {
+      color: var(--text-muted, #9ca3af);
+      font-style: italic;
+      font-size: 0.9rem;
+    }
+  }
+
+  .info-note {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--text-secondary, #d1d5db);
+    font-size: 0.9rem;
+    margin-top: 0.5rem;
+    padding: 0.5rem 1rem;
+    background: var(--bg-primary, #0f0f0f);
+    border-radius: 8px;
+    border: 1px solid var(--border-color, #374151);
+
+    .info-icon {
+      color: #ff6b35;
+      font-weight: bold;
+      font-size: 1.1rem;
+    }
+  }
+}
+
+// Toggle switch styles (matching theme)
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 50px;
+  height: 24px;
+
+  input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+
+    &:checked + .slider {
+      background-color: #ff6b35;
+    }
+
+    &:checked + .slider:before {
+      transform: translateX(26px);
+    }
+
+    &:focus + .slider {
+      box-shadow: 0 0 1px #ff6b35, 0 0 0 3px rgba(255, 107, 53, 0.2);
+    }
+  }
+
+  .slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: var(--border-color, #374151);
+    transition: 0.3s;
+    border-radius: 24px;
+
+    &:before {
+      position: absolute;
+      content: "";
+      height: 18px;
+      width: 18px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: 0.3s;
+      border-radius: 50%;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    }
+  }
+}
+
+.action-buttons {
+  display: flex;
+  gap: 1rem;
+  justify-content: flex-end;
+  margin-top: 2rem;
+
+  .btn {
+    padding: 0.75rem 1.5rem;
+    border: none;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    &.btn-primary {
+      background: #ff6b35;
+      color: white;
+      box-shadow: 0 2px 4px rgba(255, 107, 53, 0.3);
+
+      &:hover:not(:disabled) {
+        background: #e55529;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(255, 107, 53, 0.4);
+      }
+
+      &:active:not(:disabled) {
+        transform: translateY(0);
+      }
+    }
+
+    &.btn-secondary {
+      background: var(--bg-secondary, #1a1a1a);
+      color: var(--text-primary, #ffffff);
+      border: 1px solid var(--border-color, #374151);
+
+      &:hover:not(:disabled) {
+        background: var(--bg-tertiary, #2d2d2d);
+        border-color: #ff6b35;
+      }
+    }
+  }
+}
+
+.help-section {
+  background: var(--bg-secondary, #1a1a1a);
+  padding: 1.5rem;
+  border-radius: 8px;
+  margin-top: 2rem;
+  border: 1px solid var(--border-color, #374151);
+
+  .section-label {
+    display: block;
+    margin-bottom: 1rem;
+  }
+
+  ol {
+    margin: 0;
+    padding-left: 1.5rem;
+    line-height: 1.8;
+
+    li {
+      color: var(--text-secondary, #d1d5db);
+      margin-bottom: 0.5rem;
+
+      &:last-child {
+        margin-bottom: 0;
+      }
+
+      code {
+        background: var(--bg-primary, #0f0f0f);
+        padding: 0.2rem 0.4rem;
+        border-radius: 4px;
+        font-family: 'Courier New', monospace;
+        font-size: 0.9rem;
+        color: #ff6b35;
+      }
+    }
+  }
+}

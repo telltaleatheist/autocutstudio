@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import datetime
 import uuid
+import json
+import sys
 
 class FCPXMLUtils:
     """Utilities for working with Final Cut Pro XML files."""
@@ -14,7 +16,23 @@ class FCPXMLUtils:
         """Parse FCPXML file and return ElementTree."""
         tree = ET.parse(file_path)
         return tree
-    
+
+    @staticmethod
+    def _load_drift_config() -> dict:
+        """Load drift correction configuration from config file."""
+        config_path = Path(__file__).parent.parent / 'config' / 'drift_corrections.json'
+        try:
+            with open(config_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Warning: Could not load drift config: {e}", file=sys.stderr)
+            # Return defaults
+            return {
+                'vmix_outputs': {'enabled': True, 'speed_factor': 1.0},
+                'vmix_sources': {'enabled': True, 'speed_factor': 0.9999763884},
+                'soundboard': {'enabled': True, 'speed_factor': 1.0000158402}
+            }
+
     @staticmethod
     def save_fcpxml(tree: ET.ElementTree, output_path: str):
         """Save ElementTree as properly formatted FCPXML."""
@@ -35,6 +53,61 @@ class FCPXMLUtils:
     def format_time(numerator: int, denominator: int) -> str:
         """Format time as FCPX time string."""
         return f"{numerator}/{denominator}s"
+
+    @staticmethod
+    def timecode_to_seconds(hours: int = 0, minutes: int = 0, seconds: int = 0, frames: int = 0, fps: float = 29.97) -> float:
+        """Convert timecode (HH:MM:SS:FF) to total seconds.
+
+        This is useful for calculating drift from end-point timecodes.
+
+        Args:
+            hours: Hours component
+            minutes: Minutes component
+            seconds: Seconds component
+            frames: Frames component
+            fps: Frame rate (default 29.97)
+
+        Returns:
+            Total duration in seconds
+
+        Example:
+            # Convert 4:28:08:01 to seconds
+            T = timecode_to_seconds(4, 28, 8, 1, 29.97)
+            # Calculate drift: 15 seconds + 18 frames too long
+            delta = 15 + (18 * (1001/30000))  # = 15.6006s
+            # Speed factor: r = T / (T - delta)
+        """
+        # For 29.97fps (NTSC), frame duration is exactly 1001/30000 seconds
+        if abs(fps - 29.97) < 0.01:
+            frame_duration = 1001 / 30000
+        else:
+            frame_duration = 1 / fps
+
+        total_seconds = (hours * 3600) + (minutes * 60) + seconds + (frames * frame_duration)
+        return total_seconds
+
+    @staticmethod
+    def frames_to_seconds(frames: int, fps: float = 29.97) -> float:
+        """Convert frames to seconds for a given frame rate.
+
+        Args:
+            frames: Number of frames
+            fps: Frame rate (default 29.97)
+
+        Returns:
+            Duration in seconds
+
+        Example:
+            # 18 frames at 29.97fps
+            drift_frames_seconds = frames_to_seconds(18, 29.97)  # = 0.6006s
+        """
+        # For 29.97fps (NTSC), frame duration is exactly 1001/30000 seconds
+        if abs(fps - 29.97) < 0.01:
+            frame_duration = 1001 / 30000
+        else:
+            frame_duration = 1 / fps
+
+        return frames * frame_duration
     
     @staticmethod
     def create_asset_element(asset_id: str, name: str, file_path: str, 
@@ -473,56 +546,93 @@ class FCPXMLUtils:
         return clip
     
     @staticmethod
-    def calculate_retime_map(clip_duration: str, source_fps: float, target_fps: float = 29.97) -> Optional[Dict]:
-        """Calculate timeMap values for retiming a clip.
+    def calculate_retime_map(clip_duration: str, source_fps: float, target_fps: float = 29.97,
+                           video_duration: Optional[float] = None, audio_duration: Optional[float] = None,
+                           drift_seconds: Optional[float] = None) -> Optional[Dict]:
+        """Calculate timeMap values for retiming video to correct linear drift.
 
-        IMPORTANT: This function should NOT be used for screen/game captures that were
-        recorded simultaneously with the master video. Those files have matching durations
-        despite different framerates, and adding a timeMap will desync them!
+        This implements the mathematical relationship between master timeline (single source of truth)
+        and auxiliary sources (screen, game capture) that may drift due to clock/framerate mismatches.
 
-        This function is only useful for clips that need frame-count preservation
-        (e.g., slow-motion footage at 120fps that should play slower).
+        THREE METHODS (in order of preference):
+
+        METHOD A: End-lag measurement (most accurate when you have alignment data)
+        - When: You know the capture is synced at start but drifts by Δ over time T
+        - Formula: r = T / (T - Δ)
+        - Example: 4:28:08:01 timeline, 15s 18f too long → r = 1.000970643
+
+        METHOD B: Metadata calculation (automatic, no alignment needed)
+        - When: You have video duration D, frame count N, and master frame duration d_m
+        - Formula: r = (1001 * N) / (30000 * D)  [for 29.97fps master]
+        - This captures both NTSC 1000/1001 factor AND device clock error
+
+        METHOD C: Framerate-based fallback (legacy, least accurate)
+        - When: No duration data available, only fps metadata
+        - Uses standard 1.001x correction for 30/60fps sources
 
         Args:
             clip_duration: Duration in FCPX format (e.g., "3000000/30000s")
-            source_fps: Original video framerate
+            source_fps: Video framerate (used for Method C fallback)
             target_fps: Target timeline framerate (default 29.97)
+            video_duration: Actual video duration in seconds (for Method B)
+            audio_duration: Master reference duration in seconds (for Method B)
+            drift_seconds: End drift in seconds (for Method A) - positive means too long
 
         Returns:
-            None - timeMap retiming is disabled because it causes sync issues
-
-            For reference, the old calculation was:
+            Dict with timeMap values if correction needed, None otherwise:
             {
                 'start_time': '0s',
                 'start_value': '0s',
                 'end_time': '<clip_duration>',
-                'end_value': '<adjusted_source_duration>'
+                'end_value': '<corrected_source_duration>'
             }
         """
-        # DISABLED: timeMap retiming causes sync issues with simultaneously recorded files
-        # Screen/game captures recorded at the same time as master have matching durations
-        # even if recorded at different framerates (e.g., 60fps screen, 29.97fps master)
-        # Applying timeMap tries to preserve frame count but breaks duration sync
-        return None
+        speed_factor = None
 
-        # Old broken logic kept for reference:
-        # Check if retiming is needed
-        # if abs(source_fps - target_fps) < 0.01:
-        #     return None
-        #
-        # speed_factor = source_fps / target_fps
-        # num, den = FCPXMLUtils.parse_time(clip_duration)
-        # clip_duration_seconds = num / den
-        # source_duration_seconds = clip_duration_seconds * speed_factor
-        # source_duration_num = int(source_duration_seconds * den)
-        # source_duration_str = f"{source_duration_num}/{den}s"
-        #
-        # return {
-        #     'start_time': '0s',
-        #     'start_value': '0s',
-        #     'end_time': clip_duration,
-        #     'end_value': source_duration_str
-        # }
+        # Parse the clip duration from FCPX format (this is T, the reference time on master)
+        num, den = FCPXMLUtils.parse_time(clip_duration)
+        T = num / den  # Master timeline duration in seconds
+
+        # METHOD A (BEST): End-lag measurement
+        # If drift_seconds provided, use direct formula: r = T / (T - Δ)
+        if drift_seconds is not None:
+            delta = drift_seconds  # Δ = how much too long (or short if negative)
+            speed_factor = T / (T - delta)  # r = T / (T - Δ)
+            print(f"  [Method A] End-lag drift correction: Δ={delta:.4f}s over T={T:.2f}s → r={speed_factor:.10f}", file=sys.stderr)
+
+        # METHOD C (PRIORITY): Device-specific drift correction
+        # Apply configured correction regardless of FPS - the device clock drift is what matters
+        # Skip Method B entirely - just use the configured speed factor
+        else:
+            # Load drift config from configuration file
+            drift_config = FCPXMLUtils._load_drift_config()
+            vmix_sources = drift_config.get('vmix_sources', {})
+
+            # Check if correction is enabled
+            if not vmix_sources.get('enabled', True):
+                print(f"  [Method C] vMix sources drift correction disabled, skipping", file=sys.stderr)
+                return None
+
+            # Get configured speed factor
+            speed_factor = vmix_sources.get('speed_factor', 0.9999763884)
+            print(f"  [Method C] Device-specific drift correction: {source_fps:.2f}fps → r={speed_factor:.10f}", file=sys.stderr)
+
+        # Calculate corrected source duration
+        # For speed_factor > 1: read MORE source footage per timeline second (plays faster)
+        # For speed_factor < 1: read LESS source footage per timeline second (plays slower)
+        # Example: r=1.001, 10s timeline → read 10.01s source → plays 1.001x faster
+        source_duration_seconds = T * speed_factor
+
+        # Convert back to FCPX format using the same denominator
+        source_duration_num = int(source_duration_seconds * den)
+        source_duration_str = f"{source_duration_num}/{den}s"
+
+        return {
+            'start_time': '0s',
+            'start_value': '0s',
+            'end_time': clip_duration,
+            'end_value': source_duration_str
+        }
 
     @staticmethod
     def create_video_clip(name: str, ref: str, lane: str, offset: str,

@@ -1,10 +1,17 @@
-<div class="relinking-page">
-  <div class="page-header">
-    <h1>Asset Relinking</h1>
-    <p class="subtitle">Link your asset files to their locations on this computer</p>
+<div class="workflow-container">
+  <div class="workflow-header">
+    <div class="workflow-header-content">
+      <div class="workflow-icon">🔗</div>
+      <div class="workflow-header-text">
+        <h2 class="workflow-title">Asset Relinking</h2>
+        <p class="workflow-subtitle">Link your asset files to their locations on this computer</p>
+      </div>
+    </div>
   </div>
 
-  <!-- Status Banner -->
+  <div class="workflow-card">
+    <div class="workflow-body relinking-page">
+      <!-- Status Banner -->
   <div class="status-banner" [class.warning]="invalidCount > 0" [class.success]="allPathsValid">
     <div class="status-content">
       <span class="status-icon">{{ allPathsValid ? '✓' : '⚠' }}</span>
@@ -78,5 +85,7 @@
     <button class="btn btn-primary" (click)="saveAssetPaths()" [disabled]="!allPathsValid">
       Save Asset Paths
     </button>
+      </div>
+    </div>
   </div>
 </div>

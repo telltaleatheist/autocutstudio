@@ -32,6 +32,8 @@ export interface ElectronAPI {
   log: (level: string, ...args: any[]) => Promise<void>;
   getAssetConfig: () => Promise<{ success: boolean; assetPaths?: any; error?: string }>;
   saveAssetConfig: (assetPaths: any) => Promise<{ success: boolean; error?: string }>;
+  getDriftCorrections: () => Promise<any>;
+  saveDriftCorrections: (config: any) => Promise<{ success: boolean; error?: string }>;
 }
 
 declare global {

@@ -51,7 +51,7 @@ class CamGenerator:
             if audio_type in audio_sources and audio_sources[audio_type]:
                 try:
                     processed_path, duration, sample_rate, channels = \
-                        self.audio_processor.process_audio_source(audio_sources[audio_type], apply_audio_sync)
+                        self.audio_processor.process_audio_source(audio_sources[audio_type], apply_audio_sync, audio_type=audio_type)
                     processed_audio_sources[audio_type] = {
                         'path': processed_path,
                         'duration': duration,

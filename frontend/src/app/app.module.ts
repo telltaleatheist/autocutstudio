@@ -12,6 +12,7 @@ import { ResultsComponent } from './components/results/results.component';
 import { AudioEditorComponent } from './components/audio-editor/audio-editor.component';
 import { RelinkingComponent } from './components/relinking/relinking.component';
 import { AudioDuckingComponent } from './components/audio-ducking/audio-ducking.component';
+import { SettingsComponent } from './components/settings/settings.component';
 
 @NgModule({
   declarations: [
@@ -23,7 +24,8 @@ import { AudioDuckingComponent } from './components/audio-ducking/audio-ducking.
     ResultsComponent,
     AudioEditorComponent,
     RelinkingComponent,
-    AudioDuckingComponent
+    AudioDuckingComponent,
+    SettingsComponent
   ],
   imports: [
     BrowserModule,

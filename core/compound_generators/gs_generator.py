@@ -52,7 +52,7 @@ class GSGenerator:
             if audio_path and audio_type in ['mic1', 'mic2', 'mic3', 'mic4', 'screen', 'game', 'sound_effects', 'bluetooth']:
                 try:
                     processed_path, duration, sample_rate, channels = \
-                        self.audio_processor.process_audio_source(audio_path, apply_audio_sync)
+                        self.audio_processor.process_audio_source(audio_path, apply_audio_sync, audio_type=audio_type)
                     processed_audio_sources[audio_type] = {
                         'path': processed_path,
                         'duration': duration,
@@ -178,10 +178,26 @@ class GSGenerator:
             game_asset_id = "r_game_video"
             game_name = Path(game_path).stem
 
-            # Detect framerate (no retiming applied - duration-based sync)
+            # Detect framerate
             game_fps = self.audio_processor.get_video_framerate(game_path)
-            game_retime_map = self.xml_utils.calculate_retime_map(original_duration, game_fps, 29.97)
-            print(f"  game video: {game_fps:.2f}fps (synced by duration, not framerate)", file=sys.stderr)
+
+            # METHOD B: Metadata-based drift correction
+            # Get video duration and corresponding audio duration (if available)
+            game_video_duration = self.audio_processor.get_video_duration_seconds(game_path)
+            game_audio_duration = None
+
+            # Try to get audio duration from the game audio source
+            if 'game' in processed_audio_sources and processed_audio_sources['game']:
+                game_audio_path = processed_audio_sources['game']['path']
+                game_audio_duration = self.audio_processor.get_duration_seconds(game_audio_path)
+                print(f"  game: video={game_video_duration:.2f}s, audio={game_audio_duration:.2f}s", file=sys.stderr)
+
+            # Calculate retime map using Method B (metadata) or Method C (framerate fallback)
+            game_retime_map = self.xml_utils.calculate_retime_map(
+                original_duration, game_fps, 29.97,
+                video_duration=game_video_duration if game_audio_duration else None,
+                audio_duration=game_audio_duration
+            )
 
             game_asset = self.xml_utils.create_asset_element(
                 game_asset_id, game_name, game_path, original_duration,
@@ -198,10 +214,26 @@ class GSGenerator:
             screen_asset_id = "r_screen_video"
             screen_name = Path(screen_path).stem
 
-            # Detect framerate (no retiming applied - duration-based sync)
+            # Detect framerate
             screen_fps = self.audio_processor.get_video_framerate(screen_path)
-            screen_retime_map = self.xml_utils.calculate_retime_map(original_duration, screen_fps, 29.97)
-            print(f"  screen video: {screen_fps:.2f}fps (synced by duration, not framerate)", file=sys.stderr)
+
+            # METHOD B: Metadata-based drift correction
+            # Get video duration and corresponding audio duration (if available)
+            screen_video_duration = self.audio_processor.get_video_duration_seconds(screen_path)
+            screen_audio_duration = None
+
+            # Try to get audio duration from the screen audio source
+            if 'screen' in processed_audio_sources and processed_audio_sources['screen']:
+                screen_audio_path = processed_audio_sources['screen']['path']
+                screen_audio_duration = self.audio_processor.get_duration_seconds(screen_audio_path)
+                print(f"  screen: video={screen_video_duration:.2f}s, audio={screen_audio_duration:.2f}s", file=sys.stderr)
+
+            # Calculate retime map using Method B (metadata) or Method C (framerate fallback)
+            screen_retime_map = self.xml_utils.calculate_retime_map(
+                original_duration, screen_fps, 29.97,
+                video_duration=screen_video_duration if screen_audio_duration else None,
+                audio_duration=screen_audio_duration
+            )
 
             screen_asset = self.xml_utils.create_asset_element(
                 screen_asset_id, screen_name, screen_path, original_duration,

@@ -1,0 +1,20 @@
+{
+  "vmix_outputs": {
+    "enabled": true,
+    "speed_factor": 1.0,
+    "applies_to": ["mic1", "mic2", "mic3", "mic4", "screen_audio", "bluetooth", "cam", "master"],
+    "description": "vMix outputs converted to 29.97fps"
+  },
+  "vmix_sources": {
+    "enabled": true,
+    "speed_factor": 0.9999763884,
+    "applies_to": ["screen_capture_video", "game_capture_video"],
+    "description": "vMix direct source recordings"
+  },
+  "soundboard": {
+    "enabled": true,
+    "speed_factor": 1.0000158402,
+    "applies_to": ["sound_effects"],
+    "description": "External soundboard device"
+  }
+}

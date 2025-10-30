@@ -49,6 +49,8 @@ export interface ElectronAPI {
   // Configuration
   getAssetConfig: () => Promise<{ success: boolean; assetPaths?: any; error?: string }>;
   saveAssetConfig: (assetPaths: any) => Promise<{ success: boolean; error?: string }>;
+  getDriftCorrections: () => Promise<any>;
+  saveDriftCorrections: (config: any) => Promise<{ success: boolean; error?: string }>;
 }
 
 // Expose API to renderer
@@ -97,7 +99,9 @@ const electronAPI: ElectronAPI = {
 
   // Configuration
   getAssetConfig: () => ipcRenderer.invoke('get-asset-config'),
-  saveAssetConfig: (assetPaths) => ipcRenderer.invoke('save-asset-config', assetPaths)
+  saveAssetConfig: (assetPaths) => ipcRenderer.invoke('save-asset-config', assetPaths),
+  getDriftCorrections: () => ipcRenderer.invoke('get-drift-corrections'),
+  saveDriftCorrections: (config) => ipcRenderer.invoke('save-drift-corrections', config)
 };
 
 contextBridge.exposeInMainWorld('electron', electronAPI);

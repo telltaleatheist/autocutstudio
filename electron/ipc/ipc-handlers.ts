@@ -792,4 +792,90 @@ function setupConfigHandlers(): void {
       return { success: false, error: error.message };
     }
   });
+
+  // Get drift corrections configuration
+  ipcMain.handle('get-drift-corrections', async () => {
+    try {
+      const configPath = path.join(__dirname, '../../../../config/drift_corrections.json');
+      log.info('Loading drift corrections from:', configPath);
+
+      if (!fs.existsSync(configPath)) {
+        log.error('Drift corrections config not found at:', configPath);
+        // Return defaults
+        const defaults = {
+          vmix_outputs: {
+            enabled: true,
+            speed_factor: 1.0,
+            applies_to: ['mic1', 'mic2', 'mic3', 'mic4', 'screen_audio', 'bluetooth', 'cam', 'master'],
+            description: 'vMix outputs converted to 29.97fps'
+          },
+          vmix_sources: {
+            enabled: true,
+            speed_factor: 0.9999763884,
+            applies_to: ['screen_capture_video', 'game_capture_video'],
+            description: 'vMix direct source recordings'
+          },
+          soundboard: {
+            enabled: true,
+            speed_factor: 1.0000158402,
+            applies_to: ['sound_effects'],
+            description: 'External soundboard device'
+          }
+        };
+        return defaults;
+      }
+
+      const configContent = fs.readFileSync(configPath, 'utf8');
+      const config = JSON.parse(configContent);
+
+      log.info('Loaded drift corrections config:', config);
+      return config;
+    } catch (error: any) {
+      log.error('Error loading drift corrections config:', error);
+      // Return defaults on error
+      return {
+        vmix_outputs: {
+          enabled: true,
+          speed_factor: 1.0,
+          applies_to: ['mic1', 'mic2', 'mic3', 'mic4', 'screen_audio', 'bluetooth', 'cam', 'master'],
+          description: 'vMix outputs converted to 29.97fps'
+        },
+        vmix_sources: {
+          enabled: true,
+          speed_factor: 0.9999763884,
+          applies_to: ['screen_capture_video', 'game_capture_video'],
+          description: 'vMix direct source recordings'
+        },
+        soundboard: {
+          enabled: true,
+          speed_factor: 1.0000158402,
+          applies_to: ['sound_effects'],
+          description: 'External soundboard device'
+        }
+      };
+    }
+  });
+
+  // Save drift corrections configuration
+  ipcMain.handle('save-drift-corrections', async (event, config: any) => {
+    try {
+      const configPath = path.join(__dirname, '../../../../config/drift_corrections.json');
+      log.info('Saving drift corrections to:', configPath);
+
+      // Ensure directory exists
+      const configDir = path.dirname(configPath);
+      if (!fs.existsSync(configDir)) {
+        fs.mkdirSync(configDir, { recursive: true });
+      }
+
+      // Write config to file
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+
+      log.info('Saved drift corrections config:', config);
+      return { success: true };
+    } catch (error: any) {
+      log.error('Error saving drift corrections config:', error);
+      return { success: false, error: error.message };
+    }
+  });
 }

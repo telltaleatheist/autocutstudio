@@ -48,7 +48,7 @@ class DCCamGenerator:
             if audio_path and audio_type in ['mic1', 'mic2', 'mic3', 'mic4', 'sound_effects']:
                 try:
                     processed_path, duration, sample_rate, channels = \
-                        self.audio_processor.process_audio_source(audio_path, apply_audio_sync)
+                        self.audio_processor.process_audio_source(audio_path, apply_audio_sync, audio_type=audio_type)
                     processed_audio_sources[audio_type] = {
                         'path': processed_path,
                         'duration': duration,

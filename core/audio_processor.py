@@ -2,6 +2,7 @@
 # Note: This assumes you want to keep using subprocess for ffmpeg since Python
 # doesn't have a pure-Python FFmpeg implementation, but we structure it better
 
+import sys
 import subprocess
 import json
 from pathlib import Path
@@ -61,7 +62,22 @@ class AudioProcessor:
                 return path
 
         return None
-    
+
+    def _load_drift_config(self) -> dict:
+        """Load drift correction configuration from config file."""
+        config_path = Path(__file__).parent.parent / 'config' / 'drift_corrections.json'
+        try:
+            with open(config_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Warning: Could not load drift config: {e}", file=sys.stderr)
+            # Return defaults
+            return {
+                'vmix_outputs': {'enabled': True, 'speed_factor': 1.0},
+                'vmix_sources': {'enabled': True, 'speed_factor': 0.9999763884},
+                'soundboard': {'enabled': True, 'speed_factor': 1.0000158402}
+            }
+
     def apply_drift_correction(self, input_path: str, drift_frames: float, 
                               video_duration: float, fps: float = 29.97,
                               output_path: Optional[str] = None) -> str:
@@ -166,16 +182,46 @@ class AudioProcessor:
             print(f"stderr: {e.stderr}")
             raise
     
-    def sync_audio_for_2997fps(self, input_path: str, output_path: Optional[str] = None) -> str:
-        """Apply 29.97fps sync correction using atempo filter."""
+    def sync_audio_for_2997fps(self, input_path: str, output_path: Optional[str] = None,
+                              audio_type: Optional[str] = None) -> str:
+        """Apply device-specific clock drift correction using atempo filter.
+
+        Args:
+            input_path: Path to input audio file
+            output_path: Optional output path
+            audio_type: Type of audio source (e.g., 'sound_effects' for soundboard)
+                       Determines which device-specific correction to apply
+        """
         input_path = Path(input_path)
-        
+
         if output_path is None:
             output_path = input_path.parent / f"{input_path.stem}_processed.wav"
 
         output_path = Path(output_path)
-        sync_factor = self.config.get('audio.sync_correction', 1.001)
-        
+
+        # Device-specific clock drift corrections (empirically measured)
+        drift_config = self._load_drift_config()
+        if audio_type == 'sound_effects':
+            # Soundboard device: check config for correction
+            sb_config = drift_config.get('soundboard', {})
+            if sb_config.get('enabled', True):
+                sync_factor = sb_config.get('speed_factor', 1.0000158402)
+                print(f"  Applying soundboard drift correction: {sync_factor:.10f}x", file=sys.stderr)
+            else:
+                # Disabled - no correction
+                sync_factor = 1.0
+                print(f"  Soundboard drift correction disabled, using 1.0x", file=sys.stderr)
+        else:
+            # vMix outputs (mic audio, screen audio, cam, master) - no correction needed
+            # These are already converted to 29.97fps by vMix
+            vmix_outputs = drift_config.get('vmix_outputs', {})
+            if vmix_outputs.get('enabled', True):
+                sync_factor = vmix_outputs.get('speed_factor', 1.0)
+                print(f"  Applying vMix outputs drift correction: {sync_factor:.10f}x", file=sys.stderr)
+            else:
+                sync_factor = 1.0
+                print(f"  vMix outputs drift correction disabled, using 1.0x", file=sys.stderr)
+
         cmd = [
             'ffmpeg', '-i', str(input_path),
             '-filter:a', f'atempo={sync_factor}',
@@ -183,7 +229,7 @@ class AudioProcessor:
             '-y',  # Overwrite output
             str(output_path)
         ]
-        
+
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
             print(f"Audio synced from {input_path} to {output_path}")
@@ -279,21 +325,28 @@ class AudioProcessor:
             raise
     
     def process_audio_source(self, source_path: str, apply_sync: bool = False,
-                        output_dir: Optional[str] = None) -> Tuple[str, str, int, int]:
-        """Process audio source: extract if video, sync if requested, return info."""
+                        output_dir: Optional[str] = None, audio_type: Optional[str] = None) -> Tuple[str, str, int, int]:
+        """Process audio source: extract if video, sync if requested, return info.
+
+        Args:
+            source_path: Path to audio/video file
+            apply_sync: Whether to apply device-specific drift correction
+            output_dir: Optional output directory
+            audio_type: Type of audio source (e.g., 'sound_effects' for soundboard)
+        """
         source_path = Path(source_path)
-        
+
         # Use the source file's directory as the output directory by default
         if output_dir is None:
             output_dir = source_path.parent  # Same directory as the source file
         output_dir = Path(output_dir)
-        
+
         # Check if source is video or audio
         video_extensions = ['.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.mpg', '.mpeg', '.m4v', '.webm']
         audio_extensions = ['.wav', '.mp3', '.aac', '.flac', '.ogg', '.m4a']
-        
+
         processed_audio_path = source_path
-        
+
         # Extract audio if source is video (directly to _processed name)
         if source_path.suffix.lower() in video_extensions:
             audio_path = output_dir / f"{source_path.stem}_processed.wav"
@@ -302,7 +355,9 @@ class AudioProcessor:
         # Apply sync correction if requested (overwrite the same _processed file)
         if apply_sync:
             synced_path = output_dir / f"{source_path.stem}_processed.wav"
-            processed_audio_path = Path(self.sync_audio_for_2997fps(str(processed_audio_path), str(synced_path)))
+            processed_audio_path = Path(self.sync_audio_for_2997fps(
+                str(processed_audio_path), str(synced_path), audio_type=audio_type
+            ))
         
         # Get audio info
         duration, sample_rate, channels = self.get_audio_info(str(processed_audio_path))
@@ -344,6 +399,112 @@ class AudioProcessor:
         except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as e:
             print(f"Warning: Could not detect framerate for {file_path}: {e}")
             return 0.0
+
+    def get_actual_video_framerate(self, file_path: str) -> float:
+        """Get the ACTUAL framerate by calculating from frame count and duration.
+
+        This is more accurate than metadata framerate for files where the encoding
+        framerate doesn't match the actual frame delivery rate.
+
+        Args:
+            file_path: Path to video file
+
+        Returns:
+            Actual frame rate calculated as frame_count / duration
+        """
+        try:
+            result = subprocess.run([
+                'ffprobe', '-v', 'quiet', '-print_format', 'json',
+                '-show_streams', '-select_streams', 'v:0',
+                '-count_frames',  # Actually count frames
+                str(file_path)
+            ], capture_output=True, text=True, check=True)
+
+            data = json.loads(result.stdout)
+            video_stream = data['streams'][0]
+
+            # Get frame count and duration
+            nb_frames = int(video_stream.get('nb_frames', 0))
+            duration = float(video_stream.get('duration', 0))
+
+            if nb_frames > 0 and duration > 0:
+                actual_fps = nb_frames / duration
+                return actual_fps
+
+            # Fallback to metadata framerate
+            return self.get_video_framerate(file_path)
+
+        except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, ValueError) as e:
+            print(f"Warning: Could not calculate actual framerate for {file_path}: {e}")
+            # Fallback to metadata framerate
+            return self.get_video_framerate(file_path)
+
+    def calculate_clock_drift_correction(self, video_path: str, master_duration_seconds: float) -> Optional[float]:
+        """Calculate speed correction factor using Method B (metadata-based).
+
+        DEPRECATED: Use calculate_retime_map with video_duration and audio_duration instead.
+
+        This method is kept for backwards compatibility but will return None.
+        The new approach uses video vs audio duration comparison directly in calculate_retime_map.
+
+        Args:
+            video_path: Path to video file to analyze
+            master_duration_seconds: Duration of master timeline in seconds
+
+        Returns:
+            None (use new drift_seconds or video/audio_duration params instead)
+        """
+        print(f"  Clock drift correction: Using new drift correction methods", file=sys.stderr)
+        return None
+
+    def get_video_duration_seconds(self, file_path: str) -> float:
+        """Get video duration in seconds.
+
+        Args:
+            file_path: Path to video file
+
+        Returns:
+            Duration in seconds
+        """
+        try:
+            result = subprocess.run([
+                'ffprobe', '-v', 'quiet', '-print_format', 'json',
+                '-show_format', str(file_path)
+            ], capture_output=True, text=True, check=True)
+
+            data = json.loads(result.stdout)
+            duration = float(data['format'].get('duration', 0))
+            return duration
+
+        except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as e:
+            print(f"Warning: Could not get video duration from {file_path}: {e}")
+            return 0.0
+
+    def get_video_frame_count(self, file_path: str) -> int:
+        """Get total frame count from video file.
+
+        Args:
+            file_path: Path to video file
+
+        Returns:
+            Total number of frames
+        """
+        try:
+            result = subprocess.run([
+                'ffprobe', '-v', 'quiet', '-print_format', 'json',
+                '-show_streams', '-select_streams', 'v:0',
+                '-count_frames',
+                str(file_path)
+            ], capture_output=True, text=True, check=True)
+
+            data = json.loads(result.stdout)
+            video_stream = data['streams'][0]
+            nb_frames = int(video_stream.get('nb_frames', 0))
+            return nb_frames
+
+        except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, ValueError) as e:
+            print(f"Warning: Could not get frame count from {file_path}: {e}")
+            return 0
 
     def sync_video_for_2997fps(self, input_path: str, output_path: Optional[str] = None) -> str:
         """Convert video to 29.97fps timeline, auto-detecting source framerate.

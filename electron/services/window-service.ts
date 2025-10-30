@@ -33,10 +33,10 @@ export class WindowService {
     log.info(`Loading frontend from: ${frontendUrl}`);
     this.mainWindow.loadURL(frontendUrl);
 
-    // Open DevTools in development
-    if (AppConfig.isDevelopment) {
-      this.mainWindow.webContents.openDevTools();
-    }
+    // DevTools disabled - uncomment to enable in development
+    // if (AppConfig.isDevelopment) {
+    //   this.mainWindow.webContents.openDevTools();
+    // }
 
     // Window close handler
     this.mainWindow.on('closed', () => {

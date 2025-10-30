@@ -1,5 +1,6 @@
 # core/compound_generators/ssb_generator.py
 
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -56,7 +57,7 @@ class SSBGenerator:
                             continue
                             
                         processed_path, duration, sample_rate, channels = \
-                            self.audio_processor.process_audio_source(audio_sources[audio_type], apply_audio_sync)
+                            self.audio_processor.process_audio_source(audio_sources[audio_type], apply_audio_sync, audio_type=audio_type)
                         processed_audio_sources[audio_type] = {
                             'path': processed_path,
                             'duration': duration,
@@ -191,13 +192,26 @@ class SSBGenerator:
                 screen_asset_id = "r_screen_video"
                 screen_name = Path(screen_path).stem
 
-                # Detect framerate and calculate retime map if needed
+                # Detect framerate
                 screen_fps = self.audio_processor.get_video_framerate(screen_path)
-                screen_retime_map = self.xml_utils.calculate_retime_map(original_duration, screen_fps, 29.97)
-                if screen_retime_map:
-                    print(f"  screen video: {screen_fps:.2f}fps → 29.97fps (will apply timeMap)")
-                else:
-                    print(f"  screen video: {screen_fps:.2f}fps (no retiming needed)")
+
+                # METHOD B: Metadata-based drift correction
+                # Get video duration and corresponding audio duration (if available)
+                screen_video_duration = self.audio_processor.get_video_duration_seconds(screen_path)
+                screen_audio_duration = None
+
+                # Try to get audio duration from the screen audio source
+                if 'screen' in processed_audio_sources and processed_audio_sources['screen']:
+                    screen_audio_path = processed_audio_sources['screen']['path']
+                    screen_audio_duration = self.audio_processor.get_duration_seconds(screen_audio_path)
+                    print(f"  screen: video={screen_video_duration:.2f}s, audio={screen_audio_duration:.2f}s", file=sys.stderr)
+
+                # Calculate retime map using Method B (metadata) or Method C (framerate fallback)
+                screen_retime_map = self.xml_utils.calculate_retime_map(
+                    original_duration, screen_fps, 29.97,
+                    video_duration=screen_video_duration if screen_audio_duration else None,
+                    audio_duration=screen_audio_duration
+                )
 
                 # Create asset for the screen video
                 screen_asset = self.xml_utils.create_asset_element(

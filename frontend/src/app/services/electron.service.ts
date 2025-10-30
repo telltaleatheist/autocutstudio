@@ -197,4 +197,19 @@ export class ElectronService {
     }
     return window.electron.processAudioDucking(options);
   }
+
+  // Drift correction settings
+  async getDriftCorrections(): Promise<any> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return window.electron.getDriftCorrections();
+  }
+
+  async saveDriftCorrections(config: any): Promise<{ success: boolean; error?: string }> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return window.electron.saveDriftCorrections(config);
+  }
 }
