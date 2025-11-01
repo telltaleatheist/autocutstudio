@@ -52,13 +52,21 @@ html {
     overflow: hidden;
 }
 
-/* Force dark mode by default */
-html, body {
-    background: #0f0f0f;
-    color: #ffffff;
+/* Light Theme (explicit) */
+body[data-theme="light"] {
+    --bg-primary: #ffffff;
+    --bg-secondary: #f8f9fa;
+    --bg-tertiary: #e9ecef;
+    --bg-card: #ffffff;
+    --text-primary: #212529;
+    --text-secondary: #6c757d;
+    --text-muted: #adb5bd;
+    --border-color: #d1d5db;
+    --shadow-color: rgba(0, 0, 0, 0.1);
 }
 
-:root {
+/* Default to dark mode */
+body {
     --bg-primary: #0f0f0f;
     --bg-secondary: #1a1a1a;
     --bg-tertiary: #2d2d2d;
@@ -69,6 +77,7 @@ html, body {
     --border-color: #374151;
     --shadow-color: rgba(0, 0, 0, 0.3);
 }
+
 body {
     font-family: var(--font-family);
     line-height: 1.6;

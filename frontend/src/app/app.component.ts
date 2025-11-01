@@ -10,7 +10,7 @@ import { ElectronService } from './services/electron.service';
 export class AppComponent implements OnInit {
   title = 'AutoCutStudio';
   appVersion = '';
-  currentTheme: 'light' | 'dark' = 'light';
+  currentTheme: 'light' | 'dark' = 'dark';
 
   // Dependency status
   showDependencyBanner = false;
@@ -23,7 +23,7 @@ export class AppComponent implements OnInit {
 
   async ngOnInit() {
     // Load saved theme
-    const savedTheme = localStorage.getItem('theme') as 'light' | 'dark' || 'light';
+    const savedTheme = localStorage.getItem('theme') as 'light' | 'dark' || 'dark';
     this.setTheme(savedTheme);
 
     // Get app version
@@ -113,13 +113,17 @@ export class AppComponent implements OnInit {
   }
 
   toggleTheme() {
+    console.log('Current theme before toggle:', this.currentTheme);
     const newTheme = this.currentTheme === 'light' ? 'dark' : 'light';
+    console.log('New theme:', newTheme);
     this.setTheme(newTheme);
   }
 
   setTheme(theme: 'light' | 'dark') {
+    console.log('Setting theme to:', theme);
     this.currentTheme = theme;
     document.body.setAttribute('data-theme', theme);
+    console.log('Body data-theme attribute:', document.body.getAttribute('data-theme'));
     localStorage.setItem('theme', theme);
   }
 }
