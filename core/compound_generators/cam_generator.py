@@ -170,19 +170,13 @@ class CamGenerator:
         # Check if optional cam1 video source is provided
         cam1_asset_id = None
         cam1_name = None
-        cam1_retime_map = None
         if 'cam1' in video_sources and video_sources['cam1']:
             cam1_path = video_sources['cam1']
             cam1_asset_id = "r_cam1_video"
             cam1_name = Path(cam1_path).stem
 
-            # Detect framerate and calculate retime map if needed
-            cam1_fps = self.audio_processor.get_video_framerate(cam1_path)
-            cam1_retime_map = self.xml_utils.calculate_retime_map(original_duration, cam1_fps, 29.97)
-            if cam1_retime_map:
-                print(f"  cam1 video: {cam1_fps:.2f}fps → 29.97fps (will apply timeMap)")
-            else:
-                print(f"  cam1 video: {cam1_fps:.2f}fps (no retiming needed)")
+            # cam1 is recorded with master, so NO retiming needed - it's already synced
+            print(f"  cam1 video: using native timing (recorded with master, no retiming)")
 
             # Create asset for the cam1 video
             cam1_asset = self.xml_utils.create_asset_element(
@@ -313,7 +307,7 @@ class CamGenerator:
                 "0s",  # Start at beginning of gap
                 original_duration,
                 transforms,
-                retime_map=cam1_retime_map if cam1_asset_id else None
+                retime_map=None  # Never retime cam1 - it's recorded with master
             )
             gap.append(camera_clip)
             
