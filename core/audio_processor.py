@@ -63,6 +63,29 @@ class AudioProcessor:
 
         return None
 
+    @staticmethod
+    def get_processed_path(input_path: str, extension: str = None, output_dir: str = None) -> Path:
+        """Get the _processed output path for a file, avoiding _processed_processed.
+
+        Args:
+            input_path: Original input file path
+            extension: Optional extension override (e.g., '.wav'). If None, keeps original.
+            output_dir: Optional output directory. If None, uses input file's directory.
+
+        Returns:
+            Path to the _processed version of the file
+        """
+        input_path = Path(input_path)
+        stem = input_path.stem
+
+        # Strip existing _processed suffix to avoid _processed_processed
+        if stem.endswith('_processed'):
+            stem = stem[:-10]  # Remove '_processed' (10 chars)
+
+        ext = extension if extension else input_path.suffix
+        out_dir = Path(output_dir) if output_dir else input_path.parent
+        return out_dir / f"{stem}_processed{ext}"
+
     def _load_drift_config(self) -> dict:
         """Load drift correction configuration from config file."""
         config_path = Path(__file__).parent.parent / 'config' / 'drift_corrections.json'
@@ -101,9 +124,8 @@ class AudioProcessor:
         correction_factor = 1 + (drift_frames / total_frames)
         
         if output_path is None:
-            # Always use _processed to consolidate all operations
-            output_path = input_path.parent / f"{input_path.stem}_processed.wav"
-        
+            output_path = self.get_processed_path(input_path, '.wav')
+
         output_path = Path(output_path)
         
         # Apply drift correction using ffmpeg atempo filter
@@ -156,9 +178,11 @@ class AudioProcessor:
     def extract_audio_from_video(self, video_path: str, output_path: Optional[str] = None) -> str:
         """Extract audio from video file using ffmpeg."""
         video_path = Path(video_path)
-        
+
         if output_path is None:
-            output_path = self.temp_dir / f"{video_path.stem}_processed.wav"
+            # Use temp dir but still avoid _processed_processed
+            processed_name = self.get_processed_path(video_path, '.wav').name
+            output_path = self.temp_dir / processed_name
 
         output_path = Path(output_path)
         
@@ -189,19 +213,19 @@ class AudioProcessor:
         Args:
             input_path: Path to input audio file
             output_path: Optional output path
-            audio_type: Type of audio source (e.g., 'sound_effects' for soundboard)
+            audio_type: Type of audio source (e.g., 'soundEffects' for soundboard)
                        Determines which device-specific correction to apply
         """
         input_path = Path(input_path)
 
         if output_path is None:
-            output_path = input_path.parent / f"{input_path.stem}_processed.wav"
+            output_path = self.get_processed_path(input_path, '.wav')
 
         output_path = Path(output_path)
 
         # Device-specific clock drift corrections (empirically measured)
         drift_config = self._load_drift_config()
-        if audio_type == 'sound_effects':
+        if audio_type == 'soundEffects':
             # Soundboard device: check config for correction
             sb_config = drift_config.get('soundboard', {})
             if sb_config.get('enabled', True):
@@ -332,7 +356,7 @@ class AudioProcessor:
             source_path: Path to audio/video file
             apply_sync: Whether to apply device-specific drift correction
             output_dir: Optional output directory
-            audio_type: Type of audio source (e.g., 'sound_effects' for soundboard)
+            audio_type: Type of audio source (e.g., 'soundEffects' for soundboard)
         """
         source_path = Path(source_path)
 
@@ -349,12 +373,12 @@ class AudioProcessor:
 
         # Extract audio if source is video (directly to _processed name)
         if source_path.suffix.lower() in video_extensions:
-            audio_path = output_dir / f"{source_path.stem}_processed.wav"
+            audio_path = self.get_processed_path(source_path, '.wav', str(output_dir))
             processed_audio_path = Path(self.extract_audio_from_video(str(source_path), str(audio_path)))
 
         # Apply sync correction if requested (overwrite the same _processed file)
         if apply_sync:
-            synced_path = output_dir / f"{source_path.stem}_processed.wav"
+            synced_path = self.get_processed_path(source_path, '.wav', str(output_dir))
             processed_audio_path = Path(self.sync_audio_for_2997fps(
                 str(processed_audio_path), str(synced_path), audio_type=audio_type
             ))
@@ -526,7 +550,7 @@ class AudioProcessor:
         input_path = Path(input_path)
 
         if output_path is None:
-            output_path = input_path.parent / f"{input_path.stem}_processed{input_path.suffix}"
+            output_path = self.get_processed_path(input_path)
 
         output_path = Path(output_path)
 
@@ -608,7 +632,7 @@ class AudioProcessor:
         # Apply framerate sync if requested
         # This assumes the input is 30fps and needs to be synced to 29.97fps
         if apply_sync:
-            synced_path = output_dir / f"{source_path.stem}_processed{source_path.suffix}"
+            synced_path = self.get_processed_path(source_path, output_dir=str(output_dir))
             processed_video_path = Path(self.sync_video_for_2997fps(str(source_path), str(synced_path)))
 
         return str(processed_video_path)

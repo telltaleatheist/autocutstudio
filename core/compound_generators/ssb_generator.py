@@ -20,7 +20,8 @@ class SSBGenerator:
     
     def generate_ssb_compound(self, compound_xml_path: str, audio_sources: Dict[str, str],
                                 mode: str = "solo", output_path: Optional[str] = None,
-                                apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None) -> str:
+                                apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None,
+                                use_downloaded_stream: bool = False) -> str:
             """Generate ssb compound clip from existing compound clip XML.
 
             Args:
@@ -30,6 +31,7 @@ class SSBGenerator:
                 output_path: Optional custom output path
                 apply_audio_sync: Whether to apply 29.97fps sync correction
                 video_sources: Optional dictionary of video source paths (e.g., {'cam1': '/path/to/cam.mp4', 'screen': '/path/to/screen.mp4'})
+                use_downloaded_stream: Whether to use stream recovery transforms for downloaded stream masters
             """
             video_sources = video_sources or {}
             
@@ -267,15 +269,19 @@ class SSBGenerator:
                     pass  # 0
                     current_audio_lane -= 1
             
-            # Add master audio clip (disabled, for reference)
+            # Add master audio clip
+            # Enable master audio if no external audio sources provided (master-only mode)
             audio_config = layout_config.get('audio', {})
+            enable_master_audio = len(audio_sources) == 0
+            if enable_master_audio:
+                print("  Master-only mode: enabling master audio in SSB compound")
             master_audio_clip = self.xml_utils.create_audio_only_clip(
                 original_name,
                 original_asset_id,
                 str(audio_config.get('master_lane', -1)),
                 "0s",
                 original_duration,
-                enabled=audio_config.get('master_enabled', False)
+                enabled=enable_master_audio or audio_config.get('master_enabled', False)
             )
             gap.append(master_audio_clip)
             
@@ -324,7 +330,19 @@ class SSBGenerator:
                             'scale': 0.5  # 50% - perfect quadrant
                         }
                     }
-                    pass  # 0
+                elif use_downloaded_stream:
+                    # Stream recovery mode - extract camera from downloaded stream layout
+                    camera_asset = original_asset_id
+                    camera_name_for_clip = f"{original_name} - Camera"
+                    print("  Stream recovery mode: using stream layout transforms for SSB camera")
+                    camera_transforms = {
+                        'crop': [3.57584, 60.72, 108.935, 2.63889],
+                        'crop_mode': 'trim',
+                        'transform': {
+                            'position': [44.3607, 64.1846],
+                            'scale': 1.53493
+                        }
+                    }
                 else:
                     # Use master video - WITH CROPPING
                     camera_asset = original_asset_id
@@ -337,7 +355,6 @@ class SSBGenerator:
                             'scale': 1.1936
                         }
                     }
-                    pass  # 0
 
                 camera_clip = self.xml_utils.create_video_clip(
                     camera_name_for_clip,
@@ -395,7 +412,19 @@ class SSBGenerator:
                             'scale': 0.5  # 50% - perfect quadrant
                         }
                     }
-                    pass  # 0
+                elif use_downloaded_stream:
+                    # Stream recovery mode - extract screen from downloaded stream layout
+                    screen_video_asset = original_asset_id
+                    screen_name_for_clip = f"{original_name} - Screen"
+                    print("  Stream recovery mode: using stream layout transforms for SSB screen")
+                    screen_transforms = {
+                        'crop': [2.95369, 2.76385, 76.5765, 42.0927],
+                        'crop_mode': 'trim',
+                        'transform': {
+                            'position': [73.6078, -39.6511],
+                            'scale': 1.06124
+                        }
+                    }
                 else:
                     # Use master video - WITH CROPPING
                     screen_video_asset = original_asset_id
@@ -408,7 +437,6 @@ class SSBGenerator:
                             'scale': 1.26677
                         }
                     }
-                    pass  # 0
 
                 screen_clip = self.xml_utils.create_video_clip(
                     screen_name_for_clip,

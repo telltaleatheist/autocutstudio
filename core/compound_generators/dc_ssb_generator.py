@@ -20,7 +20,8 @@ class DCSSBGenerator:
     
     def generate_dc_ssb_compound(self, compound_xml_path: str, audio_sources: Dict[str, str],
                                 output_path: Optional[str] = None,
-                                apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None) -> str:
+                                apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None,
+                                use_downloaded_stream: bool = False) -> str:
         """Generate dc ssb compound clip from existing compound clip XML.
 
         Args:
@@ -29,6 +30,7 @@ class DCSSBGenerator:
             output_path: Optional custom output path
             apply_audio_sync: Whether to apply 29.97fps sync correction
             video_sources: Optional dictionary of video source paths (e.g., {'cam1': '/path/to/cam.mp4', 'cam2': '/path/to/cam2.mp4', 'screen': '/path/to/screen.mp4'})
+            use_downloaded_stream: Whether to use stream recovery transforms for downloaded stream masters
         """
         video_sources = video_sources or {}
         
@@ -257,14 +259,18 @@ class DCSSBGenerator:
             gap.append(screen_audio_clip)
             pass  # 0
                     
-        # Add master audio clip (disabled, for reference)
+        # Add master audio clip
+        # Enable master audio if no external audio sources provided (master-only mode)
+        enable_master_audio = len(audio_sources) == 0
+        if enable_master_audio:
+            print("  Master-only mode: enabling master audio in DC SSB compound")
         master_audio_clip = self.xml_utils.create_audio_only_clip(
             original_name,
             original_asset_id,
             "-1",  # Lane -1 for master audio
             "0s",
             original_duration,
-            enabled=False  # Disabled by default for DC SSB
+            enabled=enable_master_audio  # Enable if no external audio sources
         )
         gap.append(master_audio_clip)
         
@@ -304,12 +310,23 @@ class DCSSBGenerator:
                 camera1_asset = cam1_asset_id
                 camera1_name = cam1_name
                 cam1_transforms = {'crop': None, 'crop_mode': None, 'transform': {'position': [-36.481, 19.63], 'scale': 0.565}}  # -394 / 10.8, 212 / 10.8
-                pass  # 0
+            elif use_downloaded_stream:
+                # Stream recovery mode - extract camera 1 from downloaded stream layout
+                camera1_asset = original_asset_id
+                camera1_name = f"{original_name} - Camera 1"
+                print("  Stream recovery mode: using stream layout transforms for DC SSB camera 1")
+                cam1_transforms = {
+                    'crop': [3.57584, 60.72, 108.935, 2.63889],
+                    'crop_mode': 'trim',
+                    'transform': {
+                        'position': [44.3607, 64.1846],
+                        'scale': 1.53493
+                    }
+                }
             else:
                 camera1_asset = original_asset_id
                 camera1_name = f"{original_name} - Camera 1"
                 cam1_transforms = {'crop': [2.77778, 51.7584, 91.1816, 1.37531], 'crop_mode': 'trim', 'transform': {'position': [16.7616, 49.9968], 'scale': 1.2026}}
-                pass  # 0
 
             cam1_clip = self.xml_utils.create_video_clip(camera1_name, camera1_asset, "2", "0s", original_duration, cam1_transforms)
             gap.append(cam1_clip)
@@ -351,12 +368,23 @@ class DCSSBGenerator:
                 screen_video_asset = screen_asset_id
                 screen_video_name = screen_name
                 screen_transforms = {'crop': None, 'crop_mode': None, 'transform': {'position': [34.63, -18.75], 'scale': 0.5843}}  # 374 / 10.8, -202.5 / 10.8
-                pass  # 0
+            elif use_downloaded_stream:
+                # Stream recovery mode - extract screen from downloaded stream layout
+                screen_video_asset = original_asset_id
+                screen_video_name = f"{original_name} - Screen"
+                print("  Stream recovery mode: using stream layout transforms for DC SSB screen")
+                screen_transforms = {
+                    'crop': [2.95369, 2.76385, 76.5765, 42.0927],
+                    'crop_mode': 'trim',
+                    'transform': {
+                        'position': [73.6078, -39.6511],
+                        'scale': 1.06124
+                    }
+                }
             else:
                 screen_video_asset = original_asset_id
                 screen_video_name = f"{original_name} - Screen"
                 screen_transforms = {'crop': [2.02365, 1.18815, 90.863, 51.1176], 'crop_mode': 'trim', 'transform': {'position': [89.3201, -49.442], 'scale': 1.23001}}
-                pass  # 0
 
             screen_clip = self.xml_utils.create_video_clip(screen_video_name, screen_video_asset, "4", "0s", original_duration, screen_transforms, retime_map=screen_retime_map if screen_asset_id else None)
             gap.append(screen_clip)
@@ -398,12 +426,23 @@ class DCSSBGenerator:
                 camera2_asset = cam2_asset_id
                 camera2_name = cam2_name
                 cam2_transforms = {'crop': None, 'crop_mode': None, 'transform': {'position': [-52.963, -29.074], 'scale': 0.38}}  # -572 / 10.8, -314 / 10.8
-                pass  # 0
+            elif use_downloaded_stream:
+                # Stream recovery mode - extract camera 2 from downloaded stream layout
+                camera2_asset = original_asset_id
+                camera2_name = f"{original_name} - Camera 2"
+                print("  Stream recovery mode: using stream layout transforms for DC SSB camera 2")
+                cam2_transforms = {
+                    'crop': [104.484, 2.08216, 9.52776, 62.2644],
+                    'crop_mode': 'trim',
+                    'transform': {
+                        'position': [-103.228, -60.8952],
+                        'scale': 1.05996
+                    }
+                }
             else:
                 camera2_asset = original_asset_id
                 camera2_name = f"{original_name} - Camera 2"
                 cam2_transforms = {'crop': [91.3865, 1.12389, 2.04329, 51.3326], 'crop_mode': 'trim', 'transform': {'position': [-88.6903, -49.2458], 'scale': 0.801898}}
-                pass  # 0
 
             cam2_clip = self.xml_utils.create_video_clip(camera2_name, camera2_asset, "6", "0s", original_duration, cam2_transforms)
             gap.append(cam2_clip)

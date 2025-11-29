@@ -22,7 +22,7 @@ class GSGenerator:
     def generate_gs_compound(self, compound_xml_path: str, audio_sources: Dict[str, str],
                             output_path: Optional[str] = None,
                             apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None,
-                            auto_duck: bool = False) -> str:
+                            auto_duck: bool = False, use_downloaded_stream: bool = False) -> str:
         """Generate gs compound clip from existing compound clip XML.
 
         Args:
@@ -32,6 +32,7 @@ class GSGenerator:
             apply_audio_sync: Whether to apply 29.97fps sync correction
             video_sources: Optional dictionary of video source paths (e.g., {'game': '/path/to/game.mp4'})
             auto_duck: Whether to apply universal auto ducking
+            use_downloaded_stream: Whether to use stream recovery transforms for downloaded stream masters
         """
         video_sources = video_sources or {}
         
@@ -49,7 +50,7 @@ class GSGenerator:
         # Process audio sources - ALL audio types for GS
         processed_audio_sources = {}
         for audio_type, audio_path in audio_sources.items():
-            if audio_path and audio_type in ['mic1', 'mic2', 'mic3', 'mic4', 'screen', 'game', 'sound_effects', 'bluetooth']:
+            if audio_path and audio_type in ['mic1', 'mic2', 'mic3', 'mic4', 'screen', 'game', 'soundEffects', 'bluetooth']:
                 try:
                     processed_path, duration, sample_rate, channels = \
                         self.audio_processor.process_audio_source(audio_path, apply_audio_sync, audio_type=audio_type)
@@ -263,19 +264,22 @@ class GSGenerator:
         
         # Add audio tracks based on available sources
         # NOTE: For GS compound, ALL audio tracks are DISABLED by default
+        # Exception: Enable master audio if no external audio sources (master-only mode)
         audio_config = layout_config.get('audio', {})
+        enable_master_audio = len(audio_sources) == 0
+        if enable_master_audio:
+            print("  Master-only mode: enabling master audio in GS compound")
 
-        # Add master audio clip FIRST at lane -1 (disabled)
+        # Add master audio clip FIRST at lane -1
         master_audio_clip = self.xml_utils.create_audio_only_clip(
             original_name,
             original_asset_id,
             "-1",  # Always lane -1
             "0s",
             original_duration,
-            enabled=False  # Disabled for GS
+            enabled=enable_master_audio  # Enable if no external audio sources
         )
         gap.append(master_audio_clip)
-        pass  # 0
 
         # Start mic audio tracks at lane -2 (below master at -1)
         current_audio_lane = -2
@@ -335,15 +339,15 @@ class GSGenerator:
             current_audio_lane -= 1
 
         # Add sound effects if present - DISABLED
-        if 'sound_effects' in audio_assets:
-            audio_info = processed_audio_sources['sound_effects']
+        if 'soundEffects' in audio_assets:
+            audio_info = processed_audio_sources['soundEffects']
             sfx_clip = self.xml_utils.create_clip_with_audio_effects(
                 Path(audio_info['path']).stem,
-                audio_assets['sound_effects'],
+                audio_assets['soundEffects'],
                 str(current_audio_lane),
                 "0s",
                 audio_info['duration'],
-                'sound_effects',  # Pass audio type for effects
+                'soundEffects',  # Pass audio type for effects
                 resources,        # Pass resources for effect creation
                 enabled=False     # DISABLED for GS
             )
@@ -396,7 +400,16 @@ class GSGenerator:
                         'scale': 0.5  # 50% - perfect quadrant
                     }
                 }
-                pass  # 0
+            elif use_downloaded_stream:
+                # Stream recovery mode - extract camera from downloaded stream layout (crop only)
+                camera_asset = original_asset_id
+                camera_name_for_clip = f"{original_name} - Camera"
+                print("  Stream recovery mode: using stream layout transforms for GS camera")
+                camera_transforms = {
+                    'crop': [2.59421, 60.72, 108.595, 2.63889],
+                    'crop_mode': 'trim',
+                    'transform': None  # No position/scale for stream recovery
+                }
             else:
                 # Use master video - WITH CROPPING
                 camera_asset = original_asset_id
@@ -409,7 +422,6 @@ class GSGenerator:
                         'scale': 0.800813
                     }
                 }
-                pass  # 0
 
             camera_clip = self.xml_utils.create_video_clip(
                 camera_name_for_clip,
@@ -465,7 +477,16 @@ class GSGenerator:
                         'scale': 0.5  # 50% - perfect quadrant
                     }
                 }
-                pass  # 0
+            elif use_downloaded_stream:
+                # Stream recovery mode - extract game from downloaded stream layout (crop only)
+                game_video_asset = original_asset_id
+                game_name_for_clip = f"{original_name} - Game"
+                print("  Stream recovery mode: using stream layout transforms for GS game")
+                game_transforms = {
+                    'crop': [71.726, 40.0403, 2.72859, 2.70707],
+                    'crop_mode': 'trim',
+                    'transform': None  # No position/scale for stream recovery
+                }
             else:
                 # Use master video - WITH CROPPING
                 game_video_asset = original_asset_id
@@ -478,7 +499,6 @@ class GSGenerator:
                         'scale': 1.23
                     }
                 }
-                pass  # 0
 
             game_clip = self.xml_utils.create_video_clip(
                 game_name_for_clip,
@@ -534,7 +554,16 @@ class GSGenerator:
                         'scale': 0.5  # 50% - perfect quadrant
                     }
                 }
-                pass  # 0
+            elif use_downloaded_stream:
+                # Stream recovery mode - extract screen from downloaded stream layout (crop only)
+                screen_video_asset = original_asset_id
+                screen_name_for_clip = f"{original_name} - Screen"
+                print("  Stream recovery mode: using stream layout transforms for GS screen")
+                screen_transforms = {
+                    'crop': [2.65426, 2.76385, 75.6559, 42.0927],
+                    'crop_mode': 'trim',
+                    'transform': None  # No position/scale for stream recovery
+                }
             else:
                 # Use master video - WITH CROPPING
                 screen_video_asset = original_asset_id
@@ -547,7 +576,6 @@ class GSGenerator:
                         'scale': 1.17903
                     }
                 }
-                pass  # 0
 
             screen_clip = self.xml_utils.create_video_clip(
                 screen_name_for_clip,
@@ -712,10 +740,10 @@ class GSGenerator:
                 else:
                     print(f"Warning: Game audio file not found: {game_path}")
             
-            if args.sound_effects:
-                sfx_path = Path(args.sound_effects)
+            if args.soundEffects:
+                sfx_path = Path(args.soundEffects)
                 if sfx_path.exists():
-                    audio_sources['sound_effects'] = str(sfx_path)
+                    audio_sources['soundEffects'] = str(sfx_path)
                     pass  # 0
                 else:
                     print(f"Warning: Sound effects file not found: {sfx_path}")

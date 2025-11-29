@@ -21,8 +21,11 @@ export type AudioSourceType =
   | 'bluetooth'
   | 'mic1Sb'
   | 'mic2Sb'
+  | 'mic3Sb'
+  | 'mic4Sb'
   | 'screenSb'
   | 'desktopSb'
+  | 'gameSb'
   | 'bluetoothSb'
   | 'soundEffectsSb';
 
@@ -83,8 +86,11 @@ export const AUDIO_SOURCE_LABELS: { [key in AudioSourceType]: string } = {
   bluetooth: 'Bluetooth Audio',
   mic1Sb: 'Mic 1 (Soundboard)',
   mic2Sb: 'Mic 2 (Soundboard)',
+  mic3Sb: 'Mic 3 (Soundboard)',
+  mic4Sb: 'Mic 4 (Soundboard)',
   screenSb: 'Screen Audio (Soundboard)',
   desktopSb: 'Desktop Audio (Soundboard)',
+  gameSb: 'Game Audio (Soundboard)',
   bluetoothSb: 'Bluetooth (Soundboard)',
   soundEffectsSb: 'Sound Effects (Soundboard)'
 };

@@ -7,6 +7,7 @@ interface AssetPath {
   currentPath: string;
   isValid: boolean;
   category: string;
+  expectedFilename: string;  // The filename to search for when relinking
 }
 
 @Component({
@@ -53,7 +54,8 @@ export class RelinkingComponent implements OnInit {
           displayName: 'Space Background',
           currentPath: backgrounds?.space_background || '',
           isValid: false,
-          category: 'backgrounds'
+          category: 'backgrounds',
+          expectedFilename: 'earth background.png'
         },
 
           // CAM DC borders
@@ -62,14 +64,16 @@ export class RelinkingComponent implements OnInit {
             displayName: 'Top Left (Cam 1)',
             currentPath: borders?.cam_dc?.top_left || '',
             isValid: false,
-            category: 'cam_dc_borders'
+            category: 'cam_dc_borders',
+            expectedFilename: 'cam dc top left.png'
           },
           {
             key: 'cam_dc_bottom_right',
             displayName: 'Bottom Right (Cam 2)',
             currentPath: borders?.cam_dc?.bottom_right || '',
             isValid: false,
-            category: 'cam_dc_borders'
+            category: 'cam_dc_borders',
+            expectedFilename: 'cam dc bottom right.png'
           },
 
           // GS borders
@@ -78,21 +82,24 @@ export class RelinkingComponent implements OnInit {
             displayName: 'Bottom Left (Cam 1)',
             currentPath: borders?.gs?.bottom_left || '',
             isValid: false,
-            category: 'gs_borders'
+            category: 'gs_borders',
+            expectedFilename: 'gs bottom left.png'
           },
           {
             key: 'gs_bottom_right',
             displayName: 'Bottom Right (Game)',
             currentPath: borders?.gs?.bottom_right || '',
             isValid: false,
-            category: 'gs_borders'
+            category: 'gs_borders',
+            expectedFilename: 'gs bottom right.png'
           },
           {
             key: 'gs_top_left',
             displayName: 'Top Left (Screen)',
             currentPath: borders?.gs?.top_left || '',
             isValid: false,
-            category: 'gs_borders'
+            category: 'gs_borders',
+            expectedFilename: 'gs top left.png'
           },
 
           // GS DC borders
@@ -101,28 +108,32 @@ export class RelinkingComponent implements OnInit {
             displayName: 'Bottom Left (Cam 1)',
             currentPath: borders?.gs_dc?.bottom_left || '',
             isValid: false,
-            category: 'gs_dc_borders'
+            category: 'gs_dc_borders',
+            expectedFilename: 'gs dc bottom left.png'
           },
           {
             key: 'gs_dc_bottom_right',
             displayName: 'Bottom Right (Game)',
             currentPath: borders?.gs_dc?.bottom_right || '',
             isValid: false,
-            category: 'gs_dc_borders'
+            category: 'gs_dc_borders',
+            expectedFilename: 'gs dc bottom right.png'
           },
           {
             key: 'gs_dc_top_left',
             displayName: 'Top Left (Screen)',
             currentPath: borders?.gs_dc?.top_left || '',
             isValid: false,
-            category: 'gs_dc_borders'
+            category: 'gs_dc_borders',
+            expectedFilename: 'gs dc top left.png'
           },
           {
             key: 'gs_dc_top_right',
             displayName: 'Top Right (Cam 2)',
             currentPath: borders?.gs_dc?.top_right || '',
             isValid: false,
-            category: 'gs_dc_borders'
+            category: 'gs_dc_borders',
+            expectedFilename: 'gs dc top right.png'
           },
 
           // SSB borders
@@ -131,14 +142,16 @@ export class RelinkingComponent implements OnInit {
             displayName: 'Top Left (Cam)',
             currentPath: borders?.ssb?.top_left || '',
             isValid: false,
-            category: 'ssb_borders'
+            category: 'ssb_borders',
+            expectedFilename: 'ssb top left.png'
           },
           {
             key: 'ssb_bottom_right',
             displayName: 'Bottom Right (Screen)',
             currentPath: borders?.ssb?.bottom_right || '',
             isValid: false,
-            category: 'ssb_borders'
+            category: 'ssb_borders',
+            expectedFilename: 'ssb bottom right.png'
           },
 
           // SSB DC borders
@@ -147,21 +160,24 @@ export class RelinkingComponent implements OnInit {
             displayName: 'Top Left (Cam 1)',
             currentPath: borders?.ssb_dc?.top_left || '',
             isValid: false,
-            category: 'ssb_dc_borders'
+            category: 'ssb_dc_borders',
+            expectedFilename: 'ssb dc top left.png'
           },
           {
             key: 'ssb_dc_bottom_left',
             displayName: 'Bottom Left (Cam 2)',
             currentPath: borders?.ssb_dc?.bottom_left || '',
             isValid: false,
-            category: 'ssb_dc_borders'
+            category: 'ssb_dc_borders',
+            expectedFilename: 'ssb dc bottom left.png'
           },
           {
             key: 'ssb_dc_bottom_right',
             displayName: 'Bottom Right (Screen)',
             currentPath: borders?.ssb_dc?.bottom_right || '',
             isValid: false,
-            category: 'ssb_dc_borders'
+            category: 'ssb_dc_borders',
+            expectedFilename: 'ssb dc bottom right.png'
           }
         ];
 
@@ -205,9 +221,9 @@ export class RelinkingComponent implements OnInit {
     this.searchProgress = 'Searching recursively for asset files...';
 
     try {
-      // Collect all filenames we're searching for
+      // Collect all expected filenames we're searching for
       const filenames = this.assets
-        .map(asset => this.getFilename(asset.currentPath))
+        .map(asset => asset.expectedFilename)
         .filter(filename => filename !== '');
 
       console.log('Searching for files:', filenames);
@@ -226,7 +242,7 @@ export class RelinkingComponent implements OnInit {
 
         // Update asset paths with found files
         for (const asset of this.assets) {
-          const filename = this.getFilename(asset.currentPath);
+          const filename = asset.expectedFilename;
           if (filename && result.foundFiles[filename]) {
             asset.currentPath = result.foundFiles[filename];
             asset.isValid = true;

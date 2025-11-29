@@ -209,51 +209,40 @@ function setupFileSystemHandlers(windowService: WindowService): void {
       const masterFilename = path.basename(masterVideoPath, path.extname(masterVideoPath));
 
       // Extract session/prefix from master video filename
-      // Try multiple patterns:
-      // 1. Date-based: YYYY-MM-DD-N (e.g., 2024-01-15-1 master)
-      // 2. Date-based: YYYY-MM-DD-label (e.g., 2024-01-15-morning master)
-      // 3. Generic prefix: Extract everything before " master" or use full name
+      // Extract everything before " master" (e.g., "2025-11-23 4 master" -> "2025-11-23 4")
       let session = '';
-      const dateMatch = masterFilename.match(/^(\d{4}-\d{2}-\d{2}(?:-\d+|-[a-zA-Z0-9]+)?)/);
-      if (dateMatch) {
-        // Has date prefix
-        session = dateMatch[1];
-        log.info(`Extracted date-based session: ${session} from master video: ${masterFilename}`);
+      const masterWordMatch = masterFilename.match(/^(.+?)\s+master$/i);
+      if (masterWordMatch) {
+        session = masterWordMatch[1].trim();
+        log.info(`Extracted session: "${session}" from master video: ${masterFilename}`);
       } else {
-        // No date - use generic prefix (everything before "master" or full filename)
-        const masterWordMatch = masterFilename.match(/^(.+?)\s+master$/i);
-        if (masterWordMatch) {
-          session = masterWordMatch[1].trim();
-          log.info(`Extracted generic session: ${session} from master video: ${masterFilename}`);
-        } else {
-          // Use the full filename as session prefix
-          session = masterFilename;
-          log.info(`Using full filename as session: ${session} from master video: ${masterFilename}`);
-        }
+        // No " master" suffix - use the full filename
+        session = masterFilename;
+        log.info(`Using full filename as session: "${session}" from master video: ${masterFilename}`);
       }
 
       // Escape special regex characters in session for safe pattern matching
       const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const escapedSession = escapeRegex(session);
 
-      // Audio file patterns to match
+      // Audio file patterns to match (keys use camelCase to match frontend types)
       const audioPatterns: { [key: string]: RegExp } = {
-        'mic-1': new RegExp(`^${escapedSession}.*(?:mic\\s*1|mic_1|mic1).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
-        'mic-2': new RegExp(`^${escapedSession}.*(?:mic\\s*2|mic_2|mic2).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
-        'mic-3': new RegExp(`^${escapedSession}.*(?:mic\\s*3|mic_3|mic3).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
-        'mic-4': new RegExp(`^${escapedSession}.*(?:mic\\s*4|mic_4|mic4).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'mic1': new RegExp(`^${escapedSession}.*(?:mic\\s*1|mic_1|mic1).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'mic2': new RegExp(`^${escapedSession}.*(?:mic\\s*2|mic_2|mic2).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'mic3': new RegExp(`^${escapedSession}.*(?:mic\\s*3|mic_3|mic3).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'mic4': new RegExp(`^${escapedSession}.*(?:mic\\s*4|mic_4|mic4).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
         'screen': new RegExp(`^${escapedSession}.*(?:screen|desktop).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
         'game': new RegExp(`^${escapedSession}.*(?:game|gameplay).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
-        'sound-effects': new RegExp(`^${escapedSession}.*(?:sound[\\s_-]?effects?|sfx).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'soundEffects': new RegExp(`^${escapedSession}.*(?:sound[\\s_-]?effects?|sfx).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
         'bluetooth': new RegExp(`^${escapedSession}.*(?:bluetooth|bt).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i')
       };
 
-      // Video file patterns to match (only capture files, not share/output files)
+      // Video file patterns to match (keys use camelCase to match frontend types)
       const videoPatterns: { [key: string]: RegExp } = {
-        'cam': new RegExp(`^${escapedSession}\\s+cam\\.(mp4|mov|avi|mkv)$`, 'i'),
-        'cam-2': new RegExp(`^${escapedSession}\\s+cam\\s*2\\.(mp4|mov|avi|mkv)$`, 'i'),
-        'screen-share': new RegExp(`^${escapedSession}\\s+screen\\s*capture\\.(mp4|mov|avi|mkv)$`, 'i'),
-        'game-share': new RegExp(`^${escapedSession}\\s+game\\s*capture\\.(mp4|mov|avi|mkv)$`, 'i')
+        'cam1': new RegExp(`^${escapedSession}\\s+cam\\.(mp4|mov|avi|mkv)$`, 'i'),
+        'cam2': new RegExp(`^${escapedSession}\\s+cam\\s*2\\.(mp4|mov|avi|mkv)$`, 'i'),
+        'screenVideo': new RegExp(`^${escapedSession}\\s+screen\\s*capture\\.(mp4|mov|avi|mkv)$`, 'i'),
+        'gameVideo': new RegExp(`^${escapedSession}\\s+game\\s*capture\\.(mp4|mov|avi|mkv)$`, 'i')
       };
 
       // Scan directory for matching audio and video files
@@ -313,23 +302,11 @@ function setupFileSystemHandlers(windowService: WindowService): void {
           log.info(`Detected ${audioType} (VMix): ${path.basename(nonSbFiles[0])}`);
         }
 
-        // Assign soundboard files as separate type
+        // Assign soundboard files as separate type (camelCase with Sb suffix)
         if (sbFiles.length > 0) {
-          // Map audio types to soundboard types
-          const sbTypeMap: { [key: string]: string } = {
-            'mic-1': 'mic-1-sb',
-            'mic-2': 'mic-2-sb',
-            'screen': 'screen-sb',
-            'game': 'game-sb',
-            'sound-effects': 'sound-effects-sb',
-            'bluetooth': 'bluetooth-sb'
-          };
-
-          const sbType = sbTypeMap[audioType];
-          if (sbType) {
-            detectedAudio[sbType] = sbFiles[0];
-            log.info(`Detected ${sbType} (Soundboard): ${path.basename(sbFiles[0])}`);
-          }
+          const sbType = audioType + 'Sb';  // e.g., mic1 -> mic1Sb, screen -> screenSb
+          detectedAudio[sbType] = sbFiles[0];
+          log.info(`Detected ${sbType} (Soundboard): ${path.basename(sbFiles[0])}`);
         }
       }
 
@@ -343,8 +320,8 @@ function setupFileSystemHandlers(windowService: WindowService): void {
           const basename = path.basename(item);
           // Match: " sb.", "_sb.", "-sb.", " sb ", "_sb ", "-sb "
           if (basename.match(/[\s_-]sb[\s\.]/i) || basename.match(/[\s_-]sb\.(wav|mp3|aac|flac|ogg|m4a)$/i)) {
-            detectedAudio['desktop-sb'] = itemPath;
-            log.info(`Detected desktop-sb (Soundboard): ${basename}`);
+            detectedAudio['desktopSb'] = itemPath;
+            log.info(`Detected desktopSb (Soundboard): ${basename}`);
           }
         }
       }
@@ -714,14 +691,53 @@ function setupConfigHandlers(): void {
   const yaml = require('js-yaml');
   const { app } = require('electron');
 
-  // Determine config path
+  // Get user-writable config directory
+  const getUserConfigDir = () => {
+    return path.join(app.getPath('userData'), 'config');
+  };
+
+  // Get bundled config path (read-only, in app resources)
+  const getBundledConfigPath = (filename: string) => {
+    if (app.isPackaged) {
+      return path.join(process.resourcesPath, 'config', filename);
+    } else {
+      const projectRoot = path.join(__dirname, '../../../../');
+      return path.join(projectRoot, 'config', filename);
+    }
+  };
+
+  // Ensure user config exists (copy from bundled if not)
+  const ensureUserConfig = (filename: string): string => {
+    const userConfigDir = getUserConfigDir();
+    const userConfigPath = path.join(userConfigDir, filename);
+    const bundledConfigPath = getBundledConfigPath(filename);
+
+    // Create user config directory if needed
+    if (!fs.existsSync(userConfigDir)) {
+      fs.mkdirSync(userConfigDir, { recursive: true });
+      log.info('Created user config directory:', userConfigDir);
+    }
+
+    // Copy bundled config to user directory if it doesn't exist
+    if (!fs.existsSync(userConfigPath)) {
+      if (fs.existsSync(bundledConfigPath)) {
+        fs.copyFileSync(bundledConfigPath, userConfigPath);
+        log.info(`Copied bundled config to user directory: ${filename}`);
+      } else {
+        log.warn(`Bundled config not found: ${bundledConfigPath}`);
+      }
+    }
+
+    return userConfigPath;
+  };
+
+  // Determine config path - use user-writable location for packaged apps
   const getConfigPath = () => {
     if (app.isPackaged) {
-      // In packaged app, use resources path
-      return path.join(process.resourcesPath, 'config/autostudio_config.yaml');
+      // In packaged app, use user data directory (writable)
+      return ensureUserConfig('autostudio_config.yaml');
     } else {
-      // In development, find project root
-      // __dirname is dist-electron/main/electron/ipc
+      // In development, use project root
       const projectRoot = path.join(__dirname, '../../../../');
       return path.join(projectRoot, 'config/autostudio_config.yaml');
     }
@@ -796,7 +812,9 @@ function setupConfigHandlers(): void {
   // Get drift corrections configuration
   ipcMain.handle('get-drift-corrections', async () => {
     try {
-      const configPath = path.join(__dirname, '../../../../config/drift_corrections.json');
+      const configPath = app.isPackaged
+        ? ensureUserConfig('drift_corrections.json')
+        : path.join(__dirname, '../../../../config/drift_corrections.json');
       log.info('Loading drift corrections from:', configPath);
 
       if (!fs.existsSync(configPath)) {
@@ -859,7 +877,9 @@ function setupConfigHandlers(): void {
   // Save drift corrections configuration
   ipcMain.handle('save-drift-corrections', async (event, config: any) => {
     try {
-      const configPath = path.join(__dirname, '../../../../config/drift_corrections.json');
+      const configPath = app.isPackaged
+        ? ensureUserConfig('drift_corrections.json')
+        : path.join(__dirname, '../../../../config/drift_corrections.json');
       log.info('Saving drift corrections to:', configPath);
 
       // Ensure directory exists

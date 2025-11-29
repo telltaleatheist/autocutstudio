@@ -69,13 +69,13 @@
       </div>
 
       <!-- Dependency Status Banner - Subtle Notification -->
-      <div class="dependency-notification" *ngIf="showDependencyBanner">
+      <div class="dependency-notification compact" *ngIf="showDependencyBanner">
         <div class="notification-content">
           <span class="notification-icon">{{ pythonPackagesInstalling ? '⏳' : 'ℹ️' }}</span>
           <span class="notification-text">
-            <span *ngIf="pythonPackagesInstalling">Installing Python packages in background...</span>
+            <span *ngIf="pythonPackagesInstalling">Installing Python packages...</span>
             <span *ngIf="!pythonPackagesInstalling && missingSystemDeps.length > 0">
-              Some dependencies need to be installed manually. <a href="#" (click)="$event.preventDefault(); dismissDependencyBanner()" class="notification-link">Learn more</a>
+              Missing: {{ missingSystemDeps.join(', ') }}
             </span>
           </span>
           <button class="notification-close" (click)="dismissDependencyBanner()" title="Dismiss">×</button>

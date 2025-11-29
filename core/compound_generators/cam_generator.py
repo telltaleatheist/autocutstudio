@@ -19,16 +19,18 @@ class CamGenerator:
     
     def generate_cam_compound(self, compound_xml_path: str, audio_sources: Dict[str, str],
                             mode: str = "solo", output_path: Optional[str] = None,
-                            apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None) -> str:
+                            apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None,
+                            use_downloaded_stream: bool = False) -> str:
         """Generate cam compound clip from existing compound clip XML.
 
         Args:
             compound_xml_path: Path to existing compound XML file
-            audio_sources: Dictionary mapping audio types to file paths (e.g., {'mic1': '/path/to/mic.mp3', 'sound_effects': '/path/to/sfx.wav'})
+            audio_sources: Dictionary mapping audio types to file paths (e.g., {'mic1': '/path/to/mic.mp3', 'soundEffects': '/path/to/sfx.wav'})
             mode: Layout mode ('solo' or 'dual')
             output_path: Optional custom output path
             apply_audio_sync: Whether to apply 29.97fps sync correction
             video_sources: Optional dictionary of video source paths (e.g., {'cam1': '/path/to/cam.mp4'})
+            use_downloaded_stream: Whether to use stream recovery transforms for downloaded stream masters
         """
         video_sources = video_sources or {}
         
@@ -45,7 +47,7 @@ class CamGenerator:
         
         # Process audio sources - handle all mic types and sound effects
         processed_audio_sources = {}
-        audio_sources_config = layout_config.get('audio_sources', ['mic1', 'mic2', 'mic3', 'mic4', 'sound_effects'])
+        audio_sources_config = layout_config.get('audio_sources', ['mic1', 'mic2', 'mic3', 'mic4', 'soundEffects'])
         
         for audio_type in audio_sources_config:
             if audio_type in audio_sources and audio_sources[audio_type]:
@@ -211,17 +213,20 @@ class CamGenerator:
             original_duration  # Span full duration of master clip
         )
         
-        # Add master audio clip FIRST at lane -1 (disabled, for reference)
+        # Add master audio clip FIRST at lane -1
+        # Enable master audio if no external audio sources provided (master-only mode)
+        enable_master_audio = len(audio_sources) == 0
+        if enable_master_audio:
+            print("  Master-only mode: enabling master audio in CAM compound")
         master_audio_clip = self.xml_utils.create_audio_only_clip(
             original_name,
             original_asset_id,
             "-1",  # Always lane -1
             "0s",  # Start at beginning of gap
             original_duration,
-            enabled=False  # Disabled by default for Cam
+            enabled=enable_master_audio  # Enable if no external audio sources
         )
         gap.append(master_audio_clip)
-        pass  # 0
 
         # Add audio sources to gap structure (negative lanes starting at -2)
         audio_lane = -2  # Start with lane -2 for first audio source (below master at -1)
@@ -283,9 +288,22 @@ class CamGenerator:
                 camera_asset = cam1_asset_id
                 camera_name_for_clip = cam1_name
                 transforms = None  # No transforms for individual video
-                pass  # 0
+            elif use_downloaded_stream:
+                # Stream recovery mode - extract camera from downloaded stream layout
+                # Uses fixed transforms to isolate camera portion from streaming layout
+                camera_asset = original_asset_id
+                camera_name_for_clip = original_name
+                print("  Stream recovery mode: using stream layout transforms for CAM")
+                transforms = {
+                    'crop': [2.59421, 60.72, 108.595, 2.63889],
+                    'crop_mode': 'trim',
+                    'transform': {
+                        'position': [145.098, 79.4729],
+                        'scale': 2.7345
+                    }
+                }
             else:
-                # Use master video - WITH CROPPING AND TRANSFORMS
+                # Use master video - WITH CROPPING AND TRANSFORMS from config
                 camera_asset = original_asset_id
                 camera_name_for_clip = original_name
                 transforms = {
@@ -296,7 +314,6 @@ class CamGenerator:
                         'scale': camera_config.get('scale', 1.0)
                     }
                 }
-                pass  # 0
 
             video_lane = "2" if background_asset_key else "1"  # Lane 2 if background exists, otherwise lane 1
 
@@ -455,10 +472,10 @@ class CamGenerator:
                 else:
                     print(f"Warning: Mic4 audio file not found: {mic4_path}")
             
-            if args.sound_effects:
-                sfx_path = Path(args.sound_effects)
+            if args.soundEffects:
+                sfx_path = Path(args.soundEffects)
                 if sfx_path.exists():
-                    audio_sources['sound_effects'] = str(sfx_path)
+                    audio_sources['soundEffects'] = str(sfx_path)
                     pass  # 0
                 else:
                     print(f"Warning: Sound effects file not found: {sfx_path}")

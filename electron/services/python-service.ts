@@ -2,6 +2,7 @@
 import { spawn, ChildProcess } from 'child_process';
 import * as log from 'electron-log';
 import { AppConfig } from '../config/app-config';
+import { BinaryResolver } from './binary-resolver';
 import * as path from 'path';
 
 export interface PythonExecutionOptions {
@@ -20,75 +21,42 @@ export interface WorkflowExecutionOptions {
   onComplete?: (code: number, result?: any) => void;
 }
 
-// Common installation paths (fallback when bundled Python not found)
-const COMMON_PATHS = [
-  '/usr/local/bin',
-  '/opt/homebrew/bin',
-  '/usr/bin',
-  '/bin',
-  '/usr/sbin',
-  '/sbin',
-  process.env.HOME + '/Library/Python/3.11/bin',
-  process.env.HOME + '/Library/Python/3.10/bin',
-  process.env.HOME + '/Library/Python/3.9/bin',
-  process.env.HOME + '/.local/bin',
-].filter(Boolean).join(':');
-
 /**
  * Service to execute Python CLI commands
  */
 export class PythonService {
   private runningProcesses: Map<string, ChildProcess> = new Map();
-  private bundledPythonPath: string | null = null;
+  private binaryResolver: BinaryResolver;
 
   constructor() {
-    this.findBundledPython();
+    this.binaryResolver = new BinaryResolver();
+    this.logPythonInfo();
   }
 
   /**
-   * Find Python - prefer conda Python for audio sync compatibility
+   * Log Python information for debugging
    */
-  private findBundledPython(): void {
-    // Prefer conda Python 3.9-3.13 for audio sync (librosa compatibility)
-    const condaPython = '/opt/homebrew/Caskroom/miniconda/base/envs/autocutstudio/bin/python3';
-    const fs = require('fs');
+  private logPythonInfo(): void {
+    const pythonPath = this.binaryResolver.getPythonPath();
+    log.info('PythonService initialized');
+    log.info(`Python path: ${pythonPath}`);
 
-    try {
-      if (fs.existsSync(condaPython)) {
-        this.bundledPythonPath = condaPython;
-        log.info('Using conda Python for audio sync support:', condaPython);
-        return;
-      }
-    } catch (e) {
-      log.warn('Conda Python not found, falling back to system Python');
-    }
-
-    // Fall back to system Python
-    this.bundledPythonPath = null;
-    log.info('Using system Python from PATH (advanced sync may not be available)');
+    const binariesCheck = this.binaryResolver.checkBinaries();
+    log.info('Binaries check:', binariesCheck);
   }
 
   /**
-   * Get the Python path to use (conda or system)
+   * Get the Python path to use
    */
   private getPythonPath(): string {
-    return this.bundledPythonPath || 'python3';
+    return this.binaryResolver.getPythonPath();
   }
 
   /**
    * Get the Python environment configuration
    */
   private getPythonEnv(): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      PYTHONUNBUFFERED: '1', // Ensure real-time output
-      PATH: `${COMMON_PATHS}:${process.env.PATH || ''}`,
-      PYTHONPATH: AppConfig.resourcesPath
-    };
-
-    log.info('Using system Python with PATH:', env.PATH);
-
-    return env;
+    return this.binaryResolver.getPythonEnv();
   }
 
   /**

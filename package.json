@@ -18,16 +18,29 @@
     "electron:dev": "npm run build:all && cross-env NODE_ENV=development electron .",
     "dev": "npm run electron:dev",
     "start": "npm run clean:python && npm run build:all && electron .",
-    "package": "npm run clean && npm run build:all && electron-builder build",
-    "package:mac": "npm run clean && npm run build:all && electron-builder --mac",
-    "package:mac:arm64": "npm run clean && npm run build:all && electron-builder --mac --arm64",
-    "package:mac:x64": "npm run clean && npm run build:all && electron-builder --mac --x64",
-    "package:mac:both": "npm run package:mac:arm64 && npm run package:mac:x64",
-    "package:mac:universal": "npm run clean && npm run build:all && electron-builder --mac --universal",
-    "package:win": "npm run clean && npm run build:all && electron-builder --win",
-    "package:win:x64": "npm run clean && npm run build:all && electron-builder --win --x64",
-    "package:linux": "npm run clean && npm run build:all && electron-builder --linux",
-    "package:all": "npm run clean && npm run build:all && electron-builder --mac --win --linux"
+    "prepare:binaries": "chmod +x scripts/*.sh && ./scripts/prepare-binaries.sh",
+    "prepare:python": "chmod +x scripts/*.sh && ./scripts/prepare-python.sh",
+    "download:binaries:mac-arm64": "chmod +x scripts/*.sh && ./scripts/download-binaries.sh darwin-arm64",
+    "download:binaries:mac-x64": "chmod +x scripts/*.sh && ./scripts/download-binaries.sh darwin-x64",
+    "download:binaries:win-x64": "chmod +x scripts/*.sh && ./scripts/download-binaries.sh win32-x64",
+    "download:binaries:linux-x64": "chmod +x scripts/*.sh && ./scripts/download-binaries.sh linux-x64",
+    "download:binaries:all": "chmod +x scripts/*.sh && ./scripts/download-binaries.sh all",
+    "verify:mac-arm64": "chmod +x scripts/*.sh && ./scripts/verify-binaries.sh darwin-arm64",
+    "verify:mac-x64": "chmod +x scripts/*.sh && ./scripts/verify-binaries.sh darwin-x64",
+    "verify:win-x64": "chmod +x scripts/*.sh && ./scripts/verify-binaries.sh win32-x64",
+    "verify:linux-x64": "chmod +x scripts/*.sh && ./scripts/verify-binaries.sh linux-x64",
+    "package:mac-arm64": "npm run verify:mac-arm64 && npm run clean && npm run build:all && electron-builder --mac --arm64",
+    "package:mac-x64": "npm run verify:mac-x64 && npm run clean && npm run build:all && electron-builder --mac --x64",
+    "package:mac": "npm run verify:mac-arm64 && npm run verify:mac-x64 && npm run clean && npm run build:all && electron-builder --mac --arm64 --x64",
+    "package:win-x64": "npm run verify:win-x64 && npm run clean && npm run build:all && electron-builder --win --x64",
+    "package:linux-x64": "npm run verify:linux-x64 && npm run clean && npm run build:all && electron-builder --linux --x64",
+    "package:all": "npm run verify:mac-arm64 && npm run verify:mac-x64 && npm run verify:win-x64 && npm run verify:linux-x64 && npm run clean && npm run build:all && electron-builder --mac --win --linux",
+    "clean:package:mac-arm64": "npm run download:binaries:mac-arm64 && npm run package:mac-arm64",
+    "clean:package:mac-x64": "npm run download:binaries:mac-x64 && npm run package:mac-x64",
+    "clean:package:mac": "npm run download:binaries:mac-arm64 && npm run download:binaries:mac-x64 && npm run package:mac",
+    "clean:package:win-x64": "npm run download:binaries:win-x64 && npm run package:win-x64",
+    "clean:package:linux-x64": "npm run download:binaries:linux-x64 && npm run package:linux-x64",
+    "clean:package:all": "npm run download:binaries:all && npm run package:all"
   },
   "keywords": [
     "video",
@@ -80,40 +93,42 @@
       {
         "from": "environment.yml",
         "to": "environment.yml"
+      },
+      {
+        "from": "binaries/${os}-${arch}",
+        "to": "binaries",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "python/${os}-${arch}",
+        "to": "python",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "files": [
       "dist-electron/main/**/*",
       "!dist-electron/main/**/*.map",
       "frontend/dist/autocutstudio-frontend/**/*",
-      "core/**/*.py",
-      "cli/**/*.py",
-      "config/**/*.yaml",
-      "environment.yml",
       "node_modules/**/*",
       "!**/node_modules/**/test/**",
       "!**/node_modules/**/tests/**",
       "!**/node_modules/**/*.md",
       "!**/node_modules/**/*.d.ts",
-      "!**/node_modules/**/*.map"
-    ],
-    "asarUnpack": [
-      "core/**",
-      "cli/**",
-      "config/**"
+      "!**/node_modules/**/*.map",
+      "!core/**",
+      "!cli/**",
+      "!config/**",
+      "!binaries/**",
+      "!python/**"
     ],
     "mac": {
       "category": "public.app-category.video",
       "icon": "build/icons/icon.icns",
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "arm64",
-            "x64"
-          ]
-        }
-      ],
+      "target": "dmg",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "extendInfo": {

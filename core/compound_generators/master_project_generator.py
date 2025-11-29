@@ -430,8 +430,16 @@ class MasterProjectGenerator:
                 resources_elem.append(resource)
 
         # Create library structure
+        # Derive library location from output path - use parent directory of output XML
         library = ET.SubElement(root, 'library')
-        library.set('location', f'file:///Volumes/Callisto/Movies/FCPX/{original_name}/{original_name}.fcpbundle/')
+        if output_path:
+            output_parent = Path(output_path).parent.parent  # Go up from /files/ to date folder
+            library_location = f'file://{output_parent}/{original_name}.fcpbundle/'
+        else:
+            # Fallback: use input file's location
+            cam_parent = Path(cam_xml_path).parent.parent
+            library_location = f'file://{cam_parent}/{original_name}.fcpbundle/'
+        library.set('location', library_location)
 
         event = ET.SubElement(library, 'event')
         event.set('name', 'Auto-Editor Media Group')
@@ -997,8 +1005,16 @@ class MasterProjectGenerator:
                 resources_elem.append(resource)
 
         # Create library structure with ONE event
+        # Derive library location from output path - use parent directory of output XML
         library = ET.SubElement(root, 'library')
-        library.set('location', f'file:///Volumes/Callisto/Movies/FCPX/{original_name}/{original_name}.fcpbundle/')
+        if output_path:
+            output_parent = Path(output_path).parent.parent  # Go up from /files/ to date folder
+            library_location = f'file://{output_parent}/{original_name}.fcpbundle/'
+        else:
+            # Fallback: use input file's location
+            cam_parent = Path(cam_xml_path).parent.parent
+            library_location = f'file://{cam_parent}/{original_name}.fcpbundle/'
+        library.set('location', library_location)
 
         event = ET.SubElement(library, 'event')
         event.set('name', 'Auto-Editor Media Group')

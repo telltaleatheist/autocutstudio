@@ -26,7 +26,8 @@ class HybridCompoundGenerator:
 
     def generate_hybrid_compounds(self, dc_cam_path: str, dc_gs_path: str, dc_ssb_path: str,
                                    cut_master_video_path: str,
-                                   output_dir: str) -> Tuple[str, str, str]:
+                                   output_dir: str,
+                                   use_downloaded_stream: bool = False) -> Tuple[str, str, str]:
         """
         Generate hybrid compound clips that adapt based on camera 2 activity.
 
@@ -38,6 +39,7 @@ class HybridCompoundGenerator:
             dc_ssb_path: Path to DC SSB compound XML
             cut_master_video_path: Path to the cut master video (for detection)
             output_dir: Directory to save hybrid compounds
+            use_downloaded_stream: Whether to use stream-specific cam2 detection region
 
         Returns:
             Tuple of (hybrid_cam_path, hybrid_gs_path, hybrid_ssb_path)
@@ -49,8 +51,10 @@ class HybridCompoundGenerator:
             raise RuntimeError("Cannot generate hybrid compounds: Camera detection not available (numpy not installed)")
 
         # Step 1: Detect camera segments
-        print(f"\n[1/4] Detecting camera activity...", file=sys.stderr)
-        segments = self.camera_detector.detect_segments(cut_master_video_path, camera_region='top_right')
+        # Use stream-specific region if in stream recovery mode
+        camera_region = 'stream_cam2' if use_downloaded_stream else 'top_right'
+        print(f"\n[1/4] Detecting camera activity (region: {camera_region})...", file=sys.stderr)
+        segments = self.camera_detector.detect_segments(cut_master_video_path, camera_region=camera_region)
 
         # Step 2: Generate hybrid CAM compound
         print(f"\n[2/4] Generating hybrid CAM compound...", file=sys.stderr)

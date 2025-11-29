@@ -1,7 +1,7 @@
 import { Component, OnInit, ChangeDetectorRef } from '@angular/core';
 import { ElectronService } from '../../services/electron.service';
 import { ProcessingService } from '../../services/processing.service';
-import { AudioSource, AudioSourceType, VideoSourceType, MediaSourceType, AUDIO_SOURCE_LABELS, VIDEO_SOURCE_LABELS, MEDIA_SOURCE_LABELS, XML_OPTIONS } from '../../models/types';
+import { AudioSource, AudioSourceType, VideoSourceType, MediaSourceType, AUDIO_SOURCE_LABELS, VIDEO_SOURCE_LABELS, MEDIA_SOURCE_LABELS } from '../../models/types';
 
 @Component({
   selector: 'app-workflow',
@@ -18,7 +18,7 @@ export class WorkflowComponent implements OnInit {
   audioSourceLabels = AUDIO_SOURCE_LABELS;
   videoSourceLabels = VIDEO_SOURCE_LABELS;
   mediaSourceLabels = MEDIA_SOURCE_LABELS;
-  audioTypes: AudioSourceType[] = ['mic1', 'mic2', 'mic3', 'mic4', 'screen', 'game', 'soundEffects', 'bluetooth', 'mic1Sb', 'mic2Sb', 'screenSb', 'desktopSb', 'bluetoothSb', 'soundEffectsSb'];
+  audioTypes: AudioSourceType[] = ['mic1', 'mic2', 'mic3', 'mic4', 'screen', 'game', 'soundEffects', 'bluetooth', 'mic1Sb', 'mic2Sb', 'mic3Sb', 'mic4Sb', 'screenSb', 'desktopSb', 'gameSb', 'bluetoothSb', 'soundEffectsSb'];
   videoTypes: VideoSourceType[] = ['cam1', 'cam2', 'screenVideo', 'gameVideo'];
   allMediaTypes: MediaSourceType[] = [...this.audioTypes, ...this.videoTypes];
 
@@ -33,16 +33,11 @@ export class WorkflowComponent implements OnInit {
   // Audio corrections
   globalDriftFrames = 0;
 
-  // XML options - all options are always selected
-  xmlOptions = XML_OPTIONS;
-  selectedXmlOptions: string[] = [];
+  // Auto ducking - disabled by default
+  autoDuck = false;
 
-  // Master projects - always enabled
-  masterSolo = true;
-  masterDc = true;
-
-  // Auto ducking - enabled by default
-  autoDuck = true;
+  // Stream recovery mode - use downloaded stream as master
+  useDownloadedStream = false;
 
   // Processing
   isProcessing = false;
@@ -75,9 +70,6 @@ export class WorkflowComponent implements OnInit {
   ) {}
 
   ngOnInit() {
-    // Select all XML options by default
-    this.selectedXmlOptions = this.xmlOptions.map(opt => opt.value);
-
     // Subscribe to processing updates
     this.processingService.getCurrentJob().subscribe(job => {
       if (job) {
@@ -191,72 +183,38 @@ export class WorkflowComponent implements OnInit {
         const audioFiles = result.audioFiles || {};
         const videoFiles = result.videoFiles || {};
 
-        const audioTypeMap: { [key: string]: AudioSourceType } = {
-          'mic-1': 'mic1',
-          'mic-2': 'mic2',
-          'mic-3': 'mic3',
-          'mic-4': 'mic4',
-          'screen': 'screen',
-          'game': 'game',
-          'sound-effects': 'soundEffects',
-          'bluetooth': 'bluetooth',
-          'mic-1-sb': 'mic1Sb',
-          'mic-2-sb': 'mic2Sb',
-          'screen-sb': 'screenSb',
-          'desktop-sb': 'desktopSb',
-          'bluetooth-sb': 'bluetoothSb',
-          'sound-effects-sb': 'soundEffectsSb'
-        };
-
-        const videoTypeMap: { [key: string]: VideoSourceType } = {
-          'cam': 'cam1',
-          'cam-2': 'cam2',
-          'screen-share': 'screenVideo',
-          'game-share': 'gameVideo'
-        };
-
         // Clear existing sources
         this.audioSources = [];
 
-        // Add detected audio files
+        // Add detected audio files (backend returns camelCase keys directly)
         for (const [audioType, audioPath] of Object.entries(audioFiles)) {
           const fileName = audioPath.split('/').pop() || '';
-          const mappedType = audioTypeMap[audioType];
-
-          if (mappedType) {
-            const audioSource: AudioSource = {
-              id: `audio_${Date.now()}_${audioType}`,
-              path: audioPath,
-              name: fileName,
-              type: mappedType,
-              syncFix: false,
-              applyDrift: false,
-              isVideo: false
-            };
-
-            this.audioSources.push(audioSource);
-          }
+          const audioSource: AudioSource = {
+            id: `audio_${Date.now()}_${audioType}`,
+            path: audioPath,
+            name: fileName,
+            type: audioType as AudioSourceType,
+            syncFix: false,
+            applyDrift: false,
+            isVideo: false
+          };
+          this.audioSources.push(audioSource);
         }
 
-        // Add detected video files
+        // Add detected video files (backend returns camelCase keys directly)
         for (const [videoType, videoPath] of Object.entries(videoFiles)) {
           if (typeof videoPath === 'string') {
             const fileName = videoPath.split('/').pop() || '';
-            const mappedType = videoTypeMap[videoType];
-
-            if (mappedType) {
-              const videoSource: AudioSource = {
-                id: `video_${Date.now()}_${videoType}`,
-                path: videoPath,
-                name: fileName,
-                type: mappedType,
-                syncFix: false,
-                applyDrift: false,
-                isVideo: true
-              };
-
-              this.audioSources.push(videoSource);
-            }
+            const videoSource: AudioSource = {
+              id: `video_${Date.now()}_${videoType}`,
+              path: videoPath,
+              name: fileName,
+              type: videoType as VideoSourceType,
+              syncFix: false,
+              applyDrift: false,
+              isVideo: true
+            };
+            this.audioSources.push(videoSource);
           }
         }
       }
@@ -317,16 +275,18 @@ export class WorkflowComponent implements OnInit {
   // Process workflow
   async processWorkflow() {
     // Validation - just return silently, button is disabled when invalid
-    if (!this.masterVideoPath || this.audioSources.length === 0) {
-      alert('Please select a master video and add at least one audio source.');
+    if (!this.masterVideoPath) {
+      alert('Please select a master video.');
       return;
     }
 
-    // Check if all audio sources have types assigned
-    const unassignedAudio = this.audioSources.filter(s => !s.type);
-    if (unassignedAudio.length > 0) {
-      alert('Please assign types to all audio sources.');
-      return;
+    // Check if all audio sources have types assigned (only if there are audio sources)
+    if (this.audioSources.length > 0) {
+      const unassignedAudio = this.audioSources.filter(s => !s.type);
+      if (unassignedAudio.length > 0) {
+        alert('Please assign types to all audio sources.');
+        return;
+      }
     }
 
     try {
@@ -338,43 +298,20 @@ export class WorkflowComponent implements OnInit {
       this.audioSources.forEach(source => {
         if (source.type) {
           if (source.isVideo) {
-            // Map video source types to backend format
+            // Map video source types (screenVideo/gameVideo -> screen/game for compound generators)
             const typeMap: { [key: string]: string } = {
-              'cam1': 'cam1',
-              'cam2': 'cam2',
               'screenVideo': 'screen',
               'gameVideo': 'game'
             };
             const backendType = typeMap[source.type] || source.type;
             videoSourcesObj[backendType] = source.path;
           } else {
-            // Audio source - convert camelCase to snake_case for backend
-            const audioTypeMap: { [key: string]: string } = {
-              'mic1Sb': 'mic1_sb',
-              'mic2Sb': 'mic2_sb',
-              'mic3Sb': 'mic3_sb',
-              'mic4Sb': 'mic4_sb',
-              'screenSb': 'screen_sb',
-              'desktopSb': 'desktop_sb',
-              'bluetoothSb': 'bluetooth_sb',
-              'soundEffectsSb': 'sound_effects_sb',
-              'soundEffects': 'sound_effects'
-            };
-            const backendType = audioTypeMap[source.type] || source.type;
-            audioSourcesObj[backendType] = source.path;
-            audioSyncSettings[backendType] = source.syncFix || source.applyDrift;
+            // Audio source - send camelCase directly to Python
+            audioSourcesObj[source.type] = source.path;
+            audioSyncSettings[source.type] = source.syncFix || source.applyDrift;
           }
         }
       });
-
-      // Add master project options to xmlOptions if checked
-      const xmlOptionsToSend = [...this.selectedXmlOptions];
-      if (this.masterSolo && !xmlOptionsToSend.includes('masterSolo')) {
-        xmlOptionsToSend.push('masterSolo');
-      }
-      if (this.masterDc && !xmlOptionsToSend.includes('masterDc')) {
-        xmlOptionsToSend.push('masterDc');
-      }
 
       // Merge video sources from both the dedicated videoSources object and the audioSources array
       const mergedVideoSources = { ...this.videoSources, ...videoSourcesObj };
@@ -385,8 +322,8 @@ export class WorkflowComponent implements OnInit {
         audioSources: audioSourcesObj,
         audioSyncSettings,
         videoSources: mergedVideoSources,
-        xmlOptions: xmlOptionsToSend.length > 0 ? xmlOptionsToSend : undefined,
-        autoDuck: this.autoDuck
+        autoDuck: this.autoDuck,
+        useDownloadedStream: this.useDownloadedStream
       };
 
       // Start workflow

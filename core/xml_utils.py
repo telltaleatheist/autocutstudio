@@ -298,7 +298,7 @@ class FCPXMLUtils:
             elif audio_type in ['screen', 'game', 'bluetooth']:
                 volume = ET.SubElement(audio, 'adjust-volume')
                 volume.set('amount', '-10dB')
-            elif audio_type == 'sound_effects':
+            elif audio_type == 'soundEffects':
                 volume = ET.SubElement(audio, 'adjust-volume')
                 volume.set('amount', '-15dB')
         else:
@@ -331,7 +331,7 @@ class FCPXMLUtils:
             volume.set('amount', '0.0471005dB')
         elif audio_type in ['screen', 'game', 'bluetooth']:
             volume.set('amount', '-6dB')
-        elif audio_type == 'sound_effects':
+        elif audio_type == 'soundEffects':
             volume.set('amount', '-10dB')
         else:
             volume.set('amount', '0dB')  # Default
@@ -518,7 +518,7 @@ class FCPXMLUtils:
             elif audio_type in ['screen', 'game', 'bluetooth']:
                 volume = ET.SubElement(clip, 'adjust-volume')
                 volume.set('amount', '-6dB')
-            elif audio_type == 'sound_effects':
+            elif audio_type == 'soundEffects':
                 volume = ET.SubElement(clip, 'adjust-volume')
                 volume.set('amount', '-15dB')
         else:
@@ -688,14 +688,14 @@ class FCPXMLUtils:
                 trim_rect.set('bottom', str(crop_values[3]))
             
             # Add transform adjustment if specified
-            if 'transform' in transforms:
+            if 'transform' in transforms and transforms['transform'] is not None:
                 transform_data = transforms['transform']
                 transform = ET.SubElement(video, 'adjust-transform')
-                
+
                 if 'position' in transform_data:
                     pos = transform_data['position']
                     transform.set('position', f"{pos[0]} {pos[1]}")
-                
+
                 if 'scale' in transform_data:
                     scale = transform_data['scale']
                     transform.set('scale', f"{scale} {scale}")

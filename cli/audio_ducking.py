@@ -11,6 +11,16 @@ from pathlib import Path
 from typing import List, Tuple, Optional, Callable
 
 
+def get_processed_path(input_path: str, extension: str = None) -> Path:
+    """Get the _processed output path for a file, avoiding _processed_processed."""
+    input_path = Path(input_path)
+    stem = input_path.stem
+    if stem.endswith('_processed'):
+        stem = stem[:-10]
+    ext = extension if extension else input_path.suffix
+    return input_path.parent / f"{stem}_processed{ext}"
+
+
 class AudioDucker:
     """Handle audio ducking operations using ffmpeg."""
 
@@ -145,8 +155,7 @@ class AudioDucker:
 
         if mode == 'duck1' or mode == 'mutual':
             # Duck audio1 when audio2 is loud
-            # Always output as WAV with _processed name
-            output1 = audio1.parent / f"{audio1.stem}_processed.wav"
+            output1 = get_processed_path(audio1, '.wav')
             ducked1 = self.duck_audio(
                 audio_to_duck=str(audio1),
                 trigger_audio=str(audio2),
@@ -157,8 +166,7 @@ class AudioDucker:
 
         if mode == 'duck2' or mode == 'mutual':
             # Duck audio2 when audio1 is loud
-            # Always output as WAV with _processed name
-            output2 = audio2.parent / f"{audio2.stem}_processed.wav"
+            output2 = get_processed_path(audio2, '.wav')
             ducked2 = self.duck_audio(
                 audio_to_duck=str(audio2),
                 trigger_audio=str(audio1),

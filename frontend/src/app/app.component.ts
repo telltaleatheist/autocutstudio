@@ -63,6 +63,13 @@ export class AppComponent implements OnInit {
             this.pythonPackagesInstalling = false;
             this.showDependencyBanner = true;
             this.showInstallDialog = false;
+
+            // Auto-dismiss banner after 10 seconds for system deps
+            setTimeout(() => {
+              if (!this.pythonPackagesInstalling) {
+                this.dismissDependencyBanner();
+              }
+            }, 10000);
           }
         } else {
           // Everything is available - hide everything

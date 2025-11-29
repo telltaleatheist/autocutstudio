@@ -86,7 +86,7 @@ layouts:
         - mic2
         - mic3
         - mic4
-        - sound_effects
+        - soundEffects
       gap:
         name: Gap
     dual:
@@ -120,7 +120,7 @@ layouts:
         - mic2
         - mic3
         - mic4
-        - sound_effects
+        - soundEffects
       gap:
         name: Gap
   gs:
@@ -154,7 +154,7 @@ layouts:
         - mic4
         - screen
         - game
-        - sound_effects
+        - soundEffects
         - bluetooth
     dual:
       camera:
@@ -193,7 +193,7 @@ layouts:
         - mic4
         - screen
         - game
-        - sound_effects
+        - soundEffects
         - bluetooth
   ssb:
     solo:
@@ -252,7 +252,7 @@ file_patterns:
   mic4: '{date} mic4'
   screen: '{date} screen'
   game: '{date} game'
-  sound_effects: '{date} sound effects'
+  soundEffects: '{date} sound effects'
   bluetooth: '{date} bluetooth'
 editors:
   auto_editor:
@@ -285,7 +285,7 @@ audio:
     mic4: null
     screen: null
     game: null
-    sound_effects: null
+    soundEffects: null
     bluetooth: null
 video:
   frame_duration: 1001/30000s

@@ -201,6 +201,11 @@ class CameraDetector:
         elif region == 'bottom_right':
             # Extract bottom-right quarter (960x540 from position 960,540)
             crop_filter = 'crop=960:540:960:540'
+        elif region == 'stream_cam2':
+            # Extract cam2 region from stream layout (narrow strip on right edge, top portion)
+            # Based on stream template: ~10% width from right edge, top ~40% of height
+            # For 1920x1080: approximately 200x430 at position (1720, 20)
+            crop_filter = 'crop=200:430:1720:20'
         else:
             # Default to top-right
             crop_filter = 'crop=960:540:960:0'

@@ -67,6 +67,17 @@ def _check_dependencies():
         raise RuntimeError(error_msg)
 
 
+def get_processed_path(input_path: str, extension: str = None, output_dir: str = None) -> Path:
+    """Get the _processed output path for a file, avoiding _processed_processed."""
+    input_path = Path(input_path)
+    stem = input_path.stem
+    if stem.endswith('_processed'):
+        stem = stem[:-10]
+    ext = extension if extension else input_path.suffix
+    out_dir = Path(output_dir) if output_dir else input_path.parent
+    return out_dir / f"{stem}_processed{ext}"
+
+
 class AudioSyncAnalyzer:
     """Analyzes audio files to find time offset and clock drift using cross-correlation."""
 
@@ -447,7 +458,7 @@ class MediaSyncProcessor:
         video_path = Path(video_path)
 
         if output_path is None:
-            output_path = video_path.parent / f"{video_path.stem}_processed{video_path.suffix}"
+            output_path = get_processed_path(video_path)
         output_path = Path(output_path)
 
         print(f"\nApplying framerate-only sync to: {video_path.name}")
@@ -548,7 +559,7 @@ class MediaSyncProcessor:
         input_path = Path(input_path)
 
         if output_path is None:
-            output_path = input_path.parent / f"{input_path.stem}_processed.wav"
+            output_path = get_processed_path(input_path, '.wav')
         output_path = Path(output_path)
 
         # Check if this is a soundboard file (needs dual mono conversion)
@@ -641,7 +652,7 @@ class MediaSyncProcessor:
         input_path = Path(input_path)
 
         if output_path is None:
-            output_path = input_path.parent / f"{input_path.stem}_processed{input_path.suffix}"
+            output_path = get_processed_path(input_path)
         output_path = Path(output_path)
 
         print(f"\nApplying sync to video: {input_path.name}")

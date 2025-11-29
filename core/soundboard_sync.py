@@ -19,6 +19,17 @@ import sys
 from core.audio_sync import AudioSyncAnalyzer, MediaSyncProcessor
 
 
+def get_processed_path(input_path: str, extension: str = None, output_dir: str = None) -> Path:
+    """Get the _processed output path for a file, avoiding _processed_processed."""
+    input_path = Path(input_path)
+    stem = input_path.stem
+    if stem.endswith('_processed'):
+        stem = stem[:-10]
+    ext = extension if extension else input_path.suffix
+    out_dir = Path(output_dir) if output_dir else input_path.parent
+    return out_dir / f"{stem}_processed{ext}"
+
+
 def sync_soundboard_files(
     soundboard_files: Dict[str, str],
     vmix_files: Dict[str, str],
@@ -105,12 +116,8 @@ def sync_soundboard_files(
         if not sb_file or not Path(sb_file).exists():
             continue
 
-        # Determine output path - always use _processed.wav
-        sb_path = Path(sb_file)
-        if output_dir:
-            output_path = Path(output_dir) / f"{sb_path.stem}_processed.wav"
-        else:
-            output_path = sb_path.parent / f"{sb_path.stem}_processed.wav"
+        # Determine output path - always use _processed.wav, avoid _processed_processed
+        output_path = get_processed_path(sb_file, '.wav', output_dir)
 
         # Apply the sync corrections
         try:

@@ -21,3 +21,7 @@ dist-electron/*
 python-dist/*
 python-dist/darwin-x64/env/env/include/unctrl.h
 core/video_analysis/__pycache__/*
+
+# Bundled binaries and Python runtime (too large for git)
+binaries/
+python/
