@@ -3,6 +3,7 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import quote
 import uuid
 import datetime
 import subprocess
@@ -434,11 +435,13 @@ class MasterProjectGenerator:
         library = ET.SubElement(root, 'library')
         if output_path:
             output_parent = Path(output_path).parent.parent  # Go up from /files/ to date folder
-            library_location = f'file://{output_parent}/{original_name}.fcpbundle/'
+            encoded_path = quote(f'{output_parent}/{original_name}.fcpbundle/', safe='/:')
+            library_location = f'file://{encoded_path}'
         else:
             # Fallback: use input file's location
             cam_parent = Path(cam_xml_path).parent.parent
-            library_location = f'file://{cam_parent}/{original_name}.fcpbundle/'
+            encoded_path = quote(f'{cam_parent}/{original_name}.fcpbundle/', safe='/:')
+            library_location = f'file://{encoded_path}'
         library.set('location', library_location)
 
         event = ET.SubElement(library, 'event')
@@ -1009,11 +1012,13 @@ class MasterProjectGenerator:
         library = ET.SubElement(root, 'library')
         if output_path:
             output_parent = Path(output_path).parent.parent  # Go up from /files/ to date folder
-            library_location = f'file://{output_parent}/{original_name}.fcpbundle/'
+            encoded_path = quote(f'{output_parent}/{original_name}.fcpbundle/', safe='/:')
+            library_location = f'file://{encoded_path}'
         else:
             # Fallback: use input file's location
             cam_parent = Path(cam_xml_path).parent.parent
-            library_location = f'file://{cam_parent}/{original_name}.fcpbundle/'
+            encoded_path = quote(f'{cam_parent}/{original_name}.fcpbundle/', safe='/:')
+            library_location = f'file://{encoded_path}'
         library.set('location', library_location)
 
         event = ET.SubElement(library, 'event')

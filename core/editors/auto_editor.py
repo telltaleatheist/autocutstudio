@@ -3,6 +3,7 @@
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from urllib.parse import quote, unquote
 import json
 import datetime
 from typing import Tuple, Optional, Callable
@@ -297,10 +298,11 @@ class AutoEditor(BaseEditor):
             new_asset.set('audioChannels', '2')
             new_asset.set('duration', duration)  # Full original duration
             
-            # Create media-rep pointing to the original file
+            # Create media-rep pointing to the original file (URL-encoded)
             media_rep = ET.SubElement(new_asset, 'media-rep')
             media_rep.set('kind', 'original-media')
-            media_rep.set('src', f"file://{Path(original_file_path).resolve()}")
+            encoded_path = quote(str(Path(original_file_path).resolve()), safe='/:')
+            media_rep.set('src', f"file://{encoded_path}")
             
             print(f"Created new asset with full duration: {duration}")
             

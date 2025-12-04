@@ -125,20 +125,43 @@ download_mac_x64() {
     local target_dir="$BINARIES_DIR/mac-x64"
     mkdir -p "$target_dir"
 
-    # Check if already present on local system
-    if [ "$(uname -s)" = "Darwin" ]; then
-        if [ -f "/usr/local/bin/ffmpeg" ]; then
-            echo -e "${GREEN}  ✓ Using local Homebrew FFmpeg/FFprobe${NC}"
-            cp /usr/local/bin/ffmpeg "$target_dir/"
-            cp /usr/local/bin/ffprobe "$target_dir/"
-            chmod +x "$target_dir"/*
+    # Download static FFmpeg builds from evermeet.cx (most reliable source for macOS static builds)
+    echo -e "${YELLOW}  Downloading FFmpeg for Intel Mac from evermeet.cx...${NC}"
+
+    # Download ffmpeg
+    local ffmpeg_url="https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip"
+    local temp_dir=$(mktemp -d)
+
+    if curl -L -o "$temp_dir/ffmpeg.zip" "$ffmpeg_url" 2>/dev/null; then
+        unzip -q "$temp_dir/ffmpeg.zip" -d "$temp_dir"
+        if [ -f "$temp_dir/ffmpeg" ]; then
+            cp "$temp_dir/ffmpeg" "$target_dir/"
+            chmod +x "$target_dir/ffmpeg"
+            echo -e "${GREEN}  ✓ Downloaded ffmpeg${NC}"
         else
-            echo -e "${YELLOW}  Note: FFmpeg doesn't provide official Intel macOS static builds${NC}"
-            echo -e "${YELLOW}  Please install via Homebrew (Rosetta on Apple Silicon, or native on Intel Mac):${NC}"
-            echo -e "${YELLOW}    arch -x86_64 /usr/local/bin/brew install ffmpeg${NC}"
-            echo -e "${YELLOW}  Then run: ./scripts/prepare-binaries.sh${NC}"
+            echo -e "${RED}  ✗ ffmpeg not found in archive${NC}"
         fi
+    else
+        echo -e "${RED}  ✗ Failed to download ffmpeg${NC}"
     fi
+
+    # Download ffprobe
+    local ffprobe_url="https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip"
+
+    if curl -L -o "$temp_dir/ffprobe.zip" "$ffprobe_url" 2>/dev/null; then
+        unzip -q "$temp_dir/ffprobe.zip" -d "$temp_dir"
+        if [ -f "$temp_dir/ffprobe" ]; then
+            cp "$temp_dir/ffprobe" "$target_dir/"
+            chmod +x "$target_dir/ffprobe"
+            echo -e "${GREEN}  ✓ Downloaded ffprobe${NC}"
+        else
+            echo -e "${RED}  ✗ ffprobe not found in archive${NC}"
+        fi
+    else
+        echo -e "${RED}  ✗ Failed to download ffprobe${NC}"
+    fi
+
+    rm -rf "$temp_dir"
 
     # Download auto-editor binary
     echo -e "${YELLOW}  Downloading auto-editor...${NC}"

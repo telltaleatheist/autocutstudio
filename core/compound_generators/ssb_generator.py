@@ -348,11 +348,11 @@ class SSBGenerator:
                     camera_asset = original_asset_id
                     camera_name_for_clip = f"{original_name} - Camera"
                     camera_transforms = {
-                        'crop': [2.2772, 51.392, 91.1719, 1.49848],
+                        'crop': [0, 50, 88.8889, 0],
                         'crop_mode': 'trim',
                         'transform': {
-                            'position': [16.4529, 49.3529],
-                            'scale': 1.1936
+                            'position': [13.8817, 47.8748],
+                            'scale': 1.13095
                         }
                     }
 

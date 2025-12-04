@@ -60,12 +60,13 @@ DARWIN_X64_DIR="$BINARIES_DIR/darwin-x64"
 mkdir -p "$DARWIN_X64_DIR"
 
 if [ "$PLATFORM" = "Darwin" ]; then
-    # Try to find Intel binaries (Homebrew x86_64)
-    copy_if_exists "/usr/local/bin/ffmpeg" "$DARWIN_X64_DIR/ffmpeg" || \
-        echo "  ⚠️  Intel ffmpeg not found"
-
-    copy_if_exists "/usr/local/bin/ffprobe" "$DARWIN_X64_DIR/ffprobe" || \
-        echo "  ⚠️  Intel ffprobe not found"
+    # Try to find Intel binaries (Homebrew x86_64) or download them
+    if copy_if_exists "/usr/local/bin/ffmpeg" "$DARWIN_X64_DIR/ffmpeg"; then
+        copy_if_exists "/usr/local/bin/ffprobe" "$DARWIN_X64_DIR/ffprobe"
+    else
+        echo "  ⚠️  Intel ffmpeg not found locally"
+        echo "  💡 Run: npm run download:binaries:mac-x64 to download Intel binaries"
+    fi
 else
     echo "  ℹ️  Not on macOS - skipping Intel binaries"
 fi

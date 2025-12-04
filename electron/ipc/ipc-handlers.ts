@@ -226,8 +226,9 @@ function setupFileSystemHandlers(windowService: WindowService): void {
       const escapedSession = escapeRegex(session);
 
       // Audio file patterns to match (keys use camelCase to match frontend types)
+      // Note: mic1 also matches "mic audio.wav" (without number) for new VMix naming convention
       const audioPatterns: { [key: string]: RegExp } = {
-        'mic1': new RegExp(`^${escapedSession}.*(?:mic\\s*1|mic_1|mic1).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
+        'mic1': new RegExp(`^${escapedSession}.*(?:mic\\s*1|mic_1|mic1|mic\\s+audio(?![\\s_-]*\\d)).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
         'mic2': new RegExp(`^${escapedSession}.*(?:mic\\s*2|mic_2|mic2).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
         'mic3': new RegExp(`^${escapedSession}.*(?:mic\\s*3|mic_3|mic3).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),
         'mic4': new RegExp(`^${escapedSession}.*(?:mic\\s*4|mic_4|mic4).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i'),

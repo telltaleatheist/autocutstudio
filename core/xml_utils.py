@@ -3,6 +3,7 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import quote, unquote
 import datetime
 import uuid
 import json
@@ -128,10 +129,14 @@ class FCPXMLUtils:
             asset.set('audioSources', '1')
             asset.set('audioChannels', str(audio_channels))
         
-        # Create media-rep element
+        # Create media-rep element with properly URL-encoded path
         media_rep = ET.SubElement(asset, 'media-rep')
         media_rep.set('kind', 'original-media')
-        media_rep.set('src', f"file://{file_path}")
+        # First decode the path in case it's already encoded, then re-encode
+        # This prevents double-encoding when paths come from existing XML
+        decoded_path = unquote(file_path)
+        encoded_path = quote(decoded_path, safe='/:')
+        media_rep.set('src', f"file://{encoded_path}")
         
         return asset
     

@@ -415,11 +415,11 @@ class GSGenerator:
                 camera_asset = original_asset_id
                 camera_name_for_clip = f"{original_name} - Camera"
                 camera_transforms = {
-                    'crop': [2.45, 51.7584, 91.1816, 1.37531],
+                    'crop': [0, 50, 88.8889, 0],
                     'crop_mode': 'trim',
                     'transform': {
-                        'position': [-17.5288, -8.90442],
-                        'scale': 0.800813
+                        'position': [-19.25, -10.1237],
+                        'scale': 0.760049
                     }
                 }
 
@@ -555,14 +555,17 @@ class GSGenerator:
                     }
                 }
             elif use_downloaded_stream:
-                # Stream recovery mode - extract screen from downloaded stream layout (crop only)
+                # Stream recovery mode - extract screen from downloaded stream layout
                 screen_video_asset = original_asset_id
                 screen_name_for_clip = f"{original_name} - Screen"
                 print("  Stream recovery mode: using stream layout transforms for GS screen")
                 screen_transforms = {
                     'crop': [2.65426, 2.76385, 75.6559, 42.0927],
                     'crop_mode': 'trim',
-                    'transform': None  # No position/scale for stream recovery
+                    'transform': {
+                        'position': [0.611111, -0.314815],
+                        'scale': 1.01432
+                    }
                 }
             else:
                 # Use master video - WITH CROPPING

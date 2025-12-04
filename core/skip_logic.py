@@ -87,6 +87,7 @@ class SkipDecisionEngine:
 
         Args:
             audio_type: One of 'mic1', 'mic2', 'mic3', 'mic4', 'screen', 'bluetooth', 'soundEffects'
+                        Can also include 'Sb' suffix (e.g., 'mic1Sb', 'screenSb')
             file_path: Path to the audio file
 
         Returns:
@@ -96,39 +97,41 @@ class SkipDecisionEngine:
                 - fallback_source: str or None (alternative file path)
                 - skippable_type: 'always', 'never', 'conditional'
         """
-        is_sb = self.is_soundboard_file(file_path)
+        # Normalize type: remove 'Sb' suffix (mic1Sb -> mic1, screenSb -> screen)
+        base_type = audio_type.replace('Sb', '') if audio_type.endswith('Sb') else audio_type
+        is_sb = audio_type.endswith('Sb') or self.is_soundboard_file(file_path)
 
         # Always skippable (optional audio)
         always_optional = ['mic2', 'mic3', 'mic4', 'bluetooth']
-        if audio_type in always_optional:
+        if base_type in always_optional:
             if is_sb:
                 return {
                     'can_skip': True,
-                    'reason': f'{audio_type} is optional - can skip SB re-render',
+                    'reason': f'{base_type} is optional - can skip SB re-render',
                     'fallback_source': None,
                     'skippable_type': 'always'
                 }
             else:
                 return {
                     'can_skip': True,
-                    'reason': f'{audio_type} does not need re-rendering',
+                    'reason': f'{base_type} does not need re-rendering',
                     'fallback_source': None,
                     'skippable_type': 'always'
                 }
 
         # Required audio (mic1, screen, soundEffects)
-        if audio_type in ['mic1', 'screen', 'soundEffects']:
+        if base_type in ['mic1', 'screen', 'soundEffects']:
             if not is_sb:
                 # Non-SB version never needs re-rendering (recorded with master)
                 return {
                     'can_skip': True,
-                    'reason': f'{audio_type} recorded with master - no re-render needed',
+                    'reason': f'{base_type} recorded with master - no re-render needed',
                     'fallback_source': None,
                     'skippable_type': 'never'  # Would be unskippable IF it needed re-render
                 }
             else:
                 # SB version - check if non-SB alternative exists
-                non_sb_path = self._get_non_sb_alternative(audio_type)
+                non_sb_path = self._get_non_sb_alternative(base_type)
                 if non_sb_path:
                     return {
                         'can_skip': True,
@@ -139,7 +142,7 @@ class SkipDecisionEngine:
                 else:
                     return {
                         'can_skip': False,
-                        'reason': f'{audio_type} SB is only source - required for workflow',
+                        'reason': f'{base_type} SB is only source - required for workflow',
                         'fallback_source': None,
                         'skippable_type': 'conditional'
                     }

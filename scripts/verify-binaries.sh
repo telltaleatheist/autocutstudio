@@ -49,7 +49,7 @@ else
     echo -e "${GREEN}  ✓ Directory exists: $PLATFORM_BIN_DIR${NC}"
 
     # Check for ffmpeg
-    if [[ "$PLATFORM" == win32-* ]]; then
+    if [[ "$PLATFORM" == win-x64 ]] || [[ "$PLATFORM" == win32-* ]]; then
         FFMPEG_NAME="ffmpeg.exe"
         FFPROBE_NAME="ffprobe.exe"
         AUTO_EDITOR_NAME="auto-editor.exe"
@@ -64,7 +64,7 @@ else
         echo -e "${GREEN}  ✓ ffmpeg found ($SIZE)${NC}"
 
         # Check if executable (Unix-like platforms)
-        if [[ "$PLATFORM" != win32-* ]]; then
+        if [[ "$PLATFORM" != win-x64 ]] && [[ "$PLATFORM" != win32-* ]]; then
             if [ -x "$PLATFORM_BIN_DIR/$FFMPEG_NAME" ]; then
                 echo -e "${GREEN}    ✓ Executable permission set${NC}"
             else
@@ -82,7 +82,7 @@ else
         echo -e "${GREEN}  ✓ ffprobe found ($SIZE)${NC}"
 
         # Check if executable (Unix-like platforms)
-        if [[ "$PLATFORM" != win32-* ]]; then
+        if [[ "$PLATFORM" != win-x64 ]] && [[ "$PLATFORM" != win32-* ]]; then
             if [ -x "$PLATFORM_BIN_DIR/$FFPROBE_NAME" ]; then
                 echo -e "${GREEN}    ✓ Executable permission set${NC}"
             else
@@ -100,7 +100,7 @@ else
         echo -e "${GREEN}  ✓ auto-editor found ($SIZE)${NC}"
 
         # Check if executable (Unix-like platforms)
-        if [[ "$PLATFORM" != win32-* ]]; then
+        if [[ "$PLATFORM" != win-x64 ]] && [[ "$PLATFORM" != win32-* ]]; then
             if [ -x "$PLATFORM_BIN_DIR/$AUTO_EDITOR_NAME" ]; then
                 echo -e "${GREEN}    ✓ Executable permission set${NC}"
             else
@@ -132,7 +132,7 @@ else
         echo -e "${GREEN}  ✓ Python runtime found${NC}"
 
         # Check for python executable
-        if [[ "$PLATFORM" == win32-* ]]; then
+        if [[ "$PLATFORM" == win-x64 ]] || [[ "$PLATFORM" == win32-* ]]; then
             PYTHON_BIN="$PYTHON_RUNTIME/python.exe"
         else
             PYTHON_BIN="$PYTHON_RUNTIME/bin/python3"

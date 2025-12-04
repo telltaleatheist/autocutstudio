@@ -189,8 +189,16 @@ def main():
         input_line = sys.stdin.readline()
         data = json.loads(input_line.strip())
 
-        # Load configuration
-        config_path = BASE_DIR / 'config' / 'autostudio_config.yaml'
+        # Load configuration from user config directory
+        # On macOS: ~/Library/Application Support/AutoCutStudio/config/
+        config_path = Path.home() / 'Library' / 'Application Support' / 'AutoCutStudio' / 'config' / 'autostudio_config.yaml'
+
+        if not config_path.exists():
+            raise FileNotFoundError(
+                "No configuration found. Go to Settings > Relink Assets to set up your asset paths."
+            )
+
+        print(f"Using config: {config_path}", file=sys.stderr)
         config = AutoCutStudioConfig(str(config_path))
 
         # Extract parameters
