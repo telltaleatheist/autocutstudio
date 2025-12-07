@@ -26,6 +26,10 @@ from core.compound_generators.dc_gs_generator import DCGSGenerator
 from core.compound_generators.dc_ssb_generator import DCSSBGenerator
 from core.compound_generators.hybrid_compound_generator import HybridCompoundGenerator
 from core.compound_generators.master_project_generator import MasterProjectGenerator
+from core.compound_generators.shorts_cam_generator import ShortsCamGenerator
+from core.compound_generators.shorts_ssb_generator import ShortsSSBGenerator
+from core.compound_generators.shorts_hybrid_generator import ShortsHybridGenerator
+from core.compound_generators.shorts_master_project_generator import ShortsMasterProjectGenerator
 from core.audio_processor import AudioProcessor
 from core.editors.auto_editor import AutoEditor
 from core.skip_logic import SkipDecisionEngine
@@ -806,6 +810,7 @@ def main():
         hybrid_cam_path = None
         hybrid_gs_path = None
         hybrid_ssb_path = None
+        camera_segments = None  # Will be populated by hybrid generation for reuse in shorts
         if cam_dual_path and gs_dual_path and ssb_dual_path:
             try:
                 emit_progress(88, 'Generating adaptive hybrid compounds...')
@@ -813,7 +818,7 @@ def main():
                 hybrid_gen = HybridCompoundGenerator(config)
                 # Use the same output directory as the DC compounds
                 output_dir = str(Path(cam_dual_path).parent)
-                hybrid_cam_path, hybrid_gs_path, hybrid_ssb_path = hybrid_gen.generate_hybrid_compounds(
+                hybrid_cam_path, hybrid_gs_path, hybrid_ssb_path, camera_segments = hybrid_gen.generate_hybrid_compounds(
                     cam_dual_path,
                     gs_dual_path,
                     ssb_dual_path,
@@ -832,6 +837,7 @@ def main():
                 print(f"Error generating hybrid compounds: {e}", file=sys.stderr)
                 import traceback
                 traceback.print_exc(file=sys.stderr)
+                camera_segments = None  # Set to None if hybrid generation failed
 
         # Generate master projects
         emit_progress(90, 'Generating Master SOLO project...')
@@ -908,8 +914,121 @@ def main():
                 import traceback
                 traceback.print_exc(file=sys.stderr)
 
+        # Generate Shorts compounds and master project
+        print(f"\n\n🔴🔴🔴 SHORTS SECTION STARTING 🔴🔴🔴", file=sys.stderr)
+        print(f"Variables available: compound_xml={compound_xml is not None}, cam_audio_sources={len(cam_audio_sources) if cam_audio_sources else 0} sources, video_sources={len(video_sources) if video_sources else 0} sources", file=sys.stderr)
+        sys.stderr.flush()
+        shorts_cam_solo_path = None
+        shorts_ssb_solo_path = None
+        shorts_cam_dual_path = None
+        shorts_ssb_dual_path = None
+        shorts_hybrid_cam_path = None
+        shorts_hybrid_ssb_path = None
+
+        try:
+            emit_progress(94, 'Generating Shorts CAM Solo compound...')
+            print(f"\nGenerating Shorts CAM Solo compound", file=sys.stderr)
+            shorts_cam_gen = ShortsCamGenerator(config)
+            output_dir = str(Path(cam_solo_path).parent) if cam_solo_path else str(Path(master_video).parent)
+            shorts_cam_solo_path = shorts_cam_gen.generate_shorts_cam_compound(
+                compound_xml, cam_audio_sources, 'solo', None, False, video_sources,
+                use_downloaded_stream=use_downloaded_stream
+            )
+            all_xml_files.append(shorts_cam_solo_path)
+            print(f"Successfully generated Shorts CAM Solo: {shorts_cam_solo_path}", file=sys.stderr)
+        except Exception as e:
+            print(f"Error generating Shorts CAM Solo: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+
+        try:
+            emit_progress(94.5, 'Generating Shorts SSB Solo compound...')
+            print(f"\nGenerating Shorts SSB Solo compound", file=sys.stderr)
+            shorts_ssb_gen = ShortsSSBGenerator(config)
+            shorts_ssb_solo_path = shorts_ssb_gen.generate_shorts_ssb_compound(
+                compound_xml, ssb_audio_sources, 'solo', None, False, video_sources,
+                use_downloaded_stream=use_downloaded_stream
+            )
+            all_xml_files.append(shorts_ssb_solo_path)
+            print(f"Successfully generated Shorts SSB Solo: {shorts_ssb_solo_path}", file=sys.stderr)
+        except Exception as e:
+            print(f"Error generating Shorts SSB Solo: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+
+        try:
+            emit_progress(95, 'Generating Shorts CAM Dual compound...')
+            print(f"\nGenerating Shorts CAM Dual compound", file=sys.stderr)
+            shorts_cam_dual_path = shorts_cam_gen.generate_shorts_cam_compound(
+                compound_xml, cam_audio_sources, 'dual', None, False, video_sources,
+                use_downloaded_stream=use_downloaded_stream
+            )
+            all_xml_files.append(shorts_cam_dual_path)
+            print(f"Successfully generated Shorts CAM Dual: {shorts_cam_dual_path}", file=sys.stderr)
+        except Exception as e:
+            print(f"Error generating Shorts CAM Dual: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+
+        try:
+            emit_progress(95.5, 'Generating Shorts SSB Dual compound...')
+            print(f"\nGenerating Shorts SSB Dual compound", file=sys.stderr)
+            shorts_ssb_dual_path = shorts_ssb_gen.generate_shorts_ssb_compound(
+                compound_xml, ssb_audio_sources, 'dual', None, False, video_sources,
+                use_downloaded_stream=use_downloaded_stream
+            )
+            all_xml_files.append(shorts_ssb_dual_path)
+            print(f"Successfully generated Shorts SSB Dual: {shorts_ssb_dual_path}", file=sys.stderr)
+        except Exception as e:
+            print(f"Error generating Shorts SSB Dual: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+
+        # Generate Shorts Hybrid compounds if both CAM and SSB DC exist
+        if shorts_cam_dual_path and shorts_ssb_dual_path:
+            try:
+                emit_progress(96, 'Generating Shorts Hybrid compounds...')
+                print(f"\nGenerating Shorts Hybrid compounds", file=sys.stderr)
+                shorts_hybrid_gen = ShortsHybridGenerator(config)
+                output_dir = str(Path(shorts_cam_dual_path).parent)
+                shorts_hybrid_cam_path, shorts_hybrid_ssb_path = shorts_hybrid_gen.generate_shorts_hybrid_compounds(
+                    shorts_cam_dual_path,
+                    shorts_ssb_dual_path,
+                    str(master_video),
+                    output_dir,
+                    use_downloaded_stream=use_downloaded_stream,
+                    segments=camera_segments  # Reuse segments from horizontal hybrid generation
+                )
+                all_xml_files.extend([shorts_hybrid_cam_path, shorts_hybrid_ssb_path])
+                print(f"Successfully generated Shorts Hybrid compounds", file=sys.stderr)
+            except Exception as e:
+                print(f"Error generating Shorts Hybrid compounds: {e}", file=sys.stderr)
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+
+        # Generate Shorts Master Project if hybrid compounds exist
+        if shorts_hybrid_cam_path and shorts_hybrid_ssb_path:
+            try:
+                emit_progress(97, 'Generating Master Shorts project...')
+                print(f"\nGenerating Master Shorts project", file=sys.stderr)
+                shorts_master_gen = ShortsMasterProjectGenerator(config)
+                master_shorts_paths = shorts_master_gen.generate_shorts_master_project(
+                    shorts_hybrid_cam_path, shorts_hybrid_ssb_path, original_name
+                )
+                all_xml_files.extend(master_shorts_paths)
+                generated_clips.append({
+                    'type': 'master_shorts',
+                    'name': 'Master Shorts Project',
+                    'path': master_shorts_paths[0] if master_shorts_paths else None
+                })
+                print(f"Successfully generated Master Shorts: {master_shorts_paths}", file=sys.stderr)
+            except Exception as e:
+                print(f"Error generating Master Shorts: {e}", file=sys.stderr)
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+
         # Create ZIP file
-        emit_progress(95, 'Creating compound clips ZIP file...')
+        emit_progress(98, 'Creating compound clips ZIP file...')
         session_name = Path(master_video).stem.replace(' master', '')
         output_dir = Path(master_video).parent
         zip_path = create_xml_zip(all_xml_files, output_dir, session_name)

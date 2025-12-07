@@ -1,8 +1,8 @@
-# core/compound_generators/hybrid_compound_generator.py
+# core/compound_generators/shorts_hybrid_generator.py
 
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import sys
 import copy
 
@@ -10,8 +10,8 @@ from ..xml_utils import FCPXMLUtils
 from ..video_analysis import CameraDetector
 
 
-class HybridCompoundGenerator:
-    """Generate hybrid compounds that adapt internally based on camera detection."""
+class ShortsHybridGenerator:
+    """Generate shorts hybrid compounds that adapt internally based on camera detection."""
 
     def __init__(self, config):
         self.config = config
@@ -24,88 +24,85 @@ class HybridCompoundGenerator:
             self.camera_detector = None
             print("Warning: Camera detection not available (numpy not installed)", file=sys.stderr)
 
-    def generate_hybrid_compounds(self, dc_cam_path: str, dc_gs_path: str, dc_ssb_path: str,
+    def generate_shorts_hybrid_compounds(self, dc_cam_path: str, dc_ssb_path: str,
                                    cut_master_video_path: str,
                                    output_dir: str,
-                                   use_downloaded_stream: bool = False) -> Tuple[str, str, str, List[Tuple[float, float, str]]]:
+                                   use_downloaded_stream: bool = False,
+                                   segments: Optional[List[Tuple[float, float, str]]] = None) -> Tuple[str, str]:
         """
-        Generate hybrid compound clips that adapt based on camera 2 activity.
+        Generate shorts hybrid compound clips that adapt based on camera 2 activity.
 
-        Creates 3 compounds (CAM, GS, SSB) where video layers change based on segments.
+        Creates 2 compounds (CAM, SSB) where video layers change based on segments.
+        Note: Shorts do not include GS (Game Share) layouts.
 
         Args:
-            dc_cam_path: Path to DC CAM compound XML
-            dc_gs_path: Path to DC GS compound XML
-            dc_ssb_path: Path to DC SSB compound XML
+            dc_cam_path: Path to DC Shorts CAM compound XML
+            dc_ssb_path: Path to DC Shorts SSB compound XML
             cut_master_video_path: Path to the cut master video (for detection)
-            output_dir: Directory to save hybrid compounds
+            output_dir: Directory to save shorts hybrid compounds
             use_downloaded_stream: Whether to use stream-specific cam2 detection region
+            segments: Optional pre-computed segments from horizontal hybrid generation (to avoid re-scanning)
 
         Returns:
-            Tuple of (hybrid_cam_path, hybrid_gs_path, hybrid_ssb_path, segments)
-            segments: List of (start_time, end_time, mode) tuples for reuse in shorts generation
+            Tuple of (hybrid_cam_path, hybrid_ssb_path)
         """
-        print(f"\n=== Generating Hybrid Compounds ===", file=sys.stderr)
+        print(f"\n=== Generating Shorts Hybrid Compounds ===", file=sys.stderr)
 
-        # Check if camera detector is available
-        if self.camera_detector is None:
-            raise RuntimeError("Cannot generate hybrid compounds: Camera detection not available (numpy not installed)")
+        # Step 1: Detect or use provided camera segments
+        if segments is not None:
+            print(f"\n[1/3] Using pre-computed camera segments (skipping detection)...", file=sys.stderr)
+        else:
+            # Check if camera detector is available
+            if self.camera_detector is None:
+                raise RuntimeError("Cannot generate shorts hybrid compounds: Camera detection not available (numpy not installed)")
 
-        # Step 1: Detect camera segments
-        # Use stream-specific region if in stream recovery mode
-        camera_region = 'stream_cam2' if use_downloaded_stream else 'top_right'
-        print(f"\n[1/4] Detecting camera activity (region: {camera_region})...", file=sys.stderr)
-        segments = self.camera_detector.detect_segments(cut_master_video_path, camera_region=camera_region)
+            # Detect camera segments
+            camera_region = 'stream_cam2' if use_downloaded_stream else 'top_right'
+            print(f"\n[1/3] Detecting camera activity (region: {camera_region})...", file=sys.stderr)
+            segments = self.camera_detector.detect_segments(cut_master_video_path, camera_region=camera_region)
 
         # Step 2: Generate hybrid CAM compound
-        print(f"\n[2/4] Generating hybrid CAM compound...", file=sys.stderr)
-        hybrid_cam_path = self._generate_hybrid_cam(dc_cam_path, segments, output_dir)
+        print(f"\n[2/3] Generating hybrid CAM compound...", file=sys.stderr)
+        hybrid_cam_path = self._generate_shorts_hybrid_cam(dc_cam_path, segments, output_dir)
 
-        # Step 3: Generate hybrid GS compound
-        print(f"\n[3/4] Generating hybrid GS compound...", file=sys.stderr)
+        # Step 3: Generate hybrid SSB compound
+        print(f"\n[3/3] Generating hybrid SSB compound...", file=sys.stderr)
         try:
-            hybrid_gs_path = self._generate_hybrid_gs(dc_gs_path, segments, output_dir)
-            print(f"[3/4] GS hybrid generated successfully: {hybrid_gs_path}", file=sys.stderr)
+            hybrid_ssb_path = self._generate_shorts_hybrid_ssb(dc_ssb_path, segments, output_dir)
+            print(f"[3/3] SSB hybrid generated successfully: {hybrid_ssb_path}", file=sys.stderr)
         except Exception as e:
-            print(f"[3/4] ERROR generating GS hybrid: {e}", file=sys.stderr)
+            print(f"[3/3] ERROR generating SSB hybrid: {e}", file=sys.stderr)
             import traceback
             traceback.print_exc(file=sys.stderr)
             raise
 
-        # Step 4: Generate hybrid SSB compound
-        print(f"\n[4/4] Generating hybrid SSB compound...", file=sys.stderr)
-        try:
-            hybrid_ssb_path = self._generate_hybrid_ssb(dc_ssb_path, segments, output_dir)
-            print(f"[4/4] SSB hybrid generated successfully: {hybrid_ssb_path}", file=sys.stderr)
-        except Exception as e:
-            print(f"[4/4] ERROR generating SSB hybrid: {e}", file=sys.stderr)
-            import traceback
-            traceback.print_exc(file=sys.stderr)
-            raise
+        print(f"\n=== Shorts Hybrid Compounds Complete ===", file=sys.stderr)
+        return hybrid_cam_path, hybrid_ssb_path
 
-        print(f"\n=== Hybrid Compounds Complete ===", file=sys.stderr)
-        return hybrid_cam_path, hybrid_gs_path, hybrid_ssb_path, segments
-
-    def _generate_hybrid_cam(self, dc_cam_path: str, segments: List[Tuple[float, float, str]], output_dir: str) -> str:
+    def _generate_shorts_hybrid_cam(self, dc_cam_path: str, segments: List[Tuple[float, float, str]], output_dir: str) -> str:
         """
         Generate hybrid CAM compound by splitting and modifying video layers based on segments.
 
+        Layer structure:
+        - Lane 1: Solo cam (full screen) - always enabled
+        - Lane 2: DC cam1 (bottom) - enabled in DC mode, disabled in SOLO mode
+        - Lane 3: DC cam2 (top) - enabled in DC mode, disabled in SOLO mode
+
         For SOLO segments:
-        - Disable cam2 video (lane 4)
-        - Disable cam2 border (lane 5)
-        - Disable cam1 border (lane 3)
-        - Reset cam1 transform to position="0 0" scale="1.0 1.0" (lane 2)
+        - Disable DC layers (lanes 2, 3)
+        - Solo cam (lane 1) shows through
 
         For DC segments:
-        - Keep everything as-is from DC compound
+        - Enable DC layers (lanes 2, 3)
+        - DC layers cover solo cam (lane 1)
         """
         tree = self.xml_utils.parse_fcpxml(dc_cam_path)
         root = tree.getroot()
 
         # Find the compound sequence
-        compound = root.find('.//media[@id="dc_cam_compound"]')
+        compound = root.find('.//media[@id="dc_shorts_cam_compound"]')
         if compound is None:
-            raise ValueError("Could not find dc_cam_compound in DC CAM XML")
+            raise ValueError("Could not find dc_shorts_cam_compound in DC Shorts CAM XML")
 
         sequence = compound.find('sequence')
         spine = sequence.find('spine')
@@ -116,7 +113,7 @@ class HybridCompoundGenerator:
         for child in list(gap):  # Use list() to avoid modification during iteration
             if child.tag == 'video':
                 lane = child.get('lane')
-                if lane in ['2', '3', '4', '5']:  # cam1, cam1 border, cam2, cam2 border
+                if lane in ['1', '2', '3']:  # solo cam, DC cam1, DC cam2
                     video_clips_by_lane[lane] = child
                     gap.remove(child)  # Remove original clips
 
@@ -127,7 +124,7 @@ class HybridCompoundGenerator:
             duration_str = self._seconds_to_time_str(duration_seconds)
 
             # Process each video lane
-            for lane in ['2', '3', '4', '5']:
+            for lane in ['1', '2', '3']:
                 original_clip = video_clips_by_lane.get(lane)
                 if original_clip is None:
                     continue
@@ -144,20 +141,20 @@ class HybridCompoundGenerator:
                 # Apply segment-specific settings
                 if mode == 'solo':
                     # SOLO mode
-                    if lane == '2':
-                        # cam1: enabled, reset transform
+                    if lane == '1':
+                        # Solo cam: enabled with original transforms
                         new_clip.set('enabled', '1')
-                        transform = ET.SubElement(new_clip, 'adjust-transform')
-                        transform.set('position', '0 0')
-                        transform.set('scale', '1.0 1.0')
+                        # Copy original child elements (transforms, crop)
+                        for child in original_clip:
+                            new_clip.append(copy.deepcopy(child))
                     else:
-                        # lanes 3, 4, 5: disabled
+                        # Lanes 2, 3 (DC layers): disabled
                         new_clip.set('enabled', '0')
                         # Copy original child elements
                         for child in original_clip:
                             new_clip.append(copy.deepcopy(child))
                 else:
-                    # DC mode - keep original
+                    # DC mode - all lanes enabled
                     new_clip.set('enabled', '1')
                     # Copy original child elements (transforms, etc)
                     for child in original_clip:
@@ -166,39 +163,37 @@ class HybridCompoundGenerator:
                 gap.append(new_clip)
 
         # Update compound name
-        compound.set('name', compound.get('name', '').replace('DC Cam', 'Hybrid Cam'))
+        compound.set('name', compound.get('name', '').replace('DC Shorts Cam', 'Shorts Hybrid Cam'))
 
-        # Save hybrid compound
-        output_path = Path(output_dir) / Path(dc_cam_path).name.replace('DC_CAM', 'HYBRID_CAM')
+        # Save shorts hybrid compound
+        output_path = Path(output_dir) / Path(dc_cam_path).name.replace('DC_SHORTS_CAM', 'SHORTS_HYBRID_CAM')
         self.xml_utils.save_fcpxml(tree, str(output_path))
         print(f"Saved: {output_path}", file=sys.stderr)
 
         return str(output_path)
 
-    def _generate_hybrid_gs(self, dc_gs_path: str, segments: List[Tuple[float, float, str]], output_dir: str) -> str:
-        """
-        Generate hybrid GS compound.
-
-        For SOLO segments: Disable cam2 and cam2 border
-        For DC segments: Keep everything enabled
-        """
-        return self._generate_hybrid_simple(dc_gs_path, segments, output_dir, 'GS')
-
-    def _generate_hybrid_ssb(self, dc_ssb_path: str, segments: List[Tuple[float, float, str]], output_dir: str) -> str:
+    def _generate_shorts_hybrid_ssb(self, dc_ssb_path: str, segments: List[Tuple[float, float, str]], output_dir: str) -> str:
         """
         Generate hybrid SSB compound.
 
         For SOLO segments: Disable cam2 and cam2 border
         For DC segments: Keep everything enabled
         """
-        return self._generate_hybrid_simple(dc_ssb_path, segments, output_dir, 'SSB')
+        return self._generate_shorts_hybrid_simple(dc_ssb_path, segments, output_dir, 'SSB')
 
-    def _generate_hybrid_simple(self, dc_path: str, segments: List[Tuple[float, float, str]],
+    def _generate_shorts_hybrid_simple(self, dc_path: str, segments: List[Tuple[float, float, str]],
                                  output_dir: str, compound_type: str) -> str:
         """
-        Generate hybrid compound for GS/SSB.
+        Generate shorts hybrid compound for SSB.
 
-        These just need to disable cam2 and its border during SOLO segments.
+        Layer structure (7 lanes):
+        - Lane 1: screen (always enabled)
+        - Lanes 2-3: SOLO cam1 + border (enabled in SOLO mode)
+        - Lanes 4-5: DC cam1 + border (enabled in DC mode)
+        - Lanes 6-7: DC cam2 + border (enabled in DC mode)
+
+        For SOLO segments: enable lanes 1-3, disable lanes 4-7
+        For DC segments: enable lanes 1, 4-7, disable lanes 2-3
         """
         tree = self.xml_utils.parse_fcpxml(dc_path)
         root = tree.getroot()
@@ -218,43 +213,43 @@ class HybridCompoundGenerator:
         spine = sequence.find('spine')
         gap = spine.find('gap')
 
-        # Find all video clips and sort by lane
-        video_clips = []
+        # Find video clips by lane (lanes 2-7, skip lane 1 which is screen)
+        video_clips_by_lane = {}
         for child in list(gap):
             if child.tag == 'video':
-                lane_num = int(child.get('lane', '0'))
-                video_clips.append((lane_num, child))
+                lane = child.get('lane')
+                if lane in ['2', '3', '4', '5', '6', '7']:  # All cam layers (solo and DC)
+                    video_clips_by_lane[lane] = child
+                    gap.remove(child)  # Remove original clips
 
-        # Sort to find highest lanes (cam2 and border)
-        video_clips.sort(key=lambda x: x[0], reverse=True)
-
-        # Assume top 2 video lanes are cam2 border and cam2 video
-        clips_to_segment = []
-        if len(video_clips) >= 2:
-            clips_to_segment.append(video_clips[0][1])  # cam2 border
-            clips_to_segment.append(video_clips[1][1])  # cam2 video
-
-        # Remove these clips from gap
-        for clip in clips_to_segment:
-            gap.remove(clip)
-
-        # Add segmented clips
+        # Add segmented clips for each lane
         for start_time, end_time, mode in segments:
             duration_seconds = end_time - start_time
             offset_str = self._seconds_to_time_str(start_time)
             duration_str = self._seconds_to_time_str(duration_seconds)
 
-            for original_clip in clips_to_segment:
+            # Process each video lane
+            for lane in ['2', '3', '4', '5', '6', '7']:
+                original_clip = video_clips_by_lane.get(lane)
+                if original_clip is None:
+                    continue
+
+                # Create new clip for this segment
                 new_clip = ET.Element('video')
                 new_clip.set('ref', original_clip.get('ref'))
-                new_clip.set('lane', original_clip.get('lane'))
+                new_clip.set('lane', lane)
                 new_clip.set('offset', offset_str)
                 new_clip.set('name', original_clip.get('name'))
                 new_clip.set('duration', duration_str)
                 new_clip.set('start', offset_str)
 
-                # Enable for DC, disable for SOLO
-                new_clip.set('enabled', '1' if mode == 'dc' else '0')
+                # Set enabled based on mode and lane
+                if mode == 'solo':
+                    # SOLO mode: enable lanes 2-3 (solo cam + border), disable lanes 4-7 (DC layers)
+                    new_clip.set('enabled', '1' if lane in ['2', '3'] else '0')
+                else:
+                    # DC mode: disable lanes 2-3 (solo layers), enable lanes 4-7 (DC layers)
+                    new_clip.set('enabled', '0' if lane in ['2', '3'] else '1')
 
                 # Copy child elements (transforms, etc)
                 for child in original_clip:
@@ -263,10 +258,10 @@ class HybridCompoundGenerator:
                 gap.append(new_clip)
 
         # Update compound name
-        compound.set('name', compound.get('name', '').replace(f'DC {compound_type}', f'Hybrid {compound_type}'))
+        compound.set('name', compound.get('name', '').replace(f'DC Shorts {compound_type}', f'Shorts Hybrid {compound_type}'))
 
-        # Save hybrid compound
-        output_path = Path(output_dir) / Path(dc_path).name.replace(f'DC_{compound_type}', f'HYBRID_{compound_type}')
+        # Save shorts hybrid compound
+        output_path = Path(output_dir) / Path(dc_path).name.replace(f'DC_SHORTS_{compound_type}', f'SHORTS_HYBRID_{compound_type}')
         self.xml_utils.save_fcpxml(tree, str(output_path))
         print(f"Saved: {output_path}", file=sys.stderr)
 

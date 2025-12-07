@@ -178,6 +178,16 @@ export class RelinkingComponent implements OnInit {
             isValid: false,
             category: 'ssb_dc_borders',
             expectedFilename: 'ssb dc bottom right.png'
+          },
+
+          // Shorts border
+          {
+            key: 'shorts_border',
+            displayName: 'Shorts Border',
+            currentPath: borders?.shorts?.border || '',
+            isValid: false,
+            category: 'shorts_borders',
+            expectedFilename: 'shorts border.png'
           }
         ];
 
@@ -309,7 +319,8 @@ export class RelinkingComponent implements OnInit {
           gs: {} as any,
           gs_dc: {} as any,
           ssb: {} as any,
-          ssb_dc: {} as any
+          ssb_dc: {} as any,
+          shorts: {} as any
         }
       };
 
@@ -332,6 +343,9 @@ export class RelinkingComponent implements OnInit {
         } else if (asset.category === 'ssb_dc_borders') {
           const borderKey = asset.key.replace('ssb_dc_', '');
           assetPaths.borders.ssb_dc[borderKey] = asset.currentPath;
+        } else if (asset.category === 'shorts_borders') {
+          const borderKey = asset.key.replace('shorts_', '');
+          assetPaths.borders.shorts[borderKey] = asset.currentPath;
         }
       });
 

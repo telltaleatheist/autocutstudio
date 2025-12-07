@@ -159,10 +159,8 @@ class GSGenerator:
             cam1_asset_id = "r_cam1_video"
             cam1_name = Path(cam1_path).stem
 
-            # Detect framerate (no retiming applied - duration-based sync)
-            cam1_fps = self.audio_processor.get_video_framerate(cam1_path)
-            cam1_retime_map = self.xml_utils.calculate_retime_map(original_duration, cam1_fps, 29.97)
-            print(f"  cam1 video: {cam1_fps:.2f}fps (synced by duration, not framerate)", file=sys.stderr)
+            # cam1 is recorded with master, so NO retiming needed - it's already synced
+            print(f"  cam1 video: using native timing (recorded with master, no retiming)", file=sys.stderr)
 
             cam1_asset = self.xml_utils.create_asset_element(
                 cam1_asset_id, cam1_name, cam1_path, original_duration,
@@ -430,7 +428,7 @@ class GSGenerator:
                 "0s",
                 original_duration,
                 camera_transforms,
-                retime_map=cam1_retime_map if cam1_asset_id else None
+                retime_map=None  # Never retime cam1 - it's recorded with master
             )
             gap.append(camera_clip)
             

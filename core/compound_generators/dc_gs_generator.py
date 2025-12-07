@@ -195,13 +195,8 @@ class DCGSGenerator:
             cam1_asset_id = "r_cam1_video"
             cam1_name = Path(cam1_path).stem
 
-            # Detect framerate and calculate retime map if needed
-            cam1_fps = self.audio_processor.get_video_framerate(cam1_path)
-            cam1_retime_map = self.xml_utils.calculate_retime_map(original_duration, cam1_fps, 29.97)
-            if cam1_retime_map:
-                print(f"  cam1 video: {cam1_fps:.2f}fps → 29.97fps (will apply timeMap)")
-            else:
-                print(f"  cam1 video: {cam1_fps:.2f}fps (no retiming needed)")
+            # cam1 is recorded with master, so NO retiming needed - it's already synced
+            print(f"  cam1 video: using native timing (recorded with master, no retiming)")
 
             cam1_asset = self.xml_utils.create_asset_element(
                 cam1_asset_id, cam1_name, cam1_path, original_duration,
@@ -218,13 +213,8 @@ class DCGSGenerator:
             cam2_asset_id = "r_cam2_video"
             cam2_name = Path(cam2_path).stem
 
-            # Detect framerate and calculate retime map if needed
-            cam2_fps = self.audio_processor.get_video_framerate(cam2_path)
-            cam2_retime_map = self.xml_utils.calculate_retime_map(original_duration, cam2_fps, 29.97)
-            if cam2_retime_map:
-                print(f"  cam2 video: {cam2_fps:.2f}fps → 29.97fps (will apply timeMap)")
-            else:
-                print(f"  cam2 video: {cam2_fps:.2f}fps (no retiming needed)")
+            # cam2 is recorded with master, so NO retiming needed - it's already synced
+            print(f"  cam2 video: using native timing (recorded with master, no retiming)")
 
             cam2_asset = self.xml_utils.create_asset_element(
                 cam2_asset_id, cam2_name, cam2_path, original_duration,
@@ -534,7 +524,7 @@ class DCGSGenerator:
                 "0s",
                 original_duration,
                 camera_transforms,
-                retime_map=cam1_retime_map if cam1_asset_id else None
+                retime_map=None  # Never retime cam1 - it's recorded with master
             )
             gap.append(camera_clip)
             
@@ -690,7 +680,7 @@ class DCGSGenerator:
                 "0s",
                 original_duration,
                 cam2_transforms,
-                retime_map=cam2_retime_map if cam2_asset_id else None
+                retime_map=None  # Never retime cam2 - it's recorded with master
             )
             gap.append(cam2_clip)
             

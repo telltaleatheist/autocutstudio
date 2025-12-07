@@ -84,7 +84,19 @@ class AutoCutStudioConfig:
     @property
     def video_settings(self) -> Dict[str, Any]:
         return self.get('video', {})
-    
+
+    @property
+    def video_shorts_settings(self) -> Dict[str, Any]:
+        return self.get('video_shorts', {
+            'width': 1080,
+            'height': 1920,
+            'frame_duration': '1001/30000s',
+            'color_space': '1-1-1 (Rec. 709)',
+            'tcFormat': 'NDF',
+            'audioLayout': 'stereo',
+            'audioRate': '48k'
+        })
+
     @property
     def audio_settings(self) -> Dict[str, Any]:
         return self.get('audio', {})

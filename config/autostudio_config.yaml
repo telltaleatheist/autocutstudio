@@ -32,6 +32,8 @@ paths:
         top_left: /Volumes/Callisto/Movies/FCPX/assets/white boxes/ssb dc top left.png
         bottom_left: /Volumes/Callisto/Movies/FCPX/assets/white boxes/ssb dc bottom left.png
         bottom_right: /Volumes/Callisto/Movies/FCPX/assets/white boxes/ssb dc bottom right.png
+      shorts:
+        border: /Volumes/Callisto/Movies/FCPX/assets/white boxes/shorts border.png
 source_layouts:
   master_current:
     type: master_multi
@@ -243,6 +245,135 @@ layouts:
         - screen
         - game
         - bluetooth
+  shorts_cam:
+    solo:
+      camera:
+        lane: 1
+        crop:
+          - 0
+          - 50.0412
+          - 88.8889
+          - 0
+        position:
+          - 89.2019
+          - 50.291
+        scale: 6.3576
+      audio_sources:
+        - mic1
+        - mic2
+        - mic3
+        - mic4
+        - soundEffects
+    dual:
+      cam1:
+        lane: 1
+        crop:
+          - 0
+          - 50.0412
+          - 88.8889
+          - 0
+        position:
+          - 46.1833
+          - -0.103782
+        scale: 3.2
+      cam2:
+        lane: 2
+        crop:
+          - 88.8889
+          - 0
+          - 0
+          - 50.0412
+        position:
+          - -43.1878
+          - -0.498011
+        scale: 3.2
+      audio_sources:
+        - mic1
+        - mic2
+        - mic3
+        - mic4
+        - soundEffects
+  shorts_ssb:
+    solo:
+      screen:
+        lane: 1
+        crop:
+          - 0
+          - 0
+          - 88.8889
+          - 50.0412
+        position:
+          - 89.3698
+          - -50.4281
+        scale: 6.3619
+      camera:
+        lane: 2
+        crop:
+          - 0
+          - 50.0412
+          - 88.8889
+          - 0
+        position:
+          - 24.4792
+          - -18.2292
+        scale: 1.75
+        border: shorts.border
+        border_position:
+          - 0
+          - 4.42708
+        border_scale: 1.4
+      audio_sources:
+        - screen
+        - game
+        - bluetooth
+    dual:
+      screen:
+        lane: 1
+        crop:
+          - 0
+          - 0
+          - 88.8889
+          - 50.0412
+        position:
+          - 89.3698
+          - -50.4281
+        scale: 6.3619
+      cam1:
+        lane: 2
+        crop:
+          - 0
+          - 50.0412
+          - 88.8889
+          - 0
+        position:
+          - 5.52029
+          - -17.6981
+        scale: 1.15
+        border: shorts.border
+        border_position:
+          - -10.6878
+          - -2.73181
+        border_scale: 0.92
+      cam2:
+        lane: 4
+        crop:
+          - 88.8889
+          - 0
+          - 0
+          - 50.0412
+        position:
+          - -5.74915
+          - -48.3457
+        scale: 1.15
+        border: shorts.border
+        border_position:
+          - 10.3731
+          - -15.2241
+        border_scale: 0.92
+      audio_sources:
+        - screen
+        - game
+        - bluetooth
 file_patterns:
   master: '{date} master'
   cam: '{date} cam'
@@ -291,6 +422,15 @@ video:
   frame_duration: 1001/30000s
   width: 1920
   height: 1080
+  color_space: 1-1-1 (Rec. 709)
+  tcFormat: NDF
+  audioLayout: stereo
+  audioRate: 48k
+
+video_shorts:
+  frame_duration: 1001/30000s
+  width: 1080
+  height: 1920
   color_space: 1-1-1 (Rec. 709)
   tcFormat: NDF
   audioLayout: stereo
