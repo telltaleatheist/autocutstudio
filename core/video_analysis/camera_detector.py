@@ -135,44 +135,53 @@ class CameraDetector:
 
     def _is_camera_active(self, video_path: str, timestamp: float, region: str) -> bool:
         """
-        Check if camera is active at a specific timestamp.
+        Check if camera is active at a specific timestamp using motion detection.
 
-        Detects if the region contains:
-        - Black screen (inactive)
-        - Solid blue screen (inactive)
-        - Active video content (active)
+        Compares two frames 0.5 seconds apart to detect movement:
+        - No movement = inactive (static image, black screen, frozen feed)
+        - Movement detected = active camera (person moving, even slightly)
         """
         try:
-            # Extract frame at timestamp
-            frame_data = self._extract_frame(video_path, timestamp, region)
-            if frame_data is None:
+            # Extract two frames 0.5 seconds apart
+            frame1_data = self._extract_frame(video_path, timestamp, region)
+            frame2_data = self._extract_frame(video_path, timestamp + 0.5, region)
+
+            if frame1_data is None or frame2_data is None:
                 return False
 
-            # Load as image
-            img = Image.open(io.BytesIO(frame_data))
-            pixels = np.array(img)
+            # Load as images and convert to grayscale for comparison
+            img1 = Image.open(io.BytesIO(frame1_data)).convert('L')
+            img2 = Image.open(io.BytesIO(frame2_data)).convert('L')
 
-            # Calculate statistics
-            mean_color = pixels.mean(axis=(0, 1))  # Average RGB
-            std_dev = pixels.std()  # Standard deviation (variance)
+            pixels1 = np.array(img1, dtype=np.float32)
+            pixels2 = np.array(img2, dtype=np.float32)
+
+            # Calculate absolute difference between frames
+            diff = np.abs(pixels1 - pixels2)
+
+            # Calculate motion metrics
+            mean_diff = diff.mean()  # Average pixel change
+            max_diff = diff.max()    # Maximum pixel change
+
+            # Count pixels with significant change (> 10 levels)
+            motion_pixels = np.sum(diff > 10)
+            total_pixels = diff.size
+            motion_percentage = (motion_pixels / total_pixels) * 100
 
             # Debug output
-            print(f"[CameraDetector] {timestamp}s - mean_color: {mean_color}, std_dev: {std_dev:.2f}", file=sys.stderr)
+            print(f"[CameraDetector] {timestamp}s - mean_diff: {mean_diff:.2f}, max_diff: {max_diff:.0f}, motion: {motion_percentage:.2f}%", file=sys.stderr)
 
             # Detection logic:
-            # 1. Check if mostly black (all RGB values < 20)
-            if np.all(mean_color < 20):
-                print(f"[CameraDetector] {timestamp}s - BLACK screen detected", file=sys.stderr)
-                return False  # Black screen = inactive
-
-            # 2. Check if solid color (low variance)
-            if std_dev < 15:  # Low variance = solid color (increased threshold)
-                print(f"[CameraDetector] {timestamp}s - SOLID COLOR detected", file=sys.stderr)
-                return False  # Solid color (blue/black) = inactive
-
-            # 3. Otherwise, assume active content
-            print(f"[CameraDetector] {timestamp}s - ACTIVE content detected", file=sys.stderr)
-            return True
+            # Camera is active if there's meaningful movement
+            # Use high thresholds to ignore compression artifacts from streaming/downloaded video
+            # Compression noise: typically mean_diff < 5, motion < 3%
+            # Actual movement: mean_diff > 8, motion > 5%
+            if motion_percentage > 5 and mean_diff > 8:
+                print(f"[CameraDetector] {timestamp}s - MOTION detected (active)", file=sys.stderr)
+                return True
+            else:
+                print(f"[CameraDetector] {timestamp}s - NO motion (inactive)", file=sys.stderr)
+                return False
 
         except Exception as e:
             print(f"[CameraDetector] Error checking frame at {timestamp}s: {e}", file=sys.stderr)

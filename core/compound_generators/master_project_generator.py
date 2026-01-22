@@ -240,7 +240,7 @@ class MasterProjectGenerator:
                                 project_type: str, output_path: Optional[str] = None) -> List[str]:
         """Generate master project by building a new timeline structure from scratch.
 
-        Projects are automatically split into ~2 hour segments to avoid large XML files.
+        Projects are automatically split into ~1 hour segments to avoid large XML files.
 
         Returns:
             List of paths to generated project files (may be multiple if split into parts)
@@ -511,10 +511,6 @@ class MasterProjectGenerator:
             # Adjust start time if present
             if converted_start != '0s':
                 main_clip.set('start', converted_start)
-            
-            # Add conform-rate
-            conform_rate = ET.SubElement(main_clip, 'conform-rate')
-            conform_rate.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
 
             # Lane -1: CAM audio (master audio - topmost audio lane)
             cam_audio = ET.SubElement(main_clip, 'ref-clip')
@@ -528,9 +524,6 @@ class MasterProjectGenerator:
             if converted_start != '0s':
                 cam_audio.set('start', converted_start)
 
-            cam_audio_conform = ET.SubElement(cam_audio, 'conform-rate')
-            cam_audio_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
-
             # Lane -2: SSB audio (below master audio)
             ssb_audio = ET.SubElement(main_clip, 'ref-clip')
             ssb_audio.set('ref', 'r6')  # SSB compound
@@ -543,9 +536,6 @@ class MasterProjectGenerator:
             if converted_start != '0s':
                 ssb_audio.set('start', converted_start)
 
-            ssb_audio_conform = ET.SubElement(ssb_audio, 'conform-rate')
-            ssb_audio_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
-
             # Lane 1: GS (muted)
             gs_clip = ET.SubElement(main_clip, 'ref-clip')
             gs_clip.set('ref', 'r12')  # GS compound
@@ -556,9 +546,6 @@ class MasterProjectGenerator:
             gs_clip.set('duration', converted_duration)
             if converted_start != '0s':
                 gs_clip.set('start', converted_start)
-
-            gs_conform = ET.SubElement(gs_clip, 'conform-rate')
-            gs_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
 
             # Mute GS audio
             gs_volume = ET.SubElement(gs_clip, 'adjust-volume')
@@ -575,9 +562,6 @@ class MasterProjectGenerator:
             ssb_video.set('srcEnable', 'video')  # Video only
             if converted_start != '0s':
                 ssb_video.set('start', converted_start)
-
-            ssb_video_conform = ET.SubElement(ssb_video, 'conform-rate')
-            ssb_video_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
 
             # Calculate next expected offset to maintain continuity
             expected_offset = self._add_time_fractions(converted_offset, converted_duration)
@@ -766,10 +750,10 @@ class MasterProjectGenerator:
 
         Examples:
         - 1h45m → 2 segments of ~52m each (round(1.75) = 2)
-        - 5h15m → 5 segments of ~1h3m each (round(5.25) = 5)
-        - 3h15m → 3 segments of ~1h5m each (round(3.25) = 3)
+        - 4h00m → 4 segments of ~60m each (round(4) = 4)
         - 2h30m → 3 segments of ~50m each (round(2.5) = 3)
         - 45m → 1 segment (round(0.75) = 1, under 1 hour, no split)
+        - 90m → 2 segments of ~45m each (round(1.5) = 2)
 
         Args:
             ref_clips: List of ref-clip elements to split
@@ -785,7 +769,7 @@ class MasterProjectGenerator:
         last_offset = self._parse_time_to_seconds(last_clip.get('offset', '0s'))
         last_duration = self._parse_time_to_seconds(last_clip.get('duration', '0s'))
         total_seconds = last_offset + last_duration
-        total_hours = total_seconds / 3600
+        total_hours = total_seconds / 3600  # 3600 seconds = 1 hour
 
         # Calculate number of segments based on total hours (rounded to nearest)
         num_segments = max(1, round(total_hours))
@@ -1111,10 +1095,6 @@ class MasterProjectGenerator:
             if converted_start != '0s':
                 main_clip.set('start', converted_start)
 
-            # Add conform-rate
-            conform_rate = ET.SubElement(main_clip, 'conform-rate')
-            conform_rate.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
-
             # Lane -1: CAM audio (master audio - topmost audio lane)
             cam_audio = ET.SubElement(main_clip, 'ref-clip')
             cam_audio.set('ref', 'r2')  # CAM compound
@@ -1126,9 +1106,6 @@ class MasterProjectGenerator:
             cam_audio.set('srcEnable', 'audio')  # Audio only
             if converted_start != '0s':
                 cam_audio.set('start', converted_start)
-
-            cam_audio_conform = ET.SubElement(cam_audio, 'conform-rate')
-            cam_audio_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
 
             # Lane -2: SSB audio (below master audio)
             ssb_audio = ET.SubElement(main_clip, 'ref-clip')
@@ -1142,9 +1119,6 @@ class MasterProjectGenerator:
             if converted_start != '0s':
                 ssb_audio.set('start', converted_start)
 
-            ssb_audio_conform = ET.SubElement(ssb_audio, 'conform-rate')
-            ssb_audio_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
-
             # Lane 1: GS (muted)
             gs_clip = ET.SubElement(main_clip, 'ref-clip')
             gs_clip.set('ref', 'r12')  # GS compound
@@ -1155,9 +1129,6 @@ class MasterProjectGenerator:
             gs_clip.set('duration', converted_duration)
             if converted_start != '0s':
                 gs_clip.set('start', converted_start)
-
-            gs_conform = ET.SubElement(gs_clip, 'conform-rate')
-            gs_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
 
             # Mute GS audio
             gs_volume = ET.SubElement(gs_clip, 'adjust-volume')
@@ -1174,9 +1145,6 @@ class MasterProjectGenerator:
             ssb_video.set('srcEnable', 'video')  # Video only
             if converted_start != '0s':
                 ssb_video.set('start', converted_start)
-
-            ssb_video_conform = ET.SubElement(ssb_video, 'conform-rate')
-            ssb_video_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
 
             # Calculate next expected offset to maintain continuity
             expected_offset = self._add_time_fractions(converted_offset, converted_duration)

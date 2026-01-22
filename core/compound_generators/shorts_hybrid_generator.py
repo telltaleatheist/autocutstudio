@@ -136,7 +136,6 @@ class ShortsHybridGenerator:
                 new_clip.set('offset', offset_str)
                 new_clip.set('name', original_clip.get('name'))
                 new_clip.set('duration', duration_str)
-                new_clip.set('start', offset_str)  # Start reading from this point in source
 
                 # Apply segment-specific settings
                 if mode == 'solo':
@@ -241,7 +240,6 @@ class ShortsHybridGenerator:
                 new_clip.set('offset', offset_str)
                 new_clip.set('name', original_clip.get('name'))
                 new_clip.set('duration', duration_str)
-                new_clip.set('start', offset_str)
 
                 # Set enabled based on mode and lane
                 if mode == 'solo':

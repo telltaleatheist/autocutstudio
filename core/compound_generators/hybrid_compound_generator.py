@@ -139,7 +139,6 @@ class HybridCompoundGenerator:
                 new_clip.set('offset', offset_str)
                 new_clip.set('name', original_clip.get('name'))
                 new_clip.set('duration', duration_str)
-                new_clip.set('start', offset_str)  # Start reading from this point in source
 
                 # Apply segment-specific settings
                 if mode == 'solo':
@@ -251,7 +250,6 @@ class HybridCompoundGenerator:
                 new_clip.set('offset', offset_str)
                 new_clip.set('name', original_clip.get('name'))
                 new_clip.set('duration', duration_str)
-                new_clip.set('start', offset_str)
 
                 # Enable for DC, disable for SOLO
                 new_clip.set('enabled', '1' if mode == 'dc' else '0')
