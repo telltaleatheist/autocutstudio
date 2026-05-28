@@ -109,7 +109,8 @@ class HybridCompoundGenerator:
 
         sequence = compound.find('sequence')
         spine = sequence.find('spine')
-        gap = spine.find('gap')
+        gaps = spine.findall('gap')
+        gap = gaps[-1]  # Content gap is the last one (first is empty trim gap)
 
         # Find video clips by lane
         video_clips_by_lane = {}
@@ -120,10 +121,13 @@ class HybridCompoundGenerator:
                     video_clips_by_lane[lane] = child
                     gap.remove(child)  # Remove original clips
 
+        # Get content gap's coordinate offset for segment alignment
+        gap_start_seconds = self._time_str_to_seconds(gap.get('start', '0s'))
+
         # Add segmented clips for each lane
         for start_time, end_time, mode in segments:
             duration_seconds = end_time - start_time
-            offset_str = self._seconds_to_time_str(start_time)
+            offset_str = self._seconds_to_time_str(start_time + gap_start_seconds)
             duration_str = self._seconds_to_time_str(duration_seconds)
 
             # Process each video lane
@@ -216,7 +220,8 @@ class HybridCompoundGenerator:
 
         sequence = compound.find('sequence')
         spine = sequence.find('spine')
-        gap = spine.find('gap')
+        gaps = spine.findall('gap')
+        gap = gaps[-1]  # Content gap is the last one (first is empty trim gap)
 
         # Find all video clips and sort by lane
         video_clips = []
@@ -238,10 +243,13 @@ class HybridCompoundGenerator:
         for clip in clips_to_segment:
             gap.remove(clip)
 
+        # Get content gap's coordinate offset for segment alignment
+        gap_start_seconds = self._time_str_to_seconds(gap.get('start', '0s'))
+
         # Add segmented clips
         for start_time, end_time, mode in segments:
             duration_seconds = end_time - start_time
-            offset_str = self._seconds_to_time_str(start_time)
+            offset_str = self._seconds_to_time_str(start_time + gap_start_seconds)
             duration_str = self._seconds_to_time_str(duration_seconds)
 
             for original_clip in clips_to_segment:

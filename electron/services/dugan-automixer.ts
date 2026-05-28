@@ -268,7 +268,7 @@ export class DuganAutomixer {
 
       // Sliding window state
       let totalSamples = 0;
-      let leftoverBuf = Buffer.alloc(0);
+      let leftoverBuf: Buffer<ArrayBufferLike> = Buffer.alloc(0);
 
       // Running sum-of-squares for windowed RMS
       // We use a ring buffer approach: maintain sumSq over the current window,
@@ -423,7 +423,7 @@ export class DuganAutomixer {
       // Gain application state
       let monoSampleIdx = 0;   // Current mono sample position
       let frameIdx = 0;        // Current gain frame index
-      let leftoverBuf = Buffer.alloc(0);
+      let leftoverBuf: Buffer<ArrayBufferLike> = Buffer.alloc(0);
 
       decoder.stdout.on('data', (chunk: Buffer) => {
         // Prepend leftover bytes

@@ -91,7 +91,12 @@ class DCSSBGenerator:
         original_duration = original_asset.get('duration')
         original_name = original_asset.get('name')
         original_src = original_asset.find('media-rep').get('src')
-        
+
+        # Calculate trim values for 2-second gap at start of compound
+        frame_duration_str = video_settings.get('frame_duration', '1001/30000s')
+        trim_duration = self.xml_utils.calculate_trim_duration(frame_duration_str)
+        trimmed_content_duration = self.xml_utils.subtract_time(original_duration, trim_duration)
+
         # Create new dc ssb compound clip
         dc_ssb_compound_id = "dc_ssb_compound"
         dc_ssb_name = f"{original_name} - DC SSB"
@@ -237,11 +242,16 @@ class DCSSBGenerator:
         sequence = dc_ssb_media.find('sequence')
         spine = ET.SubElement(sequence, 'spine')
         
-        # Create the gap element that spans full duration of compound clip
+        # Create empty gap for 2-second trim padding at start
+        empty_gap = self.xml_utils.create_gap_element("Gap", "0s", trim_duration)
+        spine.append(empty_gap)
+
+        # Create content gap with trim offset
         gap = self.xml_utils.create_gap_element(
             "Gap",
-            "0s",  # Always start at beginning
-            original_duration  # Span full duration of master clip
+            trim_duration,
+            trimmed_content_duration,
+            start=trim_duration
         )
         
         # Add screen audio to gap structure (lane -2)
@@ -251,10 +261,11 @@ class DCSSBGenerator:
                 Path(screen_audio_info['path']).stem,
                 audio_assets['screen'],
                 "-2",  # Lane -2 for screen audio
-                "0s",  # Start at beginning of gap
-                screen_audio_info['duration'],
+                trim_duration,
+                trimmed_content_duration,
                 'screen',    # Pass audio type for volume adjustment
-                resources    # Pass resources (though not used in simplified version)
+                resources,    # Pass resources (though not used in simplified version)
+                source_duration=screen_audio_info['duration']
             )
             gap.append(screen_audio_clip)
             pass  # 0
@@ -268,9 +279,10 @@ class DCSSBGenerator:
             original_name,
             original_asset_id,
             "-1",  # Lane -1 for master audio
-            "0s",
-            original_duration,
-            enabled=enable_master_audio  # Enable if no external audio sources
+            trim_duration,
+            trimmed_content_duration,
+            enabled=enable_master_audio,  # Enable if no external audio sources
+            source_duration=original_duration
         )
         gap.append(master_audio_clip)
         
@@ -297,8 +309,8 @@ class DCSSBGenerator:
                     background_asset_key,
                     background_asset_id,
                     "1",  # Lane 1 - bottom video layer
-                    "0s",
-                    original_duration,
+                    trim_duration,
+                    trimmed_content_duration,
                     None  # No transforms for background
                 )
                 gap.append(background_clip)
@@ -328,7 +340,7 @@ class DCSSBGenerator:
                 camera1_name = f"{original_name} - Camera 1"
                 cam1_transforms = {'crop': [2.77778, 51.7584, 91.1816, 1.37531], 'crop_mode': 'trim', 'transform': {'position': [16.7616, 49.9968], 'scale': 1.2026}}
 
-            cam1_clip = self.xml_utils.create_video_clip(camera1_name, camera1_asset, "2", "0s", original_duration, cam1_transforms)
+            cam1_clip = self.xml_utils.create_video_clip(camera1_name, camera1_asset, "2", trim_duration, trimmed_content_duration, cam1_transforms)
             gap.append(cam1_clip)
             
             # Add camera 1 border if specified (lane 3 - immediately above camera 1)
@@ -355,8 +367,8 @@ class DCSSBGenerator:
                         f"{border_asset_key} - Camera 1",
                         border_asset_id,
                         "3",  # Lane 3 - right above camera 1 (lane 2)
-                        "0s",
-                        original_duration,
+                        trim_duration,
+                        trimmed_content_duration,
                         None  # No transforms - border should be full-screen overlay
                     )
                     gap.append(border_clip)
@@ -386,7 +398,7 @@ class DCSSBGenerator:
                 screen_video_name = f"{original_name} - Screen"
                 screen_transforms = {'crop': [2.02365, 1.18815, 90.863, 51.1176], 'crop_mode': 'trim', 'transform': {'position': [89.3201, -49.442], 'scale': 1.23001}}
 
-            screen_clip = self.xml_utils.create_video_clip(screen_video_name, screen_video_asset, "4", "0s", original_duration, screen_transforms, retime_map=screen_retime_map if screen_asset_id else None)
+            screen_clip = self.xml_utils.create_video_clip(screen_video_name, screen_video_asset, "4", trim_duration, trimmed_content_duration, screen_transforms, retime_map=screen_retime_map if screen_asset_id else None)
             gap.append(screen_clip)
             
             # Add screen border if specified (lane 5 - immediately above screen)
@@ -413,8 +425,8 @@ class DCSSBGenerator:
                         f"{border_asset_key} - Screen",
                         border_asset_id,
                         "5",  # Lane 5 - right above screen (lane 4)
-                        "0s",
-                        original_duration,
+                        trim_duration,
+                        trimmed_content_duration,
                         None  # No transforms - border should be full-screen overlay
                     )
                     gap.append(border_clip)
@@ -444,7 +456,7 @@ class DCSSBGenerator:
                 camera2_name = f"{original_name} - Camera 2"
                 cam2_transforms = {'crop': [91.3865, 1.12389, 2.04329, 51.3326], 'crop_mode': 'trim', 'transform': {'position': [-88.6903, -49.2458], 'scale': 0.801898}}
 
-            cam2_clip = self.xml_utils.create_video_clip(camera2_name, camera2_asset, "6", "0s", original_duration, cam2_transforms)
+            cam2_clip = self.xml_utils.create_video_clip(camera2_name, camera2_asset, "6", trim_duration, trimmed_content_duration, cam2_transforms)
             gap.append(cam2_clip)
             
             # Add camera 2 border if specified (lane 7 - immediately above camera 2)
@@ -471,8 +483,8 @@ class DCSSBGenerator:
                         f"{border_asset_key} - Camera 2",
                         border_asset_id,
                         "7",  # Lane 7 - right above camera 2 (lane 6)
-                        "0s",
-                        original_duration,
+                        trim_duration,
+                        trimmed_content_duration,
                         None  # No transforms - border should be full-screen overlay
                     )
                     gap.append(border_clip)
@@ -523,7 +535,8 @@ class DCSSBGenerator:
 
             ref_clip.set('offset', snapped_offset)
             ref_clip.set('duration', snapped_duration)
-            ref_clip.set('start', snapped_start)
+            adjusted_start = self._add_time_fractions(snapped_start, trim_duration)
+            ref_clip.set('start', adjusted_start)
 
             # Calculate next expected offset
             expected_offset = self._add_time_fractions(snapped_offset, snapped_duration)

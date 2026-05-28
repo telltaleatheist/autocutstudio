@@ -56,6 +56,32 @@ class FCPXMLUtils:
         return f"{numerator}/{denominator}s"
 
     @staticmethod
+    def calculate_trim_duration(frame_duration_str: str, trim_frames: int = 60) -> str:
+        """Calculate trim duration from frame duration string.
+
+        Args:
+            frame_duration_str: Frame duration (e.g., '1001/30000s')
+            trim_frames: Number of frames to trim (default 60 = ~2s at 29.97fps)
+
+        Returns:
+            Trim duration string (e.g., '60060/30000s')
+        """
+        num, den = FCPXMLUtils.parse_time(frame_duration_str)
+        return f"{num * trim_frames}/{den}s"
+
+    @staticmethod
+    def subtract_time(time_str1: str, time_str2: str) -> str:
+        """Subtract time_str2 from time_str1 as fractions."""
+        num1, den1 = FCPXMLUtils.parse_time(time_str1)
+        num2, den2 = FCPXMLUtils.parse_time(time_str2)
+        if den1 == den2:
+            return f"{num1 - num2}/{den1}s"
+        else:
+            result_num = num1 * den2 - num2 * den1
+            result_den = den1 * den2
+            return f"{result_num}/{result_den}s"
+
+    @staticmethod
     def timecode_to_seconds(hours: int = 0, minutes: int = 0, seconds: int = 0, frames: int = 0, fps: float = 29.97) -> float:
         """Convert timecode (HH:MM:SS:FF) to total seconds.
 
@@ -179,12 +205,14 @@ class FCPXMLUtils:
         return media
     
     @staticmethod
-    def create_gap_element(name: str, offset: str, duration: str) -> ET.Element:
+    def create_gap_element(name: str, offset: str, duration: str, start: str = None) -> ET.Element:
         """Create a gap element for compound clip structure."""
         gap = ET.Element('gap')
         gap.set('name', name)
         gap.set('offset', offset)
         gap.set('duration', duration)
+        if start is not None:
+            gap.set('start', start)
         return gap
     
     @staticmethod
@@ -316,7 +344,8 @@ class FCPXMLUtils:
     def create_clip_with_audio_effects(name: str, ref: str, lane: str, offset: str,
                                     duration: str, audio_type: Optional[str] = None,
                                     resources: Optional[ET.Element] = None,
-                                    enabled: bool = True, channels: int = 2) -> ET.Element:
+                                    enabled: bool = True, channels: int = 2,
+                                    start: str = None, source_duration: str = None) -> ET.Element:
         """Create an audio clip with Voice Isolation, Compressor, Noise Gate, and Volume effects."""
         # Create clip element (not audio element) to support complex effects
         clip = ET.Element('clip')
@@ -325,6 +354,9 @@ class FCPXMLUtils:
         clip.set('name', name)
         clip.set('duration', duration)
         clip.set('tcFormat', 'NDF')
+
+        if start is not None:
+            clip.set('start', start)
 
         # Set enabled/disabled state
         if not enabled:
@@ -351,17 +383,18 @@ class FCPXMLUtils:
             src_ch = ', '.join(str(i) for i in range(1, channels + 1))
 
         # Add gap with audio reference inside (matching template structure)
+        internal_duration = source_duration if source_duration else duration
         gap = ET.SubElement(clip, 'gap')
         gap.set('name', 'Gap')
         gap.set('offset', '0s')
-        gap.set('duration', duration)
+        gap.set('duration', internal_duration)
 
         # Add audio element inside gap that references the actual audio asset
         audio = ET.SubElement(gap, 'audio')
         audio.set('ref', ref)
         audio.set('lane', '-1')
         audio.set('offset', '0s')
-        audio.set('duration', duration)
+        audio.set('duration', internal_duration)
         audio.set('role', 'dialogue.dialogue-1')
         audio.set('srcCh', src_ch)
 
@@ -643,7 +676,8 @@ class FCPXMLUtils:
     def create_video_clip(name: str, ref: str, lane: str, offset: str,
                         duration: str, transforms: Optional[Dict] = None,
                         keywords: Optional[List[Dict]] = None,
-                        retime_map: Optional[Dict] = None) -> ET.Element:
+                        retime_map: Optional[Dict] = None,
+                        start: str = None) -> ET.Element:
         """Create a video element with proper transform handling.
 
         Args:
@@ -662,6 +696,9 @@ class FCPXMLUtils:
         video.set('offset', offset)
         video.set('name', name)
         video.set('duration', duration)
+
+        if start is not None:
+            video.set('start', start)
 
         # Add timeMap for retiming if provided (must come before adjust- elements per DTD)
         if retime_map:
@@ -733,31 +770,36 @@ class FCPXMLUtils:
         return cuts
 
     @staticmethod
-    def create_audio_only_clip(name: str, ref: str, lane: str, offset: str, 
+    def create_audio_only_clip(name: str, ref: str, lane: str, offset: str,
                             duration: str, role: str = "dialogue.dialogue-1",
-                            channels: str = "1, 2", enabled: bool = True) -> ET.Element:
+                            channels: str = "1, 2", enabled: bool = True,
+                            start: str = None, source_duration: str = None) -> ET.Element:
         """Create a clip element with audio only (for disabled master audio)."""
         clip = ET.Element('clip')
         clip.set('lane', lane)
         clip.set('offset', offset)
         clip.set('name', name)
         clip.set('duration', duration)
-        
+
+        if start is not None:
+            clip.set('start', start)
+
         if not enabled:
             clip.set('enabled', '0')
-        
+
         # Create gap for audio
+        internal_duration = source_duration if source_duration else duration
         gap = ET.SubElement(clip, 'gap')
         gap.set('name', 'Gap')
         gap.set('offset', '0s')
-        gap.set('duration', duration)
-        
+        gap.set('duration', internal_duration)
+
         # Add audio reference
         audio = ET.SubElement(gap, 'audio')
         audio.set('ref', ref)
         audio.set('lane', '-1')
         audio.set('offset', '0s')
-        audio.set('duration', duration)
+        audio.set('duration', internal_duration)
         audio.set('role', role)
         audio.set('srcCh', channels)
         

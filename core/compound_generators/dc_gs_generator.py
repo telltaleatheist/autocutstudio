@@ -80,7 +80,12 @@ class DCGSGenerator:
         original_duration = original_asset.get('duration')
         original_name = original_asset.get('name')
         original_src = original_asset.find('media-rep').get('src')
-        
+
+        # Calculate trim values for 2-second gap at start of compound
+        frame_duration_str = video_settings.get('frame_duration', '1001/30000s')
+        trim_duration = self.xml_utils.calculate_trim_duration(frame_duration_str)
+        trimmed_content_duration = self.xml_utils.subtract_time(original_duration, trim_duration)
+
         # Create new dc gs compound clip
         dc_gs_compound_id = "dc_gs_compound"
         dc_gs_name = f"{original_name} - DC GS"
@@ -271,11 +276,16 @@ class DCGSGenerator:
         sequence = dc_gs_media.find('sequence')
         spine = ET.SubElement(sequence, 'spine')
         
-        # Create the gap element that spans full duration of compound clip
+        # Create empty gap for 2-second trim padding at start
+        empty_gap = self.xml_utils.create_gap_element("Gap", "0s", trim_duration)
+        spine.append(empty_gap)
+
+        # Create content gap with trim offset
         gap = self.xml_utils.create_gap_element(
             "Gap",
-            "0s",
-            original_duration
+            trim_duration,
+            trimmed_content_duration,
+            start=trim_duration
         )
         
         # Add audio tracks based on available sources
@@ -291,11 +301,12 @@ class DCGSGenerator:
                     Path(audio_info['path']).stem,
                     audio_assets[mic_key],
                     str(current_audio_lane),
-                    "0s",
-                    audio_info['duration'],
+                    trim_duration,
+                    trimmed_content_duration,
                     mic_key,     # Pass audio type for effects
                     resources,   # Pass resources for effect creation
-                    enabled=False  # DISABLED for GS
+                    enabled=False,  # DISABLED for GS
+                    source_duration=audio_info['duration']
                 )
                 gap.append(mic_clip)
                 pass  # 0
@@ -308,11 +319,12 @@ class DCGSGenerator:
                 Path(audio_info['path']).stem,
                 audio_assets['screen'],
                 str(current_audio_lane),
-                "0s",
-                audio_info['duration'],
+                trim_duration,
+                trimmed_content_duration,
                 'screen',    # Pass audio type for effects
                 resources,   # Pass resources for effect creation
-                enabled=False  # DISABLED for GS
+                enabled=False,  # DISABLED for GS
+                source_duration=audio_info['duration']
             )
             gap.append(screen_clip)
             pass  # 0
@@ -325,11 +337,12 @@ class DCGSGenerator:
                 Path(audio_info['path']).stem,
                 audio_assets['game'],
                 str(current_audio_lane),
-                "0s",
-                audio_info['duration'],
+                trim_duration,
+                trimmed_content_duration,
                 'game',      # Pass audio type for effects
                 resources,   # Pass resources for effect creation
-                enabled=False  # DISABLED for GS
+                enabled=False,  # DISABLED for GS
+                source_duration=audio_info['duration']
             )
             gap.append(game_clip)
             pass  # 0
@@ -342,11 +355,12 @@ class DCGSGenerator:
                 Path(audio_info['path']).stem,
                 audio_assets['soundEffects'],
                 str(current_audio_lane),
-                "0s",
-                audio_info['duration'],
+                trim_duration,
+                trimmed_content_duration,
                 'soundEffects',  # Pass audio type for effects
                 resources,        # Pass resources for effect creation
-                enabled=False  # DISABLED for GS
+                enabled=False,  # DISABLED for GS
+                source_duration=audio_info['duration']
             )
             gap.append(sfx_clip)
             pass  # 0
@@ -361,9 +375,10 @@ class DCGSGenerator:
             original_name,
             original_asset_id,
             "-1",
-            "0s",
-            original_duration,
-            enabled=enable_master_audio  # Enable if no external audio sources
+            trim_duration,
+            trimmed_content_duration,
+            enabled=enable_master_audio,  # Enable if no external audio sources
+            source_duration=original_duration
         )
         gap.append(master_audio_clip)
         
@@ -390,8 +405,8 @@ class DCGSGenerator:
                     background_asset_key,
                     background_asset_id,
                     "1",
-                    "0s",
-                    original_duration,
+                    trim_duration,
+                    trimmed_content_duration,
                     None
                 )
                 gap.append(background_clip)
@@ -439,8 +454,8 @@ class DCGSGenerator:
                 screen_name_for_clip,
                 screen_video_asset,
                 "6",
-                "0s",
-                original_duration,
+                trim_duration,
+                trimmed_content_duration,
                 screen_transforms,
                 retime_map=screen_retime_map if screen_asset_id else None
             )
@@ -470,8 +485,8 @@ class DCGSGenerator:
                     "gs dc top left - Screen",
                     border_asset_id,
                     "7",
-                    "0s",
-                    original_duration,
+                    trim_duration,
+                    trimmed_content_duration,
                     None
                 )
                 gap.append(border_clip)
@@ -521,8 +536,8 @@ class DCGSGenerator:
                 camera1_name_for_clip,
                 camera1_asset,
                 "4",
-                "0s",
-                original_duration,
+                trim_duration,
+                trimmed_content_duration,
                 camera_transforms,
                 retime_map=None  # Never retime cam1 - it's recorded with master
             )
@@ -550,8 +565,8 @@ class DCGSGenerator:
                     "gs dc bottom left - Camera 1",
                     border_asset_id,
                     "5",
-                    "0s",
-                    original_duration,
+                    trim_duration,
+                    trimmed_content_duration,
                     None
                 )
                 gap.append(border_clip)
@@ -599,8 +614,8 @@ class DCGSGenerator:
                 game_name_for_clip,
                 game_video_asset,
                 "2",
-                "0s",
-                original_duration,
+                trim_duration,
+                trimmed_content_duration,
                 game_transforms,
                 retime_map=game_retime_map if game_asset_id else None
             )
@@ -628,8 +643,8 @@ class DCGSGenerator:
                     "gs dc bottom right - Game",
                     border_asset_id,
                     "3",
-                    "0s",
-                    original_duration,
+                    trim_duration,
+                    trimmed_content_duration,
                     None
                 )
                 gap.append(border_clip)
@@ -677,8 +692,8 @@ class DCGSGenerator:
                 camera2_name_for_clip,
                 camera2_asset,
                 "8",
-                "0s",
-                original_duration,
+                trim_duration,
+                trimmed_content_duration,
                 cam2_transforms,
                 retime_map=None  # Never retime cam2 - it's recorded with master
             )
@@ -706,8 +721,8 @@ class DCGSGenerator:
                     "gs dc top right - Camera 2",
                     border_asset_id,
                     "9",
-                    "0s",
-                    original_duration,
+                    trim_duration,
+                    trimmed_content_duration,
                     None
                 )
                 gap.append(border_clip)
@@ -758,7 +773,8 @@ class DCGSGenerator:
 
             ref_clip.set('offset', snapped_offset)
             ref_clip.set('duration', snapped_duration)
-            ref_clip.set('start', snapped_start)
+            adjusted_start = self._add_time_fractions(snapped_start, trim_duration)
+            ref_clip.set('start', adjusted_start)
 
             # Calculate next expected offset
             expected_offset = self._add_time_fractions(snapped_offset, snapped_duration)

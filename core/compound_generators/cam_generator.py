@@ -84,7 +84,12 @@ class CamGenerator:
         original_duration = original_asset.get('duration')
         original_name = original_asset.get('name')
         original_src = original_asset.find('media-rep').get('src')
-        
+
+        # Calculate trim values for 2-second gap at start of compound
+        frame_duration_str = video_settings.get('frame_duration', '1001/30000s')
+        trim_duration = self.xml_utils.calculate_trim_duration(frame_duration_str)
+        trimmed_content_duration = self.xml_utils.subtract_time(original_duration, trim_duration)
+
         # Create new cam compound clip
         cam_compound_id = "cam_compound"
         cam_name = f"{original_name} - Cam"
@@ -207,10 +212,17 @@ class CamGenerator:
         
         # Create the gap element that spans full duration of compound clip
         gap_config = layout_config.get('gap', {})
+
+        # Create empty gap for 2-second trim padding at start
+        empty_gap = self.xml_utils.create_gap_element("Gap", "0s", trim_duration)
+        spine.append(empty_gap)
+
+        # Create content gap with trim offset
         gap = self.xml_utils.create_gap_element(
             gap_config.get('name', 'Gap'),
-            "0s",  # Always start at beginning
-            original_duration  # Span full duration of master clip
+            trim_duration,
+            trimmed_content_duration,
+            start=trim_duration
         )
         
         # Add master audio clip FIRST at lane -1
@@ -222,8 +234,9 @@ class CamGenerator:
             original_name,
             original_asset_id,
             "-1",  # Always lane -1
-            "0s",  # Start at beginning of gap
-            original_duration,
+            trim_duration,
+            trimmed_content_duration,
+            source_duration=original_duration,
             enabled=enable_master_audio  # Enable if no external audio sources
         )
         gap.append(master_audio_clip)
@@ -238,10 +251,11 @@ class CamGenerator:
                     Path(audio_info['path']).stem,
                     audio_assets[audio_type],
                     str(audio_lane),
-                    "0s",
-                    audio_info['duration'],
+                    trim_duration,
+                    trimmed_content_duration,
                     audio_type,
                     resources,
+                    source_duration=audio_info['duration'],
                     enabled=True,
                     channels=audio_info['channels']
                 )
@@ -272,8 +286,8 @@ class CamGenerator:
                     background_asset_key,
                     background_asset_id,
                     "1",  # Lane 1 - bottom video layer
-                    "0s",
-                    original_duration,
+                    trim_duration,
+                    trimmed_content_duration,
                     None  # No transforms for background
                 )
                 gap.append(background_clip)
@@ -321,8 +335,8 @@ class CamGenerator:
                 camera_name_for_clip,
                 camera_asset,
                 video_lane,
-                "0s",  # Start at beginning of gap
-                original_duration,
+                trim_duration,
+                trimmed_content_duration,
                 transforms,
                 retime_map=None  # Never retime cam1 - it's recorded with master
             )
@@ -353,8 +367,8 @@ class CamGenerator:
                         border_asset_key,
                         border_asset_id,
                         border_lane,
-                        "0s",
-                        original_duration,
+                        trim_duration,
+                        trimmed_content_duration,
                         None  # No transforms - border should be full-screen overlay
                     )
                     gap.append(border_clip)
@@ -409,7 +423,8 @@ class CamGenerator:
 
             ref_clip.set('offset', snapped_offset)
             ref_clip.set('duration', snapped_duration)
-            ref_clip.set('start', snapped_start)
+            adjusted_start = self._add_time_fractions(snapped_start, trim_duration)
+            ref_clip.set('start', adjusted_start)
 
             # Calculate next expected offset (current offset + duration)
             expected_offset = self._add_time_fractions(snapped_offset, snapped_duration)
