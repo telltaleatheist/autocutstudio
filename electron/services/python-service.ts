@@ -3,6 +3,7 @@ import { spawn, ChildProcess } from 'child_process';
 import * as log from 'electron-log';
 import { AppConfig } from '../config/app-config';
 import { BinaryResolver } from './binary-resolver';
+import { DuganAutomixer, DuganTrack } from './dugan-automixer';
 import * as path from 'path';
 
 export interface PythonExecutionOptions {
@@ -187,42 +188,100 @@ export class PythonService {
 
     let finalResult: any = null;
 
-    // Handle stdout - parse JSON messages
+    // Line buffer for stdout — Node.js data events don't guarantee
+    // complete lines, so we must buffer and split on newlines to
+    // avoid silently dropping JSON messages (like ducking_request).
+    let stdoutBuffer = '';
+
+    /**
+     * Process a single complete line of stdout output.
+     */
+    const processLine = (line: string) => {
+      try {
+        const message = JSON.parse(line);
+        log.info(`[${jobId}] Parsed JSON message:`, message);
+
+        if (message.type === 'progress' && options.onProgress) {
+          log.info(`[${jobId}] Emitting progress: ${message.progress}% - ${message.message}`);
+          options.onProgress(message.progress, message.message, message.sub_progress);
+        } else if (message.type === 'operation_start' && options.onOutput) {
+          log.info(`[${jobId}] Operation start:`, message);
+          options.onOutput(JSON.stringify({ type: 'operation_start', data: { operation: message.operation, can_skip: message.can_skip } }));
+        } else if (message.type === 'skip_capabilities' && options.onOutput) {
+          log.info(`[${jobId}] Skip capabilities:`, message);
+          options.onOutput(JSON.stringify({ type: 'skip_capabilities', data: { decisions: message.decisions } }));
+        } else if (message.type === 'error' && options.onError) {
+          log.error(`[${jobId}] Emitting error:`, message.error);
+          options.onError(message.error);
+        } else if (message.type === 'success') {
+          log.info(`[${jobId}] Workflow success:`, message.result);
+          finalResult = message.result;
+        } else if (message.type === 'ducking_request') {
+          // Run Dugan automixer on tracks Python sent us
+          log.info(`[${jobId}] Ducking request received: ${message.tracks.length} tracks`);
+          for (const t of message.tracks) {
+            log.info(`[${jobId}]   Track: ${t.type} → ${t.path}`);
+          }
+          const dugan = new DuganAutomixer();
+          const duganTracks: DuganTrack[] = (message.tracks || []).map((t: any) => ({
+            type: t.type,
+            filePath: t.path
+          }));
+
+          dugan.process(duganTracks).then((results) => {
+            log.info(`[${jobId}] Dugan automixer completed successfully: ${results.length} tracks processed`);
+            const response = JSON.stringify({
+              type: 'ducking_complete',
+              tracks: results.map(r => ({ type: r.type, path: r.filePath }))
+            }) + '\n';
+            if (!pythonProcess.stdin.destroyed) {
+              pythonProcess.stdin.write(response, (err) => {
+                if (err) {
+                  log.error(`[${jobId}] Failed to write Dugan response to stdin:`, err);
+                }
+              });
+            } else {
+              log.error(`[${jobId}] Cannot write Dugan response — stdin is destroyed`);
+            }
+          }).catch((err) => {
+            log.error(`[${jobId}] Dugan automixer FAILED:`, err);
+            const response = JSON.stringify({
+              type: 'ducking_complete',
+              error: err.message
+            }) + '\n';
+            if (!pythonProcess.stdin.destroyed) {
+              pythonProcess.stdin.write(response, (err2) => {
+                if (err2) {
+                  log.error(`[${jobId}] Failed to write Dugan error response to stdin:`, err2);
+                }
+              });
+            }
+          });
+        }
+      } catch (e) {
+        // Not JSON, treat as regular output
+        log.info(`[${jobId}] Non-JSON output:`, line);
+        if (options.onOutput) {
+          options.onOutput(line);
+        }
+      }
+    };
+
+    // Handle stdout with proper line buffering
     pythonProcess.stdout.on('data', (data) => {
       const output = data.toString();
       log.info(`[${jobId}] Raw stdout:`, output);
 
-      // Try to parse each line as JSON
-      const lines = output.split('\n').filter((line: string) => line.trim());
-      for (const line of lines) {
-        try {
-          const message = JSON.parse(line);
-          log.info(`[${jobId}] Parsed JSON message:`, message);
+      // Append to buffer and process complete lines
+      stdoutBuffer += output;
+      const lines = stdoutBuffer.split('\n');
+      // Keep the last element (incomplete line) in the buffer
+      stdoutBuffer = lines.pop() || '';
 
-          if (message.type === 'progress' && options.onProgress) {
-            log.info(`[${jobId}] Emitting progress: ${message.progress}% - ${message.message}`);
-            options.onProgress(message.progress, message.message, message.sub_progress);
-          } else if (message.type === 'operation_start' && options.onOutput) {
-            log.info(`[${jobId}] Operation start:`, message);
-            // Send as structured output so processing service can handle it
-            options.onOutput(JSON.stringify({ type: 'operation_start', data: { operation: message.operation, can_skip: message.can_skip } }));
-          } else if (message.type === 'skip_capabilities' && options.onOutput) {
-            log.info(`[${jobId}] Skip capabilities:`, message);
-            // Send as structured output so processing service can handle it
-            options.onOutput(JSON.stringify({ type: 'skip_capabilities', data: { decisions: message.decisions } }));
-          } else if (message.type === 'error' && options.onError) {
-            log.error(`[${jobId}] Emitting error:`, message.error);
-            options.onError(message.error);
-          } else if (message.type === 'success') {
-            log.info(`[${jobId}] Workflow success:`, message.result);
-            finalResult = message.result;
-          }
-        } catch (e) {
-          // Not JSON, treat as regular output
-          log.info(`[${jobId}] Non-JSON output:`, line);
-          if (options.onOutput) {
-            options.onOutput(line);
-          }
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed) {
+          processLine(trimmed);
         }
       }
     });
@@ -238,6 +297,12 @@ export class PythonService {
 
     // Handle process completion
     pythonProcess.on('close', (code) => {
+      // Flush any remaining data in the line buffer
+      if (stdoutBuffer.trim()) {
+        processLine(stdoutBuffer.trim());
+        stdoutBuffer = '';
+      }
+
       log.info(`[${jobId}] Workflow process exited with code ${code}`);
       this.runningProcesses.delete(jobId);
       if (options.onComplete) {

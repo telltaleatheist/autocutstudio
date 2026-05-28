@@ -25,3 +25,9 @@ core/video_analysis/__pycache__/*
 # Bundled binaries and Python runtime (too large for git)
 binaries/
 python/
+*.dylib
+*.dll
+*.exe
+*.bin
+utilities/bin/*
+CLAUDE.md

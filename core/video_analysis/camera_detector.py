@@ -135,53 +135,53 @@ class CameraDetector:
 
     def _is_camera_active(self, video_path: str, timestamp: float, region: str) -> bool:
         """
-        Check if camera is active at a specific timestamp using motion detection.
+        Check if camera is active at a specific timestamp using solid color detection.
 
-        Compares two frames 0.5 seconds apart to detect movement:
-        - No movement = inactive (static image, black screen, frozen feed)
-        - Movement detected = active camera (person moving, even slightly)
+        A single frame is analyzed for color uniformity:
+        - Solid black = camera never turned on (inactive)
+        - Solid blue = camera was turned on then off (inactive)
+        - Varied colors/content = active camera (person visible, even if stationary)
         """
         try:
-            # Extract two frames 0.5 seconds apart
-            frame1_data = self._extract_frame(video_path, timestamp, region)
-            frame2_data = self._extract_frame(video_path, timestamp + 0.5, region)
+            frame_data = self._extract_frame(video_path, timestamp, region)
 
-            if frame1_data is None or frame2_data is None:
+            if frame_data is None:
                 return False
 
-            # Load as images and convert to grayscale for comparison
-            img1 = Image.open(io.BytesIO(frame1_data)).convert('L')
-            img2 = Image.open(io.BytesIO(frame2_data)).convert('L')
+            img = Image.open(io.BytesIO(frame_data)).convert('RGB')
+            pixels = np.array(img, dtype=np.float32)
 
-            pixels1 = np.array(img1, dtype=np.float32)
-            pixels2 = np.array(img2, dtype=np.float32)
+            # Calculate per-channel statistics
+            r, g, b = pixels[:,:,0], pixels[:,:,1], pixels[:,:,2]
+            mean_r, mean_g, mean_b = r.mean(), g.mean(), b.mean()
+            std_r, std_g, std_b = r.std(), g.std(), b.std()
 
-            # Calculate absolute difference between frames
-            diff = np.abs(pixels1 - pixels2)
-
-            # Calculate motion metrics
-            mean_diff = diff.mean()  # Average pixel change
-            max_diff = diff.max()    # Maximum pixel change
-
-            # Count pixels with significant change (> 10 levels)
-            motion_pixels = np.sum(diff > 10)
-            total_pixels = diff.size
-            motion_percentage = (motion_pixels / total_pixels) * 100
+            # Overall color variance - how uniform is the frame?
+            overall_std = np.sqrt(std_r**2 + std_g**2 + std_b**2)
 
             # Debug output
-            print(f"[CameraDetector] {timestamp}s - mean_diff: {mean_diff:.2f}, max_diff: {max_diff:.0f}, motion: {motion_percentage:.2f}%", file=sys.stderr)
+            print(f"[CameraDetector] {timestamp}s - RGB mean: ({mean_r:.0f},{mean_g:.0f},{mean_b:.0f}), "
+                  f"RGB std: ({std_r:.1f},{std_g:.1f},{std_b:.1f}), overall_std: {overall_std:.1f}", file=sys.stderr)
 
-            # Detection logic:
-            # Camera is active if there's meaningful movement
-            # Use high thresholds to ignore compression artifacts from streaming/downloaded video
-            # Compression noise: typically mean_diff < 5, motion < 3%
-            # Actual movement: mean_diff > 8, motion > 5%
-            if motion_percentage > 5 and mean_diff > 8:
-                print(f"[CameraDetector] {timestamp}s - MOTION detected (active)", file=sys.stderr)
-                return True
-            else:
-                print(f"[CameraDetector] {timestamp}s - NO motion (inactive)", file=sys.stderr)
+            # Detect solid black: all channels low with low variance
+            is_black = mean_r < 30 and mean_g < 30 and mean_b < 30 and overall_std < 15
+            # Detect solid blue: blue channel dominant with low variance
+            is_blue = mean_b > 100 and mean_b > mean_r * 1.5 and mean_b > mean_g * 1.5 and overall_std < 30
+            # Detect any solid color: very low variance across the frame
+            is_solid = overall_std < 10
+
+            if is_black:
+                print(f"[CameraDetector] {timestamp}s - SOLID BLACK detected (inactive)", file=sys.stderr)
                 return False
+            elif is_blue:
+                print(f"[CameraDetector] {timestamp}s - SOLID BLUE detected (inactive)", file=sys.stderr)
+                return False
+            elif is_solid:
+                print(f"[CameraDetector] {timestamp}s - SOLID COLOR detected (inactive)", file=sys.stderr)
+                return False
+            else:
+                print(f"[CameraDetector] {timestamp}s - varied content (active)", file=sys.stderr)
+                return True
 
         except Exception as e:
             print(f"[CameraDetector] Error checking frame at {timestamp}s: {e}", file=sys.stderr)

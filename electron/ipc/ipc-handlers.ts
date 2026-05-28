@@ -5,6 +5,7 @@ import * as log from 'electron-log';
 import { WindowService } from '../services/window-service';
 import { PythonService } from '../services/python-service';
 import { DependencyService } from '../services/dependency-service';
+import { DuganAutomixer, DuganTrack } from '../services/dugan-automixer';
 import { AppConfig } from '../config/app-config';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -473,119 +474,41 @@ function setupAudioHandlers(): void {
     }
   });
 
-  // Process audio ducking
+  // Process audio ducking (Dugan automixer - N tracks)
   ipcMain.handle('process-audio-ducking', async (event, options: {
-    audio1: string;
-    audio2: string;
-    mode: 'duck1' | 'duck2' | 'mutual';
-    threshold: number;
+    tracks: Array<{ type: string; filePath: string }>;
   }) => {
     try {
-      log.info('Processing audio ducking:', options);
+      log.info('Processing Dugan automixer:', options);
 
-      const { audio1, audio2, mode, threshold } = options;
+      const { tracks } = options;
 
       // Validate inputs
-      if (!audio1 || !fs.existsSync(audio1)) {
-        return { success: false, error: 'Audio file 1 does not exist' };
-      }
-      if (!audio2 || !fs.existsSync(audio2)) {
-        return { success: false, error: 'Audio file 2 does not exist' };
+      if (!tracks || tracks.length < 2) {
+        return { success: false, error: 'Need at least 2 audio tracks for Dugan automixer' };
       }
 
-      // Execute Python script for audio ducking
-      return new Promise((resolve) => {
-        let outputData = '';
-        let errorData = '';
+      for (const track of tracks) {
+        if (!track.filePath || !fs.existsSync(track.filePath)) {
+          return { success: false, error: `Audio file does not exist: ${track.filePath}` };
+        }
+      }
 
-        // Execute Python audio ducking script
-        const scriptPath = path.join(AppConfig.cliPath, 'audio_ducking.py');
-        log.info('Audio ducking script path:', scriptPath);
+      const dugan = new DuganAutomixer();
+      const duganTracks: DuganTrack[] = tracks.map(t => ({
+        type: t.type,
+        filePath: t.filePath
+      }));
 
-        const pythonProcess = spawn('python3', [
-          scriptPath,
-          audio1,
-          audio2,
-          mode,
-          threshold.toString()
-        ]);
+      const results = await dugan.process(duganTracks);
 
-        // Handle stdout
-        pythonProcess.stdout.on('data', (data: Buffer) => {
-          const output = data.toString();
-          outputData += output;
-          log.info('Audio ducking output:', output);
-        });
-
-        // Handle stderr (progress info goes here)
-        pythonProcess.stderr.on('data', (data: Buffer) => {
-          const error = data.toString();
-          errorData += error;
-          log.info('Audio ducking info:', error); // Often progress info goes to stderr
-
-          // Parse and forward progress updates
-          const lines = error.split('\n');
-          for (const line of lines) {
-            // Look for ffmpeg progress lines (e.g., "time=00:01:23.45")
-            if (line.includes('time=') && line.includes('speed=')) {
-              // Send progress notification to renderer
-              event.sender.send('audio-ducking-progress', { message: line.trim() });
-            }
-          }
-        });
-
-        // Handle process completion
-        pythonProcess.on('close', (code: number | null) => {
-          if (code === 0) {
-            // Parse output files from the output
-            const outputFiles: string[] = [];
-
-            // Extract file paths from output (look for lines with processed files)
-            const lines = errorData.split('\n');
-            for (const line of lines) {
-              if (line.includes('_processed')) {
-                const match = line.match(/saved to: (.+)/i) || line.match(/• (.+)/);
-                if (match) {
-                  outputFiles.push(match[1].trim());
-                }
-              }
-            }
-
-            // If we couldn't parse from output, construct expected paths
-            if (outputFiles.length === 0) {
-              const audio1File = path.parse(audio1);
-              const audio2File = path.parse(audio2);
-
-              if (mode === 'duck1' || mode === 'mutual') {
-                outputFiles.push(path.join(audio1File.dir, `${audio1File.name}_processed.wav`));
-              }
-              if (mode === 'duck2' || mode === 'mutual') {
-                outputFiles.push(path.join(audio2File.dir, `${audio2File.name}_processed.wav`));
-              }
-            }
-
-            log.info('Audio ducking completed successfully:', outputFiles);
-            resolve({ success: true, outputFiles });
-          } else {
-            log.error('Audio ducking failed with code:', code);
-            resolve({ success: false, error: errorData || 'Failed to process audio ducking' });
-          }
-        });
-
-        // Handle process errors
-        pythonProcess.on('error', (error: Error) => {
-          log.error('Audio ducking process error:', error);
-          resolve({ success: false, error: error.message });
-        });
-
-        // Timeout after 10 minutes
-        setTimeout(() => {
-          pythonProcess.kill();
-          resolve({ success: false, error: 'Operation timed out after 10 minutes' });
-        }, 10 * 60 * 1000);
-      });
+      log.info('Dugan automixer completed:', results);
+      return {
+        success: true,
+        tracks: results.map(r => ({ type: r.type, filePath: r.filePath }))
+      };
     } catch (error: any) {
-      log.error('Error processing audio ducking:', error);
+      log.error('Error processing Dugan automixer:', error);
       return { success: false, error: error.message };
     }
   });

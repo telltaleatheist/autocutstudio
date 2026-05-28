@@ -11,6 +11,9 @@ import { setupIpcHandlers } from './ipc/ipc-handlers';
  * Main application entry point
  */
 
+// Allow up to 8 GB heap for large audio processing (Dugan automixer)
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=8192');
+
 let windowService: WindowService;
 let pythonService: PythonService;
 let dependencyService: DependencyService;

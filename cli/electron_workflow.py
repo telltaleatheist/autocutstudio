@@ -633,25 +633,64 @@ def main():
             if vpath:
                 print(f"  {vtype}: {Path(vpath).name}", file=sys.stderr)
 
-        # Step 3.5: Apply auto ducking if enabled (BEFORE generating any compounds)
+        # Step 3.5: Apply Dugan automixer if enabled (BEFORE generating any compounds)
         if auto_duck:
-            emit_progress(38, 'Applying universal auto ducking...')
-            print("\n=== Universal Auto Ducking Enabled ===", file=sys.stderr)
+            emit_progress(38, 'Applying Dugan automixer...')
+            print("\n=== Dugan Automixer Enabled ===", file=sys.stderr)
 
-            # DEBUG: Show what's in processed_audio before ducking
-            print(f"\nProcessed audio sources available for ducking:", file=sys.stderr)
+            # Build track list for Dugan - include all processed audio tracks
+            dugan_tracks = []
+            print(f"\nProcessed audio sources available for Dugan:", file=sys.stderr)
             for audio_type, audio_info in processed_audio.items():
-                if audio_info:
+                if audio_info and audio_info.get('path'):
                     is_sb = audio_info.get('sync_info', {}).get('is_soundboard', False)
                     sb_tag = " [SOUNDBOARD]" if is_sb else " [VMIX/REGULAR]"
                     print(f"  {audio_type}: {Path(audio_info['path']).name}{sb_tag}", file=sys.stderr)
+                    dugan_tracks.append({
+                        'type': audio_type,
+                        'path': audio_info['path']
+                    })
             print(file=sys.stderr)
 
-            # Use the GSGenerator's ducking method (already imported at top)
-            temp_gs = GSGenerator(config)
-            temp_gs._apply_auto_ducking(processed_audio)
+            if len(dugan_tracks) >= 2:
+                # Send ducking request to Electron (TypeScript Dugan automixer)
+                emit_progress(38, f'Sending {len(dugan_tracks)} tracks to Dugan automixer...')
+                print(json.dumps({
+                    'type': 'ducking_request',
+                    'tracks': dugan_tracks
+                }), flush=True)
 
-            print("=== Auto Ducking Complete ===\n", file=sys.stderr)
+                # Wait for ducking_complete response on stdin
+                print("Waiting for Dugan automixer response from Electron...", file=sys.stderr)
+                response_line = sys.stdin.readline()
+                if response_line:
+                    response = json.loads(response_line.strip())
+                    if response.get('type') == 'ducking_complete':
+                        if response.get('error'):
+                            print(f"⚠ Dugan automixer error: {response['error']}", file=sys.stderr)
+                            emit_progress(39, f'Dugan automixer FAILED: {response["error"]}')
+                        else:
+                            # Update processed_audio paths with ducked versions
+                            ducked_tracks = response.get('tracks', [])
+                            for track in ducked_tracks:
+                                t_type = track['type']
+                                t_path = track['path']
+                                if t_type in processed_audio:
+                                    processed_audio[t_type]['path'] = t_path
+                                    print(f"✓ Updated {t_type} with Dugan-processed file", file=sys.stderr)
+                            print(f"✓ Dugan automixer applied to {len(ducked_tracks)} tracks", file=sys.stderr)
+                            emit_progress(39, f'Dugan automixer applied to {len(ducked_tracks)} tracks')
+                    else:
+                        print(f"⚠ Unexpected response type: {response.get('type')}", file=sys.stderr)
+                        emit_progress(39, f'Dugan: unexpected response type: {response.get("type")}')
+                else:
+                    print("⚠ No response received from Electron for Dugan automixer", file=sys.stderr)
+                    emit_progress(39, 'Dugan: no response received from Electron')
+            else:
+                print(f"⚠ Only {len(dugan_tracks)} track(s) available - need at least 2 for Dugan", file=sys.stderr)
+                emit_progress(39, f'Dugan skipped: only {len(dugan_tracks)} track(s), need 2+')
+
+            print("=== Dugan Automixer Complete ===\n", file=sys.stderr)
 
         # Step 4: Generate compound clips
         generated_clips = []

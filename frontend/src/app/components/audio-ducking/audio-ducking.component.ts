@@ -63,23 +63,23 @@ export class AudioDuckingComponent {
     }
 
     this.isProcessing = true;
-    this.statusMessage = 'Processing audio ducking...';
+    this.statusMessage = 'Processing Dugan automixer...';
     this.outputFiles = [];
 
     try {
       const result = await this.electronService.processAudioDucking({
-        audio1: this.audio1Path,
-        audio2: this.audio2Path,
-        mode: this.duckingMode,
-        threshold: this.threshold
+        tracks: [
+          { type: 'audio1', filePath: this.audio1Path },
+          { type: 'audio2', filePath: this.audio2Path }
+        ]
       });
 
       if (result.success) {
-        this.outputFiles = result.outputFiles || [];
-        this.statusMessage = `Success! Created ${this.outputFiles.length} ducked audio file(s)`;
+        this.outputFiles = (result.tracks || []).map(t => t.filePath);
+        this.statusMessage = `Success! Processed ${this.outputFiles.length} audio file(s) with Dugan automixer`;
       } else {
         this.statusMessage = 'Error: ' + (result.error || 'Unknown error');
-        alert('Error processing audio ducking: ' + result.error);
+        alert('Error processing Dugan automixer: ' + result.error);
       }
     } catch (error) {
       console.error('Error processing ducking:', error);

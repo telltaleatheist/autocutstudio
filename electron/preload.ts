@@ -30,11 +30,8 @@ export interface ElectronAPI {
     driftFrames: number;
   }) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
   processAudioDucking: (options: {
-    audio1: string;
-    audio2: string;
-    mode: 'duck1' | 'duck2' | 'mutual';
-    threshold: number;
-  }) => Promise<{ success: boolean; outputFiles?: string[]; error?: string }>;
+    tracks: Array<{ type: string; filePath: string }>;
+  }) => Promise<{ success: boolean; tracks?: Array<{ type: string; filePath: string }>; error?: string }>;
 
   // Workflow events
   onWorkflowOutput: (callback: (data: any) => void) => void;

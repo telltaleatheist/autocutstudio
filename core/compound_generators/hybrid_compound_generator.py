@@ -138,6 +138,7 @@ class HybridCompoundGenerator:
                 new_clip.set('lane', lane)
                 new_clip.set('offset', offset_str)
                 new_clip.set('name', original_clip.get('name'))
+                new_clip.set('start', offset_str)  # In-point in source media must match timeline position
                 new_clip.set('duration', duration_str)
 
                 # Apply segment-specific settings
@@ -249,6 +250,7 @@ class HybridCompoundGenerator:
                 new_clip.set('lane', original_clip.get('lane'))
                 new_clip.set('offset', offset_str)
                 new_clip.set('name', original_clip.get('name'))
+                new_clip.set('start', offset_str)  # In-point in source media must match timeline position
                 new_clip.set('duration', duration_str)
 
                 # Enable for DC, disable for SOLO

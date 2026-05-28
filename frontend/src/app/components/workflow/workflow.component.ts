@@ -33,8 +33,8 @@ export class WorkflowComponent implements OnInit {
   // Audio corrections
   globalDriftFrames = 0;
 
-  // Auto ducking - disabled by default
-  autoDuck = false;
+  // Auto ducking (Dugan automixer) - enabled by default
+  autoDuck = true;
 
   // Stream recovery mode - use downloaded stream as master
   useDownloadedStream = false;
