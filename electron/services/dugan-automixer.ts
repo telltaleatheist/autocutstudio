@@ -1,5 +1,5 @@
 // electron/services/dugan-automixer.ts
-import { spawn } from 'child_process';
+import { spawn, ChildProcess } from 'child_process';
 import * as log from 'electron-log';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -31,11 +31,11 @@ interface ProbeInfo {
 /**
  * Dugan-style automixer for N audio tracks.
  *
- * Uses a two-pass approach to keep memory usage low:
- *   Pass 1 — Decode each track to mono, compute RMS, free immediately
- *   Pass 2 — Decode each track (full channels), apply gains, encode
+ * Fully streaming — never loads an entire file into memory.
+ * Handles files of any size (tested with multi-GiB WAV files).
  *
- * Only one track's raw PCM is in memory at a time.
+ *   Pass 1 — Stream-decode each track to mono, compute RMS on the fly
+ *   Pass 2 — Stream-decode → apply gains → pipe to encoder
  *
  * For each time window:
  *   gain_i = rms_i / (sum(all rms) + epsilon)
@@ -62,7 +62,7 @@ export class DuganAutomixer {
 
     log.info(`DuganAutomixer: processing ${tracks.length} tracks`);
 
-    // 1. Probe all tracks in parallel (tiny data)
+    // 1. Probe all tracks in parallel
     const probes: ProbeInfo[] = await Promise.all(
       tracks.map(track => this.probeTrack(track.filePath))
     );
@@ -83,25 +83,21 @@ export class DuganAutomixer {
     const windowSamples = Math.floor(sampleRate * WINDOW_MS / 1000);
     const hopSamples = Math.floor(sampleRate * HOP_MS / 1000);
 
-    // ── PASS 1: Analysis ──────────────────────────────────────────────
-    // Decode each track to MONO f32le, compute RMS, then free.
-    // Only one track's mono PCM is in memory at a time.
-    // After this pass, only the tiny RMS arrays remain (~2.5MB each).
-    log.info('  Pass 1: computing RMS for each track...');
+    // ── PASS 1: Streaming RMS Analysis ────────────────────────────────
+    // Stream-decode each track to mono f32le, compute RMS on the fly.
+    // Only a small sliding window buffer is in memory at any time.
+    log.info('  Pass 1: streaming RMS computation for each track...');
 
     const rmsArrays: Float32Array[] = [];
     const monoLengths: number[] = [];
 
     for (let i = 0; i < tracks.length; i++) {
-      const mono = await this.decodeToF32(tracks[i].filePath, probes[i], true);
-      monoLengths.push(mono.length);
-      log.info(`  Decoded mono ${tracks[i].type}: ${mono.length} samples (${(mono.length / sampleRate).toFixed(1)}s)`);
-
-      const analysisLen = mono.length;  // Will use shortest for gain calc below
-      const numFrames = Math.floor((analysisLen - windowSamples) / hopSamples) + 1;
-      const rms = this.computeRmsFrames(mono, windowSamples, hopSamples, numFrames);
+      const { rms, totalSamples } = await this.streamComputeRms(
+        tracks[i].filePath, probes[i], windowSamples, hopSamples
+      );
       rmsArrays.push(rms);
-      // mono goes out of scope here — GC can reclaim ~2.5GB
+      monoLengths.push(totalSamples);
+      log.info(`  ${tracks[i].type}: ${totalSamples} samples (${(totalSamples / sampleRate).toFixed(1)}s), ${rms.length} RMS frames`);
     }
 
     // Use shortest track for gain analysis
@@ -166,10 +162,10 @@ export class DuganAutomixer {
       log.info(`  ${tracks[i].type}: gain min=${minGain.toFixed(4)} max=${maxGain.toFixed(4)} avg=${avgGain.toFixed(4)} | rms avg=${avgRms.toFixed(6)} peak=${maxRms.toFixed(6)} | dominant=${pct}%`);
     }
 
-    // ── PASS 2: Apply gains + encode ──────────────────────────────────
-    // Decode each track at full channel count, apply gains, encode back.
-    // One track at a time to keep memory in check.
-    log.info('  Pass 2: applying gains and encoding...');
+    // ── PASS 2: Streaming gain application + encode ───────────────────
+    // Stream-decode each track, apply gains on the fly, pipe to encoder.
+    // Only one small chunk is in memory at a time.
+    log.info('  Pass 2: streaming gain application and encoding...');
 
     const results: DuganResult[] = [];
 
@@ -177,49 +173,15 @@ export class DuganAutomixer {
       const ch = probes[i].channels;
       const trackGains = smoothedGains[i];
 
-      // Decode full-channel PCM
-      const raw = await this.decodeToF32(tracks[i].filePath, probes[i], false);
-      const totalSamples = raw.length;
-      const monoSamples = Math.floor(totalSamples / ch);
+      log.info(`  Processing ${tracks[i].type}: ${ch}ch, ${numFrames} gain frames`);
 
-      log.info(`  Applying gains to ${tracks[i].type}: ${monoSamples} samples, ${ch}ch`);
+      await this.streamApplyGains(
+        tracks[i].filePath, probes[i], trackGains,
+        numFrames, hopSamples, windowHalf, firstCenter, lastCenter
+      );
 
-      // Apply gains in-place to avoid allocating a second large buffer
-      let frameIdx = 0;
-      for (let s = 0; s < monoSamples; s++) {
-        let gain: number;
-
-        if (s <= firstCenter) {
-          gain = trackGains[0];
-        } else if (s >= lastCenter) {
-          gain = trackGains[numFrames - 1];
-        } else {
-          // Linear walk — advance frame as samples progress
-          while (frameIdx < numFrames - 2) {
-            const nextCenter = (frameIdx + 1) * hopSamples + windowHalf;
-            if (s < nextCenter) break;
-            frameIdx++;
-          }
-          const center0 = frameIdx * hopSamples + windowHalf;
-          const center1 = (frameIdx + 1) * hopSamples + windowHalf;
-          const t = (s - center0) / (center1 - center0);
-          gain = trackGains[frameIdx] + t * (trackGains[frameIdx + 1] - trackGains[frameIdx]);
-        }
-
-        const base = s * ch;
-        for (let c = 0; c < ch; c++) {
-          raw[base + c] *= gain;
-        }
-      }
-
-      // Reset frame index for next track
-      frameIdx = 0;
-
-      // Encode back to original codec, overwriting input
-      await this.encodeFromF32(raw, tracks[i].filePath, probes[i]);
       results.push({ type: tracks[i].type, filePath: tracks[i].filePath });
-      log.info(`  Wrote ${tracks[i].type}: ${tracks[i].filePath} (${(monoSamples / sampleRate).toFixed(1)}s)`);
-      // raw goes out of scope — GC reclaims ~5GB
+      log.info(`  Wrote ${tracks[i].type}: ${tracks[i].filePath}`);
     }
 
     log.info(`DuganAutomixer: DONE — ${results.length} tracks processed and overwritten in-place`);
@@ -233,7 +195,7 @@ export class DuganAutomixer {
     return new Promise((resolve, reject) => {
       const ffprobe = this.binaryResolver.getFfprobePath();
       const args = [
-        '-hide_banner',
+        '-hide_banner', '-v', 'error',
         '-show_entries', 'stream=codec_name,sample_rate,channels',
         '-select_streams', 'a:0',
         '-of', 'csv=p=0:s=,',
@@ -260,7 +222,8 @@ export class DuganAutomixer {
         for (const line of stdout.trim().split('\n')) {
           const parts = line.trim().split(',');
           if (parts.length >= 3) {
-            if (parts[0].startsWith('pcm_')) codec = parts[0];
+            // Accept any codec (not just pcm_*)
+            if (parts[0]) codec = parts[0];
             const sr = parseInt(parts[1], 10);
             if (!isNaN(sr)) sampleRate = sr;
             const ch = parseInt(parts[2], 10);
@@ -276,159 +239,288 @@ export class DuganAutomixer {
   }
 
   /**
-   * Decode a WAV file to raw f32le PCM using ffmpeg.
-   * If mono=true, downmixes to 1 channel (for RMS analysis pass).
-   * Writes decoded PCM to a temp file on disk, then reads it back
-   * into a single Float32Array — avoids double-memory from buffering
-   * chunks in RAM alongside the final ArrayBuffer.
+   * Stream-decode a track to mono f32le and compute RMS frames on the fly.
+   * Never loads the entire file into memory — only keeps a sliding window buffer.
    */
-  private decodeToF32(filePath: string, info: ProbeInfo, mono: boolean): Promise<Float32Array> {
+  private streamComputeRms(
+    filePath: string,
+    info: ProbeInfo,
+    windowSamples: number,
+    hopSamples: number
+  ): Promise<{ rms: Float32Array; totalSamples: number }> {
     return new Promise((resolve, reject) => {
       const ffmpeg = this.binaryResolver.getFfmpegPath();
-      const tmpPcm = filePath + `.dugan_pcm_${mono ? 'mono' : 'full'}.raw`;
       const args = [
-        '-y',
         '-i', filePath,
         '-f', 'f32le',
         '-acodec', 'pcm_f32le',
         '-ar', info.sampleRate.toString(),
-        '-ac', mono ? '1' : info.channels.toString(),
+        '-ac', '1',
         '-v', 'error',
-        tmpPcm
+        'pipe:1'
       ];
 
       const proc = spawn(ffmpeg, args);
       let stderr = '';
 
+      // Accumulate RMS frames in a growable array
+      const rmsChunks: number[] = [];
+
+      // Sliding window state
+      let totalSamples = 0;
+      let leftoverBuf = Buffer.alloc(0);
+
+      // Running sum-of-squares for windowed RMS
+      // We use a ring buffer approach: maintain sumSq over the current window,
+      // and advance sample by sample.
+      let windowBuf = new Float32Array(windowSamples);
+      let windowPos = 0;          // Next write position in ring buffer
+      let windowFilled = 0;       // How many samples are in the window
+      let sumSq = 0;
+      let samplesSinceLastFrame = 0;
+      let firstWindowComplete = false;
+
+      proc.stdout.on('data', (chunk: Buffer) => {
+        // Prepend any leftover bytes from previous chunk
+        let data: Buffer;
+        if (leftoverBuf.length > 0) {
+          data = Buffer.concat([leftoverBuf, chunk]);
+          leftoverBuf = Buffer.alloc(0);
+        } else {
+          data = chunk;
+        }
+
+        // Handle partial float at end of chunk
+        const usableBytes = Math.floor(data.length / 4) * 4;
+        if (data.length > usableBytes) {
+          leftoverBuf = data.subarray(usableBytes);
+        }
+
+        // Process samples
+        for (let byteOff = 0; byteOff < usableBytes; byteOff += 4) {
+          const sample = data.readFloatLE(byteOff);
+
+          // Remove oldest sample from running sum if window is full
+          if (windowFilled >= windowSamples) {
+            const oldest = windowBuf[windowPos];
+            sumSq -= oldest * oldest;
+          }
+
+          // Add new sample
+          windowBuf[windowPos] = sample;
+          sumSq += sample * sample;
+          windowPos = (windowPos + 1) % windowSamples;
+          if (windowFilled < windowSamples) windowFilled++;
+
+          totalSamples++;
+          samplesSinceLastFrame++;
+
+          // Once we have a full window, start emitting RMS frames
+          if (windowFilled >= windowSamples) {
+            if (!firstWindowComplete) {
+              // First complete window — emit first frame
+              rmsChunks.push(Math.sqrt(Math.max(0, sumSq) / windowSamples));
+              samplesSinceLastFrame = 0;
+              firstWindowComplete = true;
+            } else if (samplesSinceLastFrame >= hopSamples) {
+              // Emit frame at each hop
+              rmsChunks.push(Math.sqrt(Math.max(0, sumSq) / windowSamples));
+              samplesSinceLastFrame = 0;
+            }
+          }
+        }
+      });
+
       proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
 
       proc.on('close', (code) => {
         if (code !== 0) {
-          try { fs.unlinkSync(tmpPcm); } catch {}
-          return reject(new Error(`ffmpeg decode failed (${code}): ${stderr}`));
+          return reject(new Error(`ffmpeg RMS decode failed (${code}): ${stderr}`));
         }
 
-        try {
-          // Read the temp file directly into a Float32Array — single allocation
-          const buf = fs.readFileSync(tmpPcm);
-          fs.unlinkSync(tmpPcm);
-
-          const numSamples = Math.floor(buf.byteLength / 4);
-          const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + numSamples * 4);
-          resolve(new Float32Array(ab));
-        } catch (err) {
-          try { fs.unlinkSync(tmpPcm); } catch {}
-          reject(err);
-        }
+        const rms = new Float32Array(rmsChunks);
+        resolve({ rms, totalSamples });
       });
 
-      proc.on('error', (err) => {
-        try { fs.unlinkSync(tmpPcm); } catch {}
-        reject(err);
-      });
+      proc.on('error', reject);
     });
   }
 
   /**
-   * Encode raw f32le PCM back to the original codec via ffmpeg, overwriting the file.
+   * Stream-decode a track, apply Dugan gains on the fly, and pipe to encoder.
+   * Overwrites the input file in-place.
+   * Never loads the entire file into memory.
    */
-  private encodeFromF32(samples: Float32Array, filePath: string, info: ProbeInfo): Promise<void> {
+  private streamApplyGains(
+    filePath: string,
+    info: ProbeInfo,
+    trackGains: Float32Array,
+    numFrames: number,
+    hopSamples: number,
+    windowHalf: number,
+    firstCenter: number,
+    lastCenter: number
+  ): Promise<void> {
     return new Promise((resolve, reject) => {
       const ffmpeg = this.binaryResolver.getFfmpegPath();
-      // Write to a temp file first, then rename to avoid corruption
+      const ch = info.channels;
       const tmpPath = filePath + '.dugan_tmp.wav';
-      const args = [
+
+      // Spawn decoder: input file → f32le pipe
+      const decoder = spawn(ffmpeg, [
+        '-i', filePath,
+        '-f', 'f32le',
+        '-acodec', 'pcm_f32le',
+        '-ar', info.sampleRate.toString(),
+        '-ac', ch.toString(),
+        '-v', 'error',
+        'pipe:1'
+      ]);
+
+      // Spawn encoder: f32le pipe → output file
+      const encoder = spawn(ffmpeg, [
         '-y',
         '-f', 'f32le',
         '-ar', info.sampleRate.toString(),
-        '-ac', info.channels.toString(),
+        '-ac', ch.toString(),
         '-i', 'pipe:0',
         '-c:a', info.codec,
-        '-ar', info.sampleRate.toString(),
+        '-v', 'error',
         tmpPath
-      ];
+      ]);
 
-      const proc = spawn(ffmpeg, args);
-      let stderr = '';
+      let decodeStderr = '';
+      let encodeStderr = '';
+      let decoderDone = false;
+      let encoderDone = false;
+      let hadError = false;
 
-      proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+      decoder.stderr.on('data', (d: Buffer) => { decodeStderr += d.toString(); });
+      encoder.stderr.on('data', (d: Buffer) => { encodeStderr += d.toString(); });
 
-      proc.on('close', (code) => {
-        if (code !== 0) {
-          // Clean up temp file on error
-          try { fs.unlinkSync(tmpPath); } catch {}
-          return reject(new Error(`ffmpeg encode failed (${code}): ${stderr}`));
-        }
+      const cleanup = (err?: Error) => {
+        if (hadError) return;
+        hadError = true;
+        try { decoder.kill(); } catch {}
+        try { encoder.kill(); } catch {}
+        try { fs.unlinkSync(tmpPath); } catch {}
+        reject(err || new Error('Unknown error in streamApplyGains'));
+      };
+
+      const tryFinalize = () => {
+        if (!decoderDone || !encoderDone) return;
 
         // Rename temp file over original
         try {
           fs.renameSync(tmpPath, filePath);
           resolve();
         } catch (err) {
-          // Clean up temp file on rename error
           try { fs.unlinkSync(tmpPath); } catch {}
           reject(err);
         }
-      });
-
-      proc.on('error', (err) => {
-        try { fs.unlinkSync(tmpPath); } catch {}
-        reject(err);
-      });
-
-      // Write raw PCM data to ffmpeg stdin in chunks to avoid backpressure issues
-      const totalBytes = samples.byteLength;
-      const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
-      let offset = 0;
-
-      const writeNextChunk = () => {
-        while (offset < totalBytes) {
-          const end = Math.min(offset + CHUNK_SIZE, totalBytes);
-          const chunk = Buffer.from(
-            samples.buffer.slice(samples.byteOffset + offset, samples.byteOffset + end)
-          );
-          offset = end;
-
-          if (offset >= totalBytes) {
-            // Last chunk — end stdin after it's written
-            proc.stdin.write(chunk, () => { proc.stdin.end(); });
-            return;
-          }
-
-          const canContinue = proc.stdin.write(chunk);
-          if (!canContinue) {
-            // Backpressure — wait for drain before writing more
-            proc.stdin.once('drain', writeNextChunk);
-            return;
-          }
-        }
-        // Should not reach here, but just in case
-        proc.stdin.end();
       };
 
-      writeNextChunk();
-    });
-  }
+      // Gain application state
+      let monoSampleIdx = 0;   // Current mono sample position
+      let frameIdx = 0;        // Current gain frame index
+      let leftoverBuf = Buffer.alloc(0);
 
-  /**
-   * Compute RMS energy over sliding windows.
-   */
-  private computeRmsFrames(
-    signal: Float32Array,
-    windowSamples: number,
-    hopSamples: number,
-    numFrames: number
-  ): Float32Array {
-    const rms = new Float32Array(numFrames);
-    for (let f = 0; f < numFrames; f++) {
-      const start = f * hopSamples;
-      let sumSq = 0;
-      for (let s = start; s < start + windowSamples && s < signal.length; s++) {
-        sumSq += signal[s] * signal[s];
-      }
-      rms[f] = Math.sqrt(sumSq / windowSamples);
-    }
-    return rms;
+      decoder.stdout.on('data', (chunk: Buffer) => {
+        // Prepend leftover bytes
+        let data: Buffer;
+        if (leftoverBuf.length > 0) {
+          data = Buffer.concat([leftoverBuf, chunk]);
+          leftoverBuf = Buffer.alloc(0);
+        } else {
+          data = chunk;
+        }
+
+        // Need complete multi-channel samples (ch floats = ch * 4 bytes)
+        const bytesPerSample = ch * 4;
+        const usableBytes = Math.floor(data.length / bytesPerSample) * bytesPerSample;
+        if (data.length > usableBytes) {
+          leftoverBuf = data.subarray(usableBytes);
+        }
+
+        // Process and modify samples in-place in the buffer
+        // We can write directly to the Buffer since we own it
+        for (let byteOff = 0; byteOff < usableBytes; byteOff += bytesPerSample) {
+          const s = monoSampleIdx;
+          let gain: number;
+
+          if (s <= firstCenter) {
+            gain = trackGains[0];
+          } else if (s >= lastCenter || numFrames < 2) {
+            gain = trackGains[numFrames - 1];
+          } else {
+            // Advance frame index
+            while (frameIdx < numFrames - 2) {
+              const nextCenter = (frameIdx + 1) * hopSamples + windowHalf;
+              if (s < nextCenter) break;
+              frameIdx++;
+            }
+            const center0 = frameIdx * hopSamples + windowHalf;
+            const center1 = (frameIdx + 1) * hopSamples + windowHalf;
+            const t = (s - center0) / (center1 - center0);
+            gain = trackGains[frameIdx] + t * (trackGains[frameIdx + 1] - trackGains[frameIdx]);
+          }
+
+          // Apply gain to all channels
+          for (let c = 0; c < ch; c++) {
+            const off = byteOff + c * 4;
+            const val = data.readFloatLE(off);
+            data.writeFloatLE(val * gain, off);
+          }
+
+          monoSampleIdx++;
+        }
+
+        // Write the gain-adjusted chunk to encoder
+        const outChunk = data.subarray(0, usableBytes);
+        if (!encoder.stdin.destroyed) {
+          const canContinue = encoder.stdin.write(outChunk);
+          if (!canContinue) {
+            // Backpressure from encoder — pause decoder until encoder drains
+            decoder.stdout.pause();
+            encoder.stdin.once('drain', () => {
+              decoder.stdout.resume();
+            });
+          }
+        }
+      });
+
+      decoder.on('close', (code) => {
+        if (code !== 0 && !hadError) {
+          return cleanup(new Error(`ffmpeg decode failed (${code}): ${decodeStderr}`));
+        }
+
+        // Flush any remaining leftover bytes
+        if (leftoverBuf.length > 0) {
+          log.warn(`  ${leftoverBuf.length} leftover bytes discarded (partial sample)`);
+        }
+
+        // Signal end of input to encoder
+        if (!encoder.stdin.destroyed) {
+          encoder.stdin.end();
+        }
+        decoderDone = true;
+      });
+
+      encoder.on('close', (code) => {
+        if (code !== 0 && !hadError) {
+          return cleanup(new Error(`ffmpeg encode failed (${code}): ${encodeStderr}`));
+        }
+        encoderDone = true;
+        tryFinalize();
+      });
+
+      decoder.on('error', (err) => cleanup(err));
+      encoder.on('error', (err) => cleanup(err));
+      encoder.stdin.on('error', (err) => {
+        // Ignore EPIPE — happens if encoder exits before all data is written
+        if ((err as any).code !== 'EPIPE') cleanup(err);
+      });
+    });
   }
 
   /**
