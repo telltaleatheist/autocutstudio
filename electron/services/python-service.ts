@@ -300,23 +300,41 @@ export class PythonService {
       // Flush any remaining data in the line buffer
       if (stdoutBuffer.trim()) {
         processLine(stdoutBuffer.trim());
-        stdoutBuffer = '';
       }
 
       log.info(`[${jobId}] Workflow process exited with code ${code}`);
       this.runningProcesses.delete(jobId);
+
+      // Remove all listeners to release closure references
+      pythonProcess.stdout.removeAllListeners();
+      pythonProcess.stderr.removeAllListeners();
+      pythonProcess.removeAllListeners();
+
       if (options.onComplete) {
         options.onComplete(code || 0, finalResult);
       }
+
+      // Release closure references
+      stdoutBuffer = '';
+      finalResult = null;
     });
 
     // Handle process errors
     pythonProcess.on('error', (error) => {
       log.error(`[${jobId}] Workflow process error:`, error);
       this.runningProcesses.delete(jobId);
+
+      // Remove all listeners to release closure references
+      pythonProcess.stdout.removeAllListeners();
+      pythonProcess.stderr.removeAllListeners();
+      pythonProcess.removeAllListeners();
+
       if (options.onError) {
         options.onError(`Process error: ${error.message}`);
       }
+
+      stdoutBuffer = '';
+      finalResult = null;
     });
 
     return pythonProcess;

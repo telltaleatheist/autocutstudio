@@ -182,8 +182,15 @@ export class ProcessingService {
       return;
     }
 
-    // Handle regular output
-    const output = [...currentJob.output, data.data];
+    // Handle regular output — cap at 500 lines to prevent memory leaks
+    const MAX_OUTPUT_LINES = 500;
+    let output: string[];
+    if (currentJob.output.length >= MAX_OUTPUT_LINES) {
+      // Drop oldest lines to stay within limit
+      output = [...currentJob.output.slice(-MAX_OUTPUT_LINES + 1), data.data];
+    } else {
+      output = [...currentJob.output, data.data];
+    }
     const updatedJob = {
       ...currentJob,
       output,
@@ -318,11 +325,16 @@ export class ProcessingService {
   }
 
   /**
-   * Add job to history
+   * Add job to history — drops output to free memory
    */
   private addToHistory(job: ProcessingJob): void {
-    const history = [job, ...this.jobHistory$.value];
-    this.jobHistory$.next(history.slice(0, 10)); // Keep last 10 jobs
+    // Keep only the last few output lines for error context, drop the rest
+    const historyJob = {
+      ...job,
+      output: job.output.slice(-20)
+    };
+    const history = [historyJob, ...this.jobHistory$.value];
+    this.jobHistory$.next(history.slice(0, 10));
   }
 
   /**

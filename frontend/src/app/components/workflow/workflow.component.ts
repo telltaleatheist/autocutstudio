@@ -1,4 +1,6 @@
-import { Component, OnInit, ChangeDetectorRef } from '@angular/core';
+import { Component, OnInit, OnDestroy, ChangeDetectorRef } from '@angular/core';
+import { Subject } from 'rxjs';
+import { takeUntil } from 'rxjs/operators';
 import { ElectronService } from '../../services/electron.service';
 import { ProcessingService } from '../../services/processing.service';
 import { AudioSource, AudioSourceType, VideoSourceType, MediaSourceType, AUDIO_SOURCE_LABELS, VIDEO_SOURCE_LABELS, MEDIA_SOURCE_LABELS } from '../../models/types';
@@ -9,7 +11,8 @@ import { AudioSource, AudioSourceType, VideoSourceType, MediaSourceType, AUDIO_S
   templateUrl: './workflow.component.html',
   styleUrl: './workflow.component.scss'
 })
-export class WorkflowComponent implements OnInit {
+export class WorkflowComponent implements OnInit, OnDestroy {
+  private destroy$ = new Subject<void>();
   // Master video
   masterVideoPath = '';
 
@@ -70,8 +73,8 @@ export class WorkflowComponent implements OnInit {
   ) {}
 
   ngOnInit() {
-    // Subscribe to processing updates
-    this.processingService.getCurrentJob().subscribe(job => {
+    // Subscribe to processing updates (auto-cleaned up on destroy)
+    this.processingService.getCurrentJob().pipe(takeUntil(this.destroy$)).subscribe(job => {
       if (job) {
         this.isProcessing = job.status === 'running';
         this.consoleOutput = job.output;
@@ -110,6 +113,11 @@ export class WorkflowComponent implements OnInit {
       // Force change detection for updates from outside Angular zone (Electron IPC)
       this.cdr.detectChanges();
     });
+  }
+
+  ngOnDestroy() {
+    this.destroy$.next();
+    this.destroy$.complete();
   }
 
   // Master video selection

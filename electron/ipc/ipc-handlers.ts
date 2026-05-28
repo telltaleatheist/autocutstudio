@@ -445,8 +445,16 @@ function setupAudioHandlers(): void {
           log.error('Drift correction error:', error);
         });
 
+        // Timeout after 5 minutes
+        const timeoutId = setTimeout(() => {
+          pythonProcess.kill();
+          resolve({ success: false, error: 'Operation timed out after 5 minutes' });
+        }, 5 * 60 * 1000);
+
         // Handle process completion
         pythonProcess.on('close', (code: number | null) => {
+          clearTimeout(timeoutId);
+          pythonProcess.removeAllListeners();
           if (code === 0 && fs.existsSync(outputPath)) {
             log.info('Drift correction completed successfully:', outputPath);
             resolve({ success: true, outputPath });
@@ -458,15 +466,11 @@ function setupAudioHandlers(): void {
 
         // Handle process errors
         pythonProcess.on('error', (error: Error) => {
+          clearTimeout(timeoutId);
+          pythonProcess.removeAllListeners();
           log.error('Drift correction process error:', error);
           resolve({ success: false, error: error.message });
         });
-
-        // Timeout after 5 minutes
-        setTimeout(() => {
-          pythonProcess.kill();
-          resolve({ success: false, error: 'Operation timed out after 5 minutes' });
-        }, 5 * 60 * 1000);
       });
     } catch (error: any) {
       log.error('Error applying audio drift:', error);
