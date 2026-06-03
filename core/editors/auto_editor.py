@@ -1,6 +1,7 @@
 # core/editors/auto_editor.py
 
 import subprocess
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from urllib.parse import quote, unquote
@@ -21,7 +22,8 @@ class AutoEditor(BaseEditor):
         self.skip_check_callback = None  # Can be set by caller
     
     def cut_silence(self, input_file: str, threshold: str = None,
-                   output_format: str = "final-cut-pro", auto_fix_errors: bool = True) -> str:
+                   output_format: str = "final-cut-pro", auto_fix_errors: bool = True,
+                   margin: str = None, output_file: str = None) -> str:
         """Run auto-editor on input file and return path to XML output.
 
         Args:
@@ -29,6 +31,8 @@ class AutoEditor(BaseEditor):
             threshold: Audio threshold (e.g. '-40dB')
             output_format: Export format (default: 'final-cut-pro')
             auto_fix_errors: If True, attempt to fix corrupted video files
+            margin: Margin around loud sections (e.g. '2s')
+            output_file: Custom output file path (overrides default _ALTERED suffix)
         """
         input_path = Path(input_file)
 
@@ -38,15 +42,31 @@ class AutoEditor(BaseEditor):
         print(f"Running auto-editor on: {input_path}")
 
         try:
-            result = subprocess.run([
+            cmd = [
                 'auto-editor',
                 str(input_path),
                 '--edit', f'audio:{threshold}',
-                '--export', output_format
-            ], capture_output=True, text=True, check=True)
+                '--export', output_format,
+                '--no-open'
+            ]
+            if margin:
+                cmd.extend(['--margin', margin])
+            if output_file:
+                cmd.extend(['-o', output_file])
 
-            # Auto-editor creates XML with _ALTERED suffix
-            xml_output = input_path.with_name(f"{input_path.stem}_ALTERED.fcpxml")
+            print(f"auto-editor command: {' '.join(cmd)}", file=sys.stderr)
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            if result.returncode != 0:
+                print(f"auto-editor stderr: {result.stderr}", file=sys.stderr)
+                print(f"auto-editor stdout: {result.stdout[-500:] if result.stdout else '(empty)'}", file=sys.stderr)
+                raise subprocess.CalledProcessError(
+                    result.returncode, cmd, result.stdout, result.stderr)
+
+            # Use custom output path or default _ALTERED suffix
+            if output_file:
+                xml_output = Path(output_file)
+            else:
+                xml_output = input_path.with_name(f"{input_path.stem}_ALTERED.fcpxml")
 
             if not xml_output.exists():
                 raise FileNotFoundError(f"Expected auto-editor output not found: {xml_output}")
@@ -73,7 +93,9 @@ class AutoEditor(BaseEditor):
                         print(f"Re-encoded video saved to: {fixed_file}")
                         print("Retrying auto-editor with fixed video...")
                         # Retry with fixed file
-                        return self.cut_silence(fixed_file, threshold, output_format, auto_fix_errors=False)
+                        return self.cut_silence(fixed_file, threshold, output_format,
+                                               auto_fix_errors=False, margin=margin,
+                                               output_file=output_file)
                 else:
                     print("\nTo fix this issue, try re-encoding the video:")
                     print(f"  ffmpeg -i \"{input_file}\" -c:v libx264 -crf 23 -c:a aac -b:a 192k \"fixed_{Path(input_file).name}\"")

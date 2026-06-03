@@ -32,6 +32,7 @@ from core.compound_generators.shorts_hybrid_generator import ShortsHybridGenerat
 from core.compound_generators.shorts_master_project_generator import ShortsMasterProjectGenerator
 from core.audio_processor import AudioProcessor
 from core.editors.auto_editor import AutoEditor
+from core.editors.smart_cut_filter import SmartCutFilter
 from core.skip_logic import SkipDecisionEngine
 import zipfile
 import select
@@ -253,6 +254,35 @@ def main():
         editor = AutoEditor(config, progress_callback=ffmpeg_progress_callback)
         editor.skip_check_callback = check_for_skip_signal
         altered_xml = editor.cut_silence(str(master_video), threshold or config.default_threshold)
+
+        # Step 1.5: Smart cut filter — preserve video-watching segments
+        # Uses screen audio to detect when the video is playing. Cuts are only
+        # applied during sections where the screen audio is silent for 4+ seconds
+        # (i.e. the video is paused and the creator is reacting).
+        screen_audio = audio_sources_input.get('screen') or audio_sources_input.get('screenSb')
+
+        if screen_audio and Path(screen_audio).exists():
+            try:
+                emit_progress(15, 'Analyzing screen audio for smart cuts...')
+                ref_output = str(Path(screen_audio).parent /
+                                f"{Path(screen_audio).stem}_SCREEN_ALTERED.fcpxml")
+                # -55dB threshold for screen audio (quieter than mic audio).
+                # No margin here — SmartCutFilter bridges gaps < 4s itself,
+                # so reference boundaries stay precise at transitions.
+                ref_altered_xml = editor.cut_silence(
+                    str(screen_audio), '-55dB',
+                    output_file=ref_output)
+                smart_filter = SmartCutFilter()
+                altered_xml = smart_filter.filter_cuts(altered_xml, ref_altered_xml)
+                # Clean up reference XML
+                try:
+                    Path(ref_altered_xml).unlink()
+                except Exception:
+                    pass
+            except Exception as e:
+                print(f"WARNING: Smart cut filter failed: {e}", file=sys.stderr)
+                import traceback
+                traceback.print_exc(file=sys.stderr)
 
         all_xml_files = [altered_xml]
 
