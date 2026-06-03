@@ -134,6 +134,72 @@ class SmartCutFilter:
         return False
 
     @staticmethod
+    def _enforce_transition_cuts(
+            gaps_to_restore: List[Tuple[float, float]],
+            gaps_to_keep: List[Tuple[float, float]],
+            reference_segments: List[Tuple[float, float]],
+            search_range: float = 2.0
+    ) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]], int]:
+        """Ensure there's a cut near each reference segment boundary.
+
+        At each transition between watching and talking, the nearest silence
+        gap should be kept as a cut rather than restored. If gaps_to_keep
+        already has one near the boundary, nothing changes. Otherwise the
+        nearest gap from gaps_to_restore is moved to gaps_to_keep.
+
+        Args:
+            gaps_to_restore: Gaps that would be restored (inside screen audio)
+            gaps_to_keep: Gaps already kept as cuts
+            reference_segments: Bridged reference segments (screen audio periods)
+            search_range: Max distance in seconds to search for a nearby gap
+
+        Returns:
+            (new_gaps_to_restore, new_gaps_to_keep, transitions_enforced)
+        """
+        # Collect all boundaries (skip near-zero — that's content start)
+        boundaries = []
+        for seg_start, seg_end in reference_segments:
+            if seg_start > 0.5:
+                boundaries.append(seg_start)
+            boundaries.append(seg_end)
+
+        if not boundaries or not gaps_to_restore:
+            return gaps_to_restore, gaps_to_keep, 0
+
+        transition_indices = set()
+        for boundary in boundaries:
+            # Check if gaps_to_keep already covers this boundary
+            already_covered = any(
+                abs((g[0] + g[1]) / 2 - boundary) <= search_range
+                for g in gaps_to_keep
+            )
+            if already_covered:
+                continue
+
+            # Find nearest gap in gaps_to_restore
+            best_idx = None
+            best_dist = float('inf')
+            for i, gap in enumerate(gaps_to_restore):
+                gap_mid = (gap[0] + gap[1]) / 2
+                dist = abs(gap_mid - boundary)
+                if dist < best_dist and dist <= search_range:
+                    best_dist = dist
+                    best_idx = i
+
+            if best_idx is not None:
+                transition_indices.add(best_idx)
+
+        if not transition_indices:
+            return gaps_to_restore, gaps_to_keep, 0
+
+        moved = [gaps_to_restore[i] for i in transition_indices]
+        new_restore = [g for i, g in enumerate(gaps_to_restore)
+                       if i not in transition_indices]
+        new_keep = gaps_to_keep + moved
+
+        return new_restore, new_keep, len(moved)
+
+    @staticmethod
     def _merge_segments(original_segments: List[Tuple[float, float]],
                         gaps_to_restore: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
         """Merge original kept segments with restored gaps into a clean segment list.
@@ -279,8 +345,13 @@ class SmartCutFilter:
             else:
                 gaps_to_keep.append(gap)
 
+        # 5. Enforce transition cuts at reference boundaries
+        gaps_to_restore, gaps_to_keep, n_transitions = self._enforce_transition_cuts(
+            gaps_to_restore, gaps_to_keep, reference_segments)
+
         print(f"Smart cut filter: restoring {len(gaps_to_restore)} gaps "
-              f"(video playing), keeping {len(gaps_to_keep)} cuts (dead air + transitions)",
+              f"(video playing), keeping {len(gaps_to_keep)} cuts "
+              f"(dead air + {n_transitions} transition cuts)",
               file=sys.stderr)
 
         if not gaps_to_restore:
@@ -288,15 +359,15 @@ class SmartCutFilter:
                   file=sys.stderr)
             return master_xml
 
-        # 5. Merge original segments with restored gaps
+        # 6. Merge original segments with restored gaps
         filtered_segments = self._merge_segments(master_segments, gaps_to_restore)
         print(f"Smart cut filter: {len(master_segments)} segments -> "
               f"{len(filtered_segments)} segments after merge", file=sys.stderr)
 
-        # 6. Rewrite master XML with filtered segments
+        # 7. Rewrite master XML with filtered segments
         result = self._rewrite_xml(master_xml, filtered_segments)
 
-        # 7. Log summary
+        # 8. Log summary
         total_restored = sum(g[1] - g[0] for g in gaps_to_restore)
         total_kept_cut = sum(g[1] - g[0] for g in gaps_to_keep)
         print(f"Smart cut filter: restored {total_restored:.1f}s of viewing time, "
