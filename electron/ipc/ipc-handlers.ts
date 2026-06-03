@@ -529,27 +529,31 @@ function setupPythonHandlers(): void {
       log.info(`Starting workflow job: ${jobId}`, options);
 
       // Execute the workflow using the new electron_workflow.py script
+      const sender = event.sender;
       const process = pythonService.executeWorkflow(jobId, {
         inputData: options,
         onOutput: (data) => {
-          // Send regular output to renderer
+          if (sender.isDestroyed()) return;
           log.info(`[${jobId}] Sending workflow-output (stdout) to renderer:`, data);
-          event.sender.send('workflow-output', { jobId, type: 'stdout', data });
+          sender.send('workflow-output', { jobId, type: 'stdout', data });
         },
         onError: (data) => {
-          // Send error to renderer
+          if (sender.isDestroyed()) return;
           log.info(`[${jobId}] Sending workflow-output (stderr) to renderer:`, data);
-          event.sender.send('workflow-output', { jobId, type: 'stderr', data });
+          sender.send('workflow-output', { jobId, type: 'stderr', data });
         },
         onProgress: (progress, message, subProgress) => {
-          // Send progress updates to renderer
+          if (sender.isDestroyed()) return;
           log.info(`[${jobId}] Sending workflow-output (progress) to renderer: ${progress}% - ${message}`);
-          event.sender.send('workflow-output', { jobId, type: 'progress', data: message, progress, sub_progress: subProgress });
+          sender.send('workflow-output', { jobId, type: 'progress', data: message, progress, sub_progress: subProgress });
         },
         onComplete: (code, result) => {
-          // Send completion to renderer
+          if (sender.isDestroyed()) {
+            log.warn(`[${jobId}] Cannot send workflow-complete — WebContents destroyed`);
+            return;
+          }
           log.info(`[${jobId}] Sending workflow-complete to renderer: exitCode=${code}`);
-          event.sender.send('workflow-complete', { jobId, exitCode: code, result });
+          sender.send('workflow-complete', { jobId, exitCode: code, result });
         }
       });
 

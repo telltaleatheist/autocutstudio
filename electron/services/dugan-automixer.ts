@@ -334,6 +334,11 @@ export class DuganAutomixer {
       proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
 
       proc.on('close', (code) => {
+        // Clean up listeners to release closure references
+        proc.stdout.removeAllListeners();
+        proc.stderr.removeAllListeners();
+        proc.removeAllListeners();
+
         if (code !== 0) {
           return reject(new Error(`ffmpeg RMS decode failed (${code}): ${stderr}`));
         }
@@ -342,7 +347,12 @@ export class DuganAutomixer {
         resolve({ rms, totalSamples });
       });
 
-      proc.on('error', reject);
+      proc.on('error', (err) => {
+        proc.stdout.removeAllListeners();
+        proc.stderr.removeAllListeners();
+        proc.removeAllListeners();
+        reject(err);
+      });
     });
   }
 
@@ -398,17 +408,30 @@ export class DuganAutomixer {
       decoder.stderr.on('data', (d: Buffer) => { decodeStderr += d.toString(); });
       encoder.stderr.on('data', (d: Buffer) => { encodeStderr += d.toString(); });
 
+      const removeAllProcessListeners = () => {
+        decoder.stdout.removeAllListeners();
+        decoder.stderr.removeAllListeners();
+        decoder.removeAllListeners();
+        encoder.stdin.removeAllListeners();
+        encoder.stderr.removeAllListeners();
+        encoder.removeAllListeners();
+      };
+
       const cleanup = (err?: Error) => {
         if (hadError) return;
         hadError = true;
         try { decoder.kill(); } catch {}
         try { encoder.kill(); } catch {}
+        removeAllProcessListeners();
         try { fs.unlinkSync(tmpPath); } catch {}
         reject(err || new Error('Unknown error in streamApplyGains'));
       };
 
       const tryFinalize = () => {
         if (!decoderDone || !encoderDone) return;
+
+        // All processes done — clean up listeners before file operations
+        removeAllProcessListeners();
 
         // Rename temp file over original
         try {
@@ -504,6 +527,7 @@ export class DuganAutomixer {
           encoder.stdin.end();
         }
         decoderDone = true;
+        tryFinalize();
       });
 
       encoder.on('close', (code) => {
