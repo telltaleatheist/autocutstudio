@@ -259,9 +259,16 @@ def main():
         # Uses screen audio to detect when the video is playing. Cuts are only
         # applied during sections where the screen audio is silent for 4+ seconds
         # (i.e. the video is paused and the creator is reacting).
+        # Stream recovery mode is built solely on the downloaded master stream —
+        # there are no individual audio tracks. Any screen-audio reference would
+        # be from a different recording with a mismatched timeline, so cross-
+        # referencing it scrambles the kept segments. Skip the smart cut filter.
         screen_audio = audio_sources_input.get('screen') or audio_sources_input.get('screenSb')
 
-        if screen_audio and Path(screen_audio).exists():
+        if use_downloaded_stream:
+            print("Stream recovery mode: skipping smart cut filter "
+                  "(no individual audio tracks to reference)", file=sys.stderr)
+        elif screen_audio and Path(screen_audio).exists():
             try:
                 emit_progress(15, 'Analyzing screen audio for smart cuts...')
                 ref_output = str(Path(screen_audio).parent /
