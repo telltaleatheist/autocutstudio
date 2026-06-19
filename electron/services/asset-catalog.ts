@@ -41,8 +41,8 @@ const CATALOG: AssetComponent[] = [
         arch: 'x64',
         kind: 'archive',
         url: `${BASE}/ffmpeg-tools-darwin-x64.tar.gz`,
-        sha256: '',
-        bytes: 0,
+        sha256: 'a14905a31eac2de157f65ab8c13da4a949ecca0f08621ed918accb104725a05e',
+        bytes: 53479928,
       },
       {
         platform: 'win32',
@@ -88,8 +88,8 @@ const CATALOG: AssetComponent[] = [
         arch: 'x64',
         kind: 'archive',
         url: `${BASE}/python-env-darwin-x64.tar.gz`,
-        sha256: '',
-        bytes: 0,
+        sha256: 'bf2b4fb34c3367a6a74743e3264222a71d6684139623e25333eddc275dcda99c',
+        bytes: 163363809,
       },
       {
         platform: 'win32',

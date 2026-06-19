@@ -269,14 +269,26 @@ export class BinaryResolver {
    * This is typically a Python package, so it should be in the Python environment
    */
   getAutoEditorPath(): string {
-    // Check bundled Python environment
+    // 1. Managed shared Python env (downloaded from GH releases).
+    const envDir = assetManager.resolveDir('python-env');
+    if (envDir) {
+      const managedAE = process.platform === 'win32'
+        ? path.join(envDir, 'Scripts', 'auto-editor.exe')
+        : path.join(envDir, 'bin', 'auto-editor');
+      if (fs.existsSync(managedAE)) {
+        log.info(`Using managed auto-editor: ${managedAE}`);
+        return managedAE;
+      }
+    }
+
+    // 2. Bundled Python environment.
     const bundledAutoEditor = path.join(this.pythonPath, 'python-runtime', 'bin', 'auto-editor');
     if (fs.existsSync(bundledAutoEditor)) {
       log.info(`Found bundled auto-editor: ${bundledAutoEditor}`);
       return bundledAutoEditor;
     }
 
-    // Check system/conda
+    // 3. System/conda.
     const system = this.findSystemBinary('auto-editor');
     if (system) return system;
 

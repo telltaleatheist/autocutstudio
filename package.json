@@ -93,20 +93,6 @@
       {
         "from": "environment.yml",
         "to": "environment.yml"
-      },
-      {
-        "from": "binaries/${os}-${arch}",
-        "to": "binaries",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "python/${os}-${arch}",
-        "to": "python",
-        "filter": [
-          "**/*"
-        ]
       }
     ],
     "files": [
