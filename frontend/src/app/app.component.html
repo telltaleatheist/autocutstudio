@@ -1,5 +1,8 @@
+<!-- First-run setup overlay (asset downloads). Gates the app until ready. -->
+<app-setup *ngIf="!setupReady" (complete)="onSetupComplete()"></app-setup>
+
 <!-- App Layout with Top Header -->
-<div class="app-layout">
+<div class="app-layout" *ngIf="setupReady">
   <!-- Content Area with Sidebar -->
   <div class="content-wrapper">
     <!-- Left Sidebar Navigation -->

@@ -1,8 +1,10 @@
 // electron/services/binary-resolver.ts
 import * as path from 'path';
 import * as fs from 'fs';
+import { execFileSync } from 'child_process';
 import * as log from 'electron-log';
 import { AppConfig } from '../config/app-config';
+import * as assetManager from './asset-manager';
 
 /**
  * Service to resolve paths to bundled binaries
@@ -88,6 +90,22 @@ export class BinaryResolver {
   }
 
   /**
+   * Verify a binary actually runs, not just that the file exists. A bundled
+   * binary can exist + be executable yet abort at launch (missing dylib, wrong
+   * arch) — that's what caused the original ffprobe SIGABRT. Returns true only
+   * if the process launches and exits without throwing.
+   */
+  private binaryWorks(binPath: string, args: string[]): boolean {
+    try {
+      execFileSync(binPath, args, { stdio: 'ignore', timeout: 10_000 });
+      return true;
+    } catch (error) {
+      log.warn(`Binary failed validation (${binPath}): ${(error as Error).message}`);
+      return false;
+    }
+  }
+
+  /**
    * Find a bundled binary by name
    * Returns the full path to the binary if found, null otherwise
    */
@@ -164,14 +182,23 @@ export class BinaryResolver {
    * Prefers bundled version, falls back to system binary
    */
   getFfmpegPath(): string {
-    const bundled = this.findBundledBinary('ffmpeg');
-    if (bundled) return bundled;
+    // 1. Managed shared download (cross-app OwenMorgan location), validated.
+    const managed = assetManager.resolveBinary('ffmpeg-tools', 'ffmpeg');
+    if (managed && this.binaryWorks(managed, ['-version'])) {
+      log.info(`Using managed ffmpeg: ${managed}`);
+      return managed;
+    }
 
+    // 2. Bundled binary — but only if it actually runs.
+    const bundled = this.findBundledBinary('ffmpeg');
+    if (bundled && this.binaryWorks(bundled, ['-version'])) return bundled;
+
+    // 3. System binary.
     const system = this.findSystemBinary('ffmpeg');
     if (system) return system;
 
     // Final fallback - just return 'ffmpeg' and hope it's in PATH
-    log.warn('ffmpeg not found in bundled binaries or system, returning "ffmpeg"');
+    log.warn('ffmpeg not found in managed, bundled, or system, returning "ffmpeg"');
     return 'ffmpeg';
   }
 
@@ -180,13 +207,22 @@ export class BinaryResolver {
    * Prefers bundled version, falls back to system binary
    */
   getFfprobePath(): string {
-    const bundled = this.findBundledBinary('ffprobe');
-    if (bundled) return bundled;
+    // 1. Managed shared download (cross-app OwenMorgan location), validated.
+    const managed = assetManager.resolveBinary('ffmpeg-tools', 'ffprobe');
+    if (managed && this.binaryWorks(managed, ['-version'])) {
+      log.info(`Using managed ffprobe: ${managed}`);
+      return managed;
+    }
 
+    // 2. Bundled binary — but only if it actually runs.
+    const bundled = this.findBundledBinary('ffprobe');
+    if (bundled && this.binaryWorks(bundled, ['-version'])) return bundled;
+
+    // 3. System binary.
     const system = this.findSystemBinary('ffprobe');
     if (system) return system;
 
-    log.warn('ffprobe not found in bundled binaries or system, returning "ffprobe"');
+    log.warn('ffprobe not found in managed, bundled, or system, returning "ffprobe"');
     return 'ffprobe';
   }
 
@@ -195,6 +231,13 @@ export class BinaryResolver {
    * Prefers bundled version, falls back to conda, then system Python
    */
   getPythonPath(): string {
+    // Check the managed shared Python env first (downloaded from GH releases).
+    const managedPython = assetManager.resolveEntry('python-env');
+    if (managedPython && this.binaryWorks(managedPython, ['--version'])) {
+      log.info(`Using managed Python env: ${managedPython}`);
+      return managedPython;
+    }
+
     // Check for bundled Python runtime
     const bundledPython = path.join(this.pythonPath, 'python-runtime', 'bin', 'python3');
     if (fs.existsSync(bundledPython)) {
@@ -252,9 +295,21 @@ export class BinaryResolver {
       PYTHONPATH: AppConfig.resourcesPath
     };
 
-    // Add bundled binaries to PATH if they exist
+    // Build PATH so the Python subprocess's bare `ffmpeg`/`ffprobe`/`auto-editor`
+    // calls resolve to our managed binaries first, then bundled, then system.
     const pathComponents: string[] = [];
 
+    // 1. Managed shared binaries (validated working ffmpeg/ffprobe).
+    const managedFfmpeg = assetManager.resolveBinary('ffmpeg-tools', 'ffmpeg');
+    if (managedFfmpeg) {
+      pathComponents.push(path.dirname(managedFfmpeg));
+    }
+    const managedPython = assetManager.resolveEntry('python-env');
+    if (managedPython) {
+      pathComponents.push(path.dirname(managedPython));
+    }
+
+    // 2. Bundled binaries.
     if (fs.existsSync(this.binariesPath)) {
       pathComponents.push(this.binariesPath);
     }

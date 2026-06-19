@@ -12,6 +12,9 @@ export class AppComponent implements OnInit {
   appVersion = '';
   currentTheme: 'light' | 'dark' = 'dark';
 
+  // First-run setup gate (asset downloads). The app UI is hidden until this is true.
+  setupReady = false;
+
   // Dependency status
   showDependencyBanner = false;
   missingSystemDeps: string[] = [];
@@ -79,6 +82,10 @@ export class AppComponent implements OnInit {
         }
       });
     }
+  }
+
+  onSetupComplete() {
+    this.setupReady = true;
   }
 
   dismissDependencyBanner() {

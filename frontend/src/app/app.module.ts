@@ -13,10 +13,12 @@ import { AudioEditorComponent } from './components/audio-editor/audio-editor.com
 import { RelinkingComponent } from './components/relinking/relinking.component';
 import { AudioDuckingComponent } from './components/audio-ducking/audio-ducking.component';
 import { SettingsComponent } from './components/settings/settings.component';
+import { SetupComponent } from './components/setup/setup.component';
 
 @NgModule({
   declarations: [
     AppComponent,
+    SetupComponent,
     WorkflowComponent,
     FileBrowserComponent,
     AudioSourcesComponent,

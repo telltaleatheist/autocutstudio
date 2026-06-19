@@ -7,6 +7,7 @@ import { PythonService } from '../services/python-service';
 import { DependencyService } from '../services/dependency-service';
 import { DuganAutomixer, DuganTrack } from '../services/dugan-automixer';
 import { AppConfig } from '../config/app-config';
+import * as assetManager from '../services/asset-manager';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -26,6 +27,54 @@ export function setupIpcHandlers(windowService: WindowService, pythonSvc: Python
   setupPythonHandlers();
   setupUtilityHandlers();
   setupConfigHandlers();
+  setupAssetHandlers(windowService);
+}
+
+/**
+ * Asset/download handlers — list, install, and cancel downloadable components
+ * (ffmpeg/ffprobe, the Python env, models) that land in the shared OwenMorgan
+ * location. Progress is streamed to the renderer via the 'asset-progress' event.
+ */
+function setupAssetHandlers(windowService: WindowService): void {
+  const emitProgress = (p: any) => {
+    const win = windowService.getMainWindow();
+    if (win && !win.isDestroyed() && win.webContents) {
+      win.webContents.send('asset-progress', p);
+    }
+  };
+
+  ipcMain.handle('assets:list', async () => {
+    try {
+      return { success: true, components: assetManager.listStatus() };
+    } catch (error: any) {
+      log.error('assets:list failed:', error);
+      return { success: false, error: error?.message || String(error) };
+    }
+  });
+
+  ipcMain.handle('assets:install', async (_event, id: string) => {
+    try {
+      const result = await assetManager.install(id, emitProgress);
+      return result;
+    } catch (error: any) {
+      log.error(`assets:install(${id}) failed:`, error);
+      return { id, ok: false, error: error?.message || String(error) };
+    }
+  });
+
+  ipcMain.handle('assets:cancel', async (_event, id: string) => {
+    assetManager.cancel(id);
+    return { success: true };
+  });
+
+  ipcMain.handle('assets:ensure-required', async () => {
+    try {
+      return { success: true, ...(await assetManager.ensureRequired(emitProgress)) };
+    } catch (error: any) {
+      log.error('assets:ensure-required failed:', error);
+      return { success: false, error: error?.message || String(error) };
+    }
+  });
 }
 
 /**

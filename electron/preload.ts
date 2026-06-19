@@ -48,6 +48,14 @@ export interface ElectronAPI {
   saveAssetConfig: (assetPaths: any) => Promise<{ success: boolean; error?: string }>;
   getDriftCorrections: () => Promise<any>;
   saveDriftCorrections: (config: any) => Promise<{ success: boolean; error?: string }>;
+
+  // Downloadable assets (ffmpeg/ffprobe, Python env, models)
+  listAssets: () => Promise<{ success: boolean; components?: any[]; error?: string }>;
+  installAsset: (id: string) => Promise<{ id: string; ok: boolean; error?: string }>;
+  cancelAsset: (id: string) => Promise<{ success: boolean }>;
+  ensureRequiredAssets: () => Promise<{ success: boolean; ok?: boolean; failed?: string[]; error?: string }>;
+  onAssetProgress: (callback: (progress: any) => void) => void;
+  removeAssetProgressListener: () => void;
 }
 
 // Expose API to renderer
@@ -98,7 +106,19 @@ const electronAPI: ElectronAPI = {
   getAssetConfig: () => ipcRenderer.invoke('get-asset-config'),
   saveAssetConfig: (assetPaths) => ipcRenderer.invoke('save-asset-config', assetPaths),
   getDriftCorrections: () => ipcRenderer.invoke('get-drift-corrections'),
-  saveDriftCorrections: (config) => ipcRenderer.invoke('save-drift-corrections', config)
+  saveDriftCorrections: (config) => ipcRenderer.invoke('save-drift-corrections', config),
+
+  // Downloadable assets
+  listAssets: () => ipcRenderer.invoke('assets:list'),
+  installAsset: (id) => ipcRenderer.invoke('assets:install', id),
+  cancelAsset: (id) => ipcRenderer.invoke('assets:cancel', id),
+  ensureRequiredAssets: () => ipcRenderer.invoke('assets:ensure-required'),
+  onAssetProgress: (callback) => {
+    ipcRenderer.on('asset-progress', (_event, progress) => callback(progress));
+  },
+  removeAssetProgressListener: () => {
+    ipcRenderer.removeAllListeners('asset-progress');
+  }
 };
 
 contextBridge.exposeInMainWorld('electron', electronAPI);

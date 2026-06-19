@@ -209,4 +209,46 @@ export class ElectronService {
     }
     return window.electron.saveDriftCorrections(config);
   }
+
+  // Downloadable assets
+  async listAssets(): Promise<{ success: boolean; components?: any[]; error?: string }> {
+    if (!this.isElectron()) {
+      return { success: true, components: [] };
+    }
+    return window.electron.listAssets();
+  }
+
+  async ensureRequiredAssets(): Promise<{ success: boolean; ok?: boolean; failed?: string[]; error?: string }> {
+    if (!this.isElectron()) {
+      return { success: true, ok: true, failed: [] };
+    }
+    return window.electron.ensureRequiredAssets();
+  }
+
+  async installAsset(id: string): Promise<{ id: string; ok: boolean; error?: string }> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return window.electron.installAsset(id);
+  }
+
+  async cancelAsset(id: string): Promise<{ success: boolean }> {
+    if (!this.isElectron()) {
+      return { success: true };
+    }
+    return window.electron.cancelAsset(id);
+  }
+
+  /** Subscribe to asset download progress (delivered inside the Angular zone). */
+  onAssetProgress(callback: (progress: any) => void): void {
+    if (this.isElectron()) {
+      window.electron.onAssetProgress((p) => this.ngZone.run(() => callback(p)));
+    }
+  }
+
+  removeAssetProgressListener(): void {
+    if (this.isElectron()) {
+      window.electron.removeAssetProgressListener();
+    }
+  }
 }

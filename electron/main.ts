@@ -51,6 +51,10 @@ app.whenReady().then(async () => {
     // Create main window (always create the window, even if dependencies are missing)
     windowService.createMainWindow();
 
+    // Required downloadable assets (ffmpeg/ffprobe, Python env) are driven by the
+    // renderer's first-run setup screen (SetupComponent → assets:ensure-required),
+    // so it can show progress and gate the UI. Nothing to do here.
+
     // Check dependencies in the background (non-blocking)
     // Pass FALSE to disable auto-install - we'll ask the user first
     log.info('Checking system dependencies in background...');

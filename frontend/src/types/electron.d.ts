@@ -31,6 +31,34 @@ export interface ElectronAPI {
   saveAssetConfig: (assetPaths: any) => Promise<{ success: boolean; error?: string }>;
   getDriftCorrections: () => Promise<any>;
   saveDriftCorrections: (config: any) => Promise<{ success: boolean; error?: string }>;
+
+  // Downloadable assets (ffmpeg/ffprobe, Python env, models)
+  listAssets: () => Promise<{ success: boolean; components?: AssetComponentStatus[]; error?: string }>;
+  installAsset: (id: string) => Promise<{ id: string; ok: boolean; error?: string }>;
+  cancelAsset: (id: string) => Promise<{ success: boolean }>;
+  ensureRequiredAssets: () => Promise<{ success: boolean; ok?: boolean; failed?: string[]; error?: string }>;
+  onAssetProgress: (callback: (progress: AssetProgress) => void) => void;
+  removeAssetProgressListener: () => void;
+}
+
+export interface AssetComponentStatus {
+  id: string;
+  name: string;
+  description: string;
+  required: boolean;
+  state: 'installed' | 'available' | 'installing' | 'error';
+  installable: boolean;
+  sizeBytes: number;
+  version?: string;
+}
+
+export interface AssetProgress {
+  id: string;
+  phase: 'resolve' | 'download' | 'verify' | 'extract' | 'postinstall' | 'done' | 'error';
+  pct: number;
+  receivedBytes?: number;
+  totalBytes?: number;
+  message?: string;
 }
 
 declare global {
