@@ -199,6 +199,14 @@ function basenameFromUrl(url: string, fallback: string): string {
   }
 }
 
+/** Surface the real error from a failed child process (stderr/stdout, not just
+ *  the generic "Command failed" message). */
+function execErr(err: unknown): string {
+  const e = err as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
+  const out = (e?.stderr || e?.stdout)?.toString().trim();
+  return out || e?.message || String(err);
+}
+
 /** Run a component's post-extract step inside its install dir. */
 function runPostInstall(component: AssetComponent, installDir: string, emit: (p: InstallProgress) => void): void {
   if (component.postInstall !== 'conda-unpack') return;
@@ -206,34 +214,44 @@ function runPostInstall(component: AssetComponent, installDir: string, emit: (p:
   emit({ id: component.id, phase: 'postinstall', pct: 0, message: 'Finalizing Python environment…' });
 
   const isWin = process.platform === 'win32';
+  const py = isWin ? path.join(installDir, 'python.exe') : path.join(installDir, 'bin', 'python3');
+  if (!isWin && fs.existsSync(py)) {
+    try {
+      fs.chmodSync(py, 0o755);
+    } catch {
+      /* ignore */
+    }
+  }
+
   const unpack = isWin
     ? path.join(installDir, 'Scripts', 'conda-unpack.exe')
     : path.join(installDir, 'bin', 'conda-unpack');
   if (fs.existsSync(unpack)) {
-    if (!isWin) {
-      try {
+    try {
+      if (isWin) {
+        execFileSync(unpack, [], { stdio: 'pipe' });
+      } else {
+        // Invoke conda-unpack through the env's own python rather than relying on
+        // its `#!/usr/bin/env python` shebang — a packaged macOS GUI app has a
+        // minimal PATH with no `python`, so the shebang would fail to launch.
         fs.chmodSync(unpack, 0o755);
-      } catch {
-        /* ignore */
+        execFileSync(py, [unpack], { stdio: 'pipe' });
       }
+    } catch (err) {
+      throw new Error(`conda-unpack failed: ${execErr(err)}`);
     }
-    execFileSync(unpack, [], { stdio: 'ignore' });
   } else {
     log.warn(`[ASSETS] conda-unpack not found in env: ${unpack}`);
   }
 
   // Smoke test: prove the interpreter actually launches before marking ready.
-  const py = isWin ? path.join(installDir, 'python.exe') : path.join(installDir, 'bin', 'python3');
   if (fs.existsSync(py)) {
-    if (!isWin) {
-      try {
-        fs.chmodSync(py, 0o755);
-      } catch {
-        /* ignore */
-      }
+    try {
+      const out = execFileSync(py, ['--version'], { encoding: 'utf-8' }).trim();
+      log.info(`[ASSETS] python-env smoke test: ${out}`);
+    } catch (err) {
+      throw new Error(`python smoke test failed: ${execErr(err)}`);
     }
-    const out = execFileSync(py, ['--version'], { encoding: 'utf-8' }).trim();
-    log.info(`[ASSETS] python-env smoke test: ${out}`);
   }
   emit({ id: component.id, phase: 'postinstall', pct: 100, message: 'Python environment ready' });
 }
@@ -342,6 +360,7 @@ export async function install(
     return { id, ok: true, record };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    log.error(`[ASSETS] install ${id} failed: ${message}`);
     emit({ id, phase: 'error', pct: 0, message });
     return { id, ok: false, error: message };
   } finally {
