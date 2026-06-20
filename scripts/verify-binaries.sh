@@ -1,5 +1,11 @@
 #!/bin/bash
-# Verify that all required binaries are present for a given platform
+# Packaging preflight.
+#
+# ffmpeg/ffprobe and the Python runtime are NO LONGER bundled in the app — they
+# are downloaded at runtime from GitHub releases into the shared OwenMorgan
+# location (see electron/services/asset-catalog.ts). This script therefore only
+# *reports* whether local copies exist under binaries/ and python/ (handy dev
+# fallbacks); their absence is fine and never blocks packaging.
 
 set -e
 
@@ -32,145 +38,29 @@ case "$PLATFORM" in
     linux|linux-x64) PLATFORM="linux-x64" ;;
 esac
 
-echo -e "${BLUE}🔍 Verifying binaries for platform: $PLATFORM${NC}"
+echo -e "${BLUE}🔍 Packaging preflight for platform: $PLATFORM${NC}"
+echo ""
+echo -e "${BLUE}ℹ ffmpeg/ffprobe and the Python runtime are downloaded at runtime${NC}"
+echo -e "${BLUE}  from GitHub releases — they are not bundled in the app.${NC}"
 echo ""
 
-ERRORS=0
-WARNINGS=0
-
-# Check binaries directory
-echo -e "${BLUE}Checking binaries directory...${NC}"
+# Optional local copies (dev fallback only — not bundled).
 PLATFORM_BIN_DIR="$BINARIES_DIR/$PLATFORM"
-
-if [ ! -d "$PLATFORM_BIN_DIR" ]; then
-    echo -e "${RED}  ✗ Directory not found: $PLATFORM_BIN_DIR${NC}"
-    ERRORS=$((ERRORS + 1))
+if [ -d "$PLATFORM_BIN_DIR" ]; then
+    echo -e "${GREEN}  ✓ local binaries present (dev fallback, not bundled): $PLATFORM_BIN_DIR${NC}"
 else
-    echo -e "${GREEN}  ✓ Directory exists: $PLATFORM_BIN_DIR${NC}"
-
-    # Check for ffmpeg
-    if [[ "$PLATFORM" == win-x64 ]] || [[ "$PLATFORM" == win32-* ]]; then
-        FFMPEG_NAME="ffmpeg.exe"
-        FFPROBE_NAME="ffprobe.exe"
-        AUTO_EDITOR_NAME="auto-editor.exe"
-    else
-        FFMPEG_NAME="ffmpeg"
-        FFPROBE_NAME="ffprobe"
-        AUTO_EDITOR_NAME="auto-editor"
-    fi
-
-    if [ -f "$PLATFORM_BIN_DIR/$FFMPEG_NAME" ]; then
-        SIZE=$(du -h "$PLATFORM_BIN_DIR/$FFMPEG_NAME" | cut -f1)
-        echo -e "${GREEN}  ✓ ffmpeg found ($SIZE)${NC}"
-
-        # Check if executable (Unix-like platforms)
-        if [[ "$PLATFORM" != win-x64 ]] && [[ "$PLATFORM" != win32-* ]]; then
-            if [ -x "$PLATFORM_BIN_DIR/$FFMPEG_NAME" ]; then
-                echo -e "${GREEN}    ✓ Executable permission set${NC}"
-            else
-                echo -e "${YELLOW}    ⚠ Not executable - will be fixed during packaging${NC}"
-                WARNINGS=$((WARNINGS + 1))
-            fi
-        fi
-    else
-        echo -e "${RED}  ✗ ffmpeg not found${NC}"
-        ERRORS=$((ERRORS + 1))
-    fi
-
-    if [ -f "$PLATFORM_BIN_DIR/$FFPROBE_NAME" ]; then
-        SIZE=$(du -h "$PLATFORM_BIN_DIR/$FFPROBE_NAME" | cut -f1)
-        echo -e "${GREEN}  ✓ ffprobe found ($SIZE)${NC}"
-
-        # Check if executable (Unix-like platforms)
-        if [[ "$PLATFORM" != win-x64 ]] && [[ "$PLATFORM" != win32-* ]]; then
-            if [ -x "$PLATFORM_BIN_DIR/$FFPROBE_NAME" ]; then
-                echo -e "${GREEN}    ✓ Executable permission set${NC}"
-            else
-                echo -e "${YELLOW}    ⚠ Not executable - will be fixed during packaging${NC}"
-                WARNINGS=$((WARNINGS + 1))
-            fi
-        fi
-    else
-        echo -e "${RED}  ✗ ffprobe not found${NC}"
-        ERRORS=$((ERRORS + 1))
-    fi
-
-    if [ -f "$PLATFORM_BIN_DIR/$AUTO_EDITOR_NAME" ]; then
-        SIZE=$(du -h "$PLATFORM_BIN_DIR/$AUTO_EDITOR_NAME" | cut -f1)
-        echo -e "${GREEN}  ✓ auto-editor found ($SIZE)${NC}"
-
-        # Check if executable (Unix-like platforms)
-        if [[ "$PLATFORM" != win-x64 ]] && [[ "$PLATFORM" != win32-* ]]; then
-            if [ -x "$PLATFORM_BIN_DIR/$AUTO_EDITOR_NAME" ]; then
-                echo -e "${GREEN}    ✓ Executable permission set${NC}"
-            else
-                echo -e "${YELLOW}    ⚠ Not executable - will be fixed during packaging${NC}"
-                WARNINGS=$((WARNINGS + 1))
-            fi
-        fi
-    else
-        echo -e "${RED}  ✗ auto-editor not found${NC}"
-        ERRORS=$((ERRORS + 1))
-    fi
+    echo -e "${YELLOW}  • no local binaries/$PLATFORM — fine, fetched at runtime${NC}"
 fi
 
-echo ""
-
-# Check Python directory (optional)
-echo -e "${BLUE}Checking Python runtime (optional)...${NC}"
 PLATFORM_PYTHON_DIR="$PYTHON_DIR/$PLATFORM"
-
-if [ ! -d "$PLATFORM_PYTHON_DIR" ]; then
-    echo -e "${YELLOW}  ⚠ Python runtime not bundled for $PLATFORM${NC}"
-    echo -e "${YELLOW}    This is OK if using system Python${NC}"
-    WARNINGS=$((WARNINGS + 1))
+if [ -d "$PLATFORM_PYTHON_DIR" ]; then
+    echo -e "${GREEN}  ✓ local Python runtime present (dev fallback, not bundled): $PLATFORM_PYTHON_DIR${NC}"
 else
-    echo -e "${GREEN}  ✓ Python directory exists: $PLATFORM_PYTHON_DIR${NC}"
-
-    PYTHON_RUNTIME="$PLATFORM_PYTHON_DIR/python-runtime"
-    if [ -d "$PYTHON_RUNTIME" ]; then
-        echo -e "${GREEN}  ✓ Python runtime found${NC}"
-
-        # Check for python executable
-        if [[ "$PLATFORM" == win-x64 ]] || [[ "$PLATFORM" == win32-* ]]; then
-            PYTHON_BIN="$PYTHON_RUNTIME/python.exe"
-        else
-            PYTHON_BIN="$PYTHON_RUNTIME/bin/python3"
-        fi
-
-        if [ -f "$PYTHON_BIN" ]; then
-            SIZE=$(du -sh "$PYTHON_RUNTIME" | cut -f1)
-            echo -e "${GREEN}  ✓ Python executable found (total size: $SIZE)${NC}"
-        else
-            echo -e "${YELLOW}  ⚠ Python executable not found at expected location${NC}"
-            WARNINGS=$((WARNINGS + 1))
-        fi
-    else
-        echo -e "${YELLOW}  ⚠ Python runtime directory not found${NC}"
-        WARNINGS=$((WARNINGS + 1))
-    fi
+    echo -e "${YELLOW}  • no local python/$PLATFORM — fine, fetched at runtime${NC}"
 fi
 
 echo ""
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-
-if [ $ERRORS -eq 0 ] && [ $WARNINGS -eq 0 ]; then
-    echo -e "${GREEN}✅ All binaries verified successfully!${NC}"
-    echo -e "${GREEN}   Ready to package for $PLATFORM${NC}"
-    exit 0
-elif [ $ERRORS -eq 0 ]; then
-    echo -e "${YELLOW}⚠️  Verification passed with $WARNINGS warning(s)${NC}"
-    echo -e "${YELLOW}   Can proceed with packaging, but review warnings above${NC}"
-    exit 0
-else
-    echo -e "${RED}❌ Verification failed with $ERRORS error(s) and $WARNINGS warning(s)${NC}"
-    echo -e "${RED}   Cannot package - please run preparation scripts first:${NC}"
-    echo ""
-    echo -e "${YELLOW}   For current platform:${NC}"
-    echo -e "     ./scripts/prepare-binaries.sh"
-    echo ""
-    echo -e "${YELLOW}   For other platforms:${NC}"
-    echo -e "     ./scripts/download-binaries.sh $PLATFORM"
-    echo ""
-    exit 1
-fi
+echo -e "${GREEN}✅ Preflight OK — ready to package for $PLATFORM${NC}"
+echo -e "${GREEN}   (runtime assets resolved from GitHub releases)${NC}"
+exit 0
