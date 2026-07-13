@@ -6,6 +6,7 @@ import { WindowService } from '../services/window-service';
 import { PythonService } from '../services/python-service';
 import { DependencyService } from '../services/dependency-service';
 import { DuganAutomixer, DuganTrack } from '../services/dugan-automixer';
+import { BinaryResolver } from '../services/binary-resolver';
 import { AppConfig } from '../config/app-config';
 import * as assetManager from '../services/asset-manager';
 import * as fs from 'fs';
@@ -315,7 +316,15 @@ function setupFileSystemHandlers(windowService: WindowService): void {
 
       for (const item of items) {
         const itemPath = path.join(dirPath, item);
-        const stats = fs.statSync(itemPath);
+        // A dangling symlink or a file removed mid-scan must skip that entry,
+        // not abort the whole directory scan.
+        let stats: fs.Stats;
+        try {
+          stats = fs.statSync(itemPath);
+        } catch (statErr: any) {
+          log.warn(`Skipping unreadable entry ${itemPath}: ${statErr.message}`);
+          continue;
+        }
 
         if (stats.isFile()) {
           // Check audio patterns
@@ -366,7 +375,13 @@ function setupFileSystemHandlers(windowService: WindowService): void {
       const desktopPattern = new RegExp(`^${escapedSession}.*desktop.*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i');
       for (const item of items) {
         const itemPath = path.join(dirPath, item);
-        const stats = fs.statSync(itemPath);
+        let stats: fs.Stats;
+        try {
+          stats = fs.statSync(itemPath);
+        } catch (statErr: any) {
+          log.warn(`Skipping unreadable entry ${itemPath}: ${statErr.message}`);
+          continue;
+        }
         if (stats.isFile() && desktopPattern.test(item)) {
           const basename = path.basename(item);
           // Match: " sb.", "_sb.", "-sb.", " sb ", "_sb ", "-sb "
@@ -440,6 +455,11 @@ function setupDependencyHandlers(): void {
  * Audio processing handlers
  */
 function setupAudioHandlers(): void {
+  // Resolve the bundled/managed Python the same way the rest of the app does,
+  // instead of assuming a bare 'python3' on PATH (which won't exist in a
+  // packaged app and misses the app's PYTHONPATH / binary env).
+  const binaryResolver = new BinaryResolver();
+
   // Apply audio drift correction
   ipcMain.handle('apply-audio-drift', async (event, options: {
     inputPath: string;
@@ -473,12 +493,15 @@ function setupAudioHandlers(): void {
         const scriptPath = path.join(AppConfig.cliPath, 'apply_audio_drift.py');
 
         // Python script will auto-detect audio duration
-        const pythonProcess = spawn('python3', [
+        const pythonPath = binaryResolver.getPythonPath();
+        const pythonProcess = spawn(pythonPath, [
           scriptPath,
           '--input', inputPath,
           '--drift-frames', driftFrames.toString(),
           '--output', outputPath
-        ]);
+        ], {
+          env: binaryResolver.getPythonEnv()
+        });
 
         // Handle stdout
         pythonProcess.stdout.on('data', (data: Buffer) => {
@@ -830,28 +853,12 @@ function setupConfigHandlers(): void {
       log.info('Loaded drift corrections config:', config);
       return config;
     } catch (error: any) {
+      // A corrupt/unparseable config must NOT be masked by returning plausible
+      // defaults — that would silently discard the user's edited speed factors.
+      // Fail loudly; the renderer's loadConfig() catch surfaces this to the user.
+      // (The missing-file case is handled above and still returns defaults.)
       log.error('Error loading drift corrections config:', error);
-      // Return defaults on error
-      return {
-        vmix_outputs: {
-          enabled: true,
-          speed_factor: 1.0,
-          applies_to: ['mic1', 'mic2', 'mic3', 'mic4', 'screen_audio', 'bluetooth', 'cam', 'master'],
-          description: 'vMix outputs converted to 29.97fps'
-        },
-        vmix_sources: {
-          enabled: true,
-          speed_factor: 0.9999763884,
-          applies_to: ['screen_capture_video', 'game_capture_video'],
-          description: 'vMix direct source recordings'
-        },
-        soundboard: {
-          enabled: true,
-          speed_factor: 1.0000158402,
-          applies_to: ['sound_effects'],
-          description: 'External soundboard device'
-        }
-      };
+      throw new Error(`Failed to load drift corrections: ${error.message}`);
     }
   });
 

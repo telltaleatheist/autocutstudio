@@ -103,22 +103,39 @@ export class PythonService {
       }
     });
 
-    // Handle process completion
-    pythonProcess.on('close', (code) => {
-      log.info(`[${jobId}] Process exited with code ${code}`);
+    // Guarantee exactly one terminal callback, from EITHER 'close' or 'error'.
+    let completed = false;
+    const complete = (code: number) => {
+      if (completed) return;
+      completed = true;
       this.runningProcesses.delete(jobId);
       if (options.onComplete) {
-        options.onComplete(code || 0);
+        options.onComplete(code);
+      }
+    };
+
+    // Handle process completion
+    pythonProcess.on('close', (code, signal) => {
+      if (code === null) {
+        // A null exit code means the process was terminated by a signal
+        // (segfault, OOM kill, SIGTERM). Coercing that to 0 would report a
+        // killed pipeline as success — treat it as a hard failure instead.
+        log.error(`[${jobId}] Process terminated by signal ${signal} (no exit code) — treating as failure`);
+        complete(-1);
+      } else {
+        log.info(`[${jobId}] Process exited with code ${code}`);
+        complete(code);
       }
     });
 
-    // Handle process errors
+    // Handle process errors (e.g. spawn failure — the binary doesn't exist).
+    // Previously onComplete never fired here, so the renderer would spin forever.
     pythonProcess.on('error', (error) => {
       log.error(`[${jobId}] Process error:`, error);
-      this.runningProcesses.delete(jobId);
       if (options.onError) {
         options.onError(`Process error: ${error.message}`);
       }
+      complete(-1);
     });
 
     return pythonProcess;
@@ -182,9 +199,19 @@ export class PythonService {
     // Store the process
     this.runningProcesses.set(jobId, pythonProcess);
 
+    // Surface stdin errors instead of letting an EPIPE (Python exiting
+    // immediately) bubble up as an uncaught exception that crashes main.
+    pythonProcess.stdin.on('error', (err) => {
+      log.error(`[${jobId}] stdin error:`, err);
+    });
+
     // Send input data as JSON to stdin
     // NOTE: Don't close stdin - we need it open to send skip signals later
-    pythonProcess.stdin.write(JSON.stringify(options.inputData) + '\n');
+    pythonProcess.stdin.write(JSON.stringify(options.inputData) + '\n', (err) => {
+      if (err) {
+        log.error(`[${jobId}] Failed to write initial input to stdin:`, err);
+      }
+    });
 
     let finalResult: any = null;
 
@@ -197,8 +224,22 @@ export class PythonService {
      * Process a single complete line of stdout output.
      */
     const processLine = (line: string) => {
+      // ── Parse only ── a JSON.parse failure genuinely means non-JSON output.
+      let message: any;
       try {
-        const message = JSON.parse(line);
+        message = JSON.parse(line);
+      } catch (e) {
+        log.info(`[${jobId}] Non-JSON output:`, line);
+        if (options.onOutput) {
+          options.onOutput(line);
+        }
+        return;
+      }
+
+      // ── Dispatch ── a throw HERE (e.g. `message.tracks.length` on a malformed
+      // ducking_request) is a real bug, not "non-JSON output". Log it loudly so
+      // Python doesn't block forever waiting on a response we never sent.
+      try {
         log.info(`[${jobId}] Parsed JSON message:`, message);
 
         if (message.type === 'progress' && options.onProgress) {
@@ -217,6 +258,27 @@ export class PythonService {
           log.info(`[${jobId}] Workflow success:`, message.result);
           finalResult = message.result;
         } else if (message.type === 'ducking_request') {
+          // Validate before touching message.tracks — an invalid payload must not
+          // throw (silently swallowed) and leave Python blocked. Instead reply
+          // immediately with an error so Python can fail fast.
+          if (!Array.isArray(message.tracks) || message.tracks.length === 0) {
+            log.error(`[${jobId}] Invalid ducking_request: 'tracks' missing or empty`);
+            const errResponse = JSON.stringify({
+              type: 'ducking_complete',
+              error: "Invalid ducking_request: 'tracks' must be a non-empty array"
+            }) + '\n';
+            if (!pythonProcess.stdin.destroyed) {
+              pythonProcess.stdin.write(errResponse, (err) => {
+                if (err) {
+                  log.error(`[${jobId}] Failed to write ducking error response to stdin:`, err);
+                }
+              });
+            } else {
+              log.error(`[${jobId}] Cannot write ducking error response — stdin is destroyed`);
+            }
+            return;
+          }
+
           // Run Dugan automixer on tracks Python sent us
           log.info(`[${jobId}] Ducking request received: ${message.tracks.length} tracks`);
           for (const t of message.tracks) {
@@ -258,11 +320,11 @@ export class PythonService {
             }
           });
         }
-      } catch (e) {
-        // Not JSON, treat as regular output
-        log.info(`[${jobId}] Non-JSON output:`, line);
-        if (options.onOutput) {
-          options.onOutput(line);
+      } catch (dispatchErr) {
+        // A dispatch failure is a real error — do NOT relabel it "non-JSON output".
+        log.error(`[${jobId}] Error dispatching workflow message:`, dispatchErr);
+        if (options.onError) {
+          options.onError(`Error handling workflow message: ${(dispatchErr as Error).message}`);
         }
       }
     };
@@ -295,46 +357,55 @@ export class PythonService {
       }
     });
 
-    // Handle process completion
-    pythonProcess.on('close', (code) => {
-      // Flush any remaining data in the line buffer
-      if (stdoutBuffer.trim()) {
-        processLine(stdoutBuffer.trim());
-      }
-
-      log.info(`[${jobId}] Workflow process exited with code ${code}`);
+    // Guarantee exactly one terminal callback, from EITHER 'close' or 'error'.
+    let completed = false;
+    const complete = (code: number, result?: any) => {
+      if (completed) return;
+      completed = true;
       this.runningProcesses.delete(jobId);
 
       // Remove all listeners to release closure references
       pythonProcess.stdout.removeAllListeners();
       pythonProcess.stderr.removeAllListeners();
+      pythonProcess.stdin.removeAllListeners();
       pythonProcess.removeAllListeners();
 
       if (options.onComplete) {
-        options.onComplete(code || 0, finalResult);
+        options.onComplete(code, result);
       }
 
       // Release closure references
       stdoutBuffer = '';
       finalResult = null;
+    };
+
+    // Handle process completion
+    pythonProcess.on('close', (code, signal) => {
+      // Flush any remaining data in the line buffer
+      if (stdoutBuffer.trim()) {
+        processLine(stdoutBuffer.trim());
+      }
+
+      if (code === null) {
+        // A null exit code means the process was killed by a signal
+        // (segfault, OOM, SIGTERM). Never coerce that to 0 — a killed pipeline
+        // is a failure, not success.
+        log.error(`[${jobId}] Workflow terminated by signal ${signal} (no exit code) — treating as failure`);
+        complete(-1, finalResult);
+      } else {
+        log.info(`[${jobId}] Workflow process exited with code ${code}`);
+        complete(code, finalResult);
+      }
     });
 
-    // Handle process errors
+    // Handle process errors (e.g. spawn failure). Previously onComplete never
+    // fired here, so the renderer spun forever waiting on workflow-complete.
     pythonProcess.on('error', (error) => {
       log.error(`[${jobId}] Workflow process error:`, error);
-      this.runningProcesses.delete(jobId);
-
-      // Remove all listeners to release closure references
-      pythonProcess.stdout.removeAllListeners();
-      pythonProcess.stderr.removeAllListeners();
-      pythonProcess.removeAllListeners();
-
       if (options.onError) {
         options.onError(`Process error: ${error.message}`);
       }
-
-      stdoutBuffer = '';
-      finalResult = null;
+      complete(-1, finalResult);
     });
 
     return pythonProcess;
@@ -344,6 +415,13 @@ export class PythonService {
    * Send skip signal to the current running workflow process
    */
   sendSkipSignal(): boolean {
+    // SIGUSR1 doesn't exist on Windows — calling kill('SIGUSR1') there would
+    // terminate the whole workflow instead of skipping the current step.
+    if (process.platform === 'win32') {
+      log.warn('[SKIP] ⚠️  Skip via SIGUSR1 is not supported on Windows — ignoring skip request');
+      return false;
+    }
+
     // Get the most recent running process (the current workflow)
     const processes = Array.from(this.runningProcesses.values());
     log.info(`[SKIP] Total running processes: ${processes.length}`);

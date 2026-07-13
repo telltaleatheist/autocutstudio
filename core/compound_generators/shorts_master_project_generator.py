@@ -284,309 +284,6 @@ class ShortsMasterProjectGenerator:
 
         return [output_file]
 
-    def _generate_project_segment(self, cam_media: ET.Element, gs_media: ET.Element,
-                                  ssb_media: ET.Element, cam_cuts: List[ET.Element],
-                                  all_resources: Dict[str, ET.Element],
-                                  original_name: str, project_type: str, part_suffix: str,
-                                  cam_xml_path: str, output_path: Optional[str] = None,
-                                  shared_uids: Optional[Dict[str, str]] = None) -> str:
-        """Generate a single project segment with the given cuts.
-
-        Args:
-            shared_uids: Dict with 'cam', 'gs', 'ssb' keys containing UIDs to use for compounds.
-                        If None, new UIDs will be generated.
-        """
-        
-        # Build the master project XML
-        root = ET.Element('fcpxml')
-        root.set('version', '1.13')
-        
-        # Resources section
-        resources_elem = ET.SubElement(root, 'resources')
-        
-        # Add timeline format based on detected framerate
-        timeline_format = ET.SubElement(resources_elem, 'format')
-        timeline_format.set('id', 'r1')
-        
-        if self.detected_framerate == "30":
-            timeline_format.set('name', 'FFVideoFormat1920p30')
-            timeline_format.set('frameDuration', '1/30s')
-        else:  # Default to 29.97
-            timeline_format.set('name', 'FFVideoFormat1920p2997')
-            timeline_format.set('frameDuration', '1001/30000s')
-        
-        timeline_format.set('width', '1080')
-        timeline_format.set('height', '1920')
-        timeline_format.set('colorSpace', '1-1-1 (Rec. 709)')
-        
-        # Add compound format (matches timeline format)
-        compound_format = ET.SubElement(resources_elem, 'format')
-        compound_format.set('id', 'r3')
-        
-        if self.detected_framerate == "30":
-            compound_format.set('name', 'FFVideoFormat1920p30')
-            compound_format.set('frameDuration', '1/30s')
-        else:  # Default to 29.97
-            compound_format.set('name', 'FFVideoFormat1920p2997')
-            compound_format.set('frameDuration', '1001/30000s')
-        
-        compound_format.set('width', '1080')
-        compound_format.set('height', '1920')
-        compound_format.set('colorSpace', '1-1-1 (Rec. 709)')
-        
-        # Add the three compound media elements with updated names
-        cam_media_copy = ET.SubElement(resources_elem, 'media')
-        cam_media_copy.set('id', 'r2')  # Use consistent IDs like template
-        cam_name = f"{original_name} - CAM" if project_type == "SHORTS" else f"{original_name} - DC CAM"
-        cam_media_copy.set('name', cam_name)
-        # Use shared UID if provided, otherwise generate new one
-        cam_uid = shared_uids['cam'] if shared_uids else str(uuid.uuid4()).upper()
-        cam_media_copy.set('uid', cam_uid)
-        cam_media_copy.set('modDate', datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S -0400"))
-        
-        # Copy the sequence from the original CAM compound
-        cam_sequence = cam_media.find('sequence')
-        if cam_sequence is not None:
-            cam_sequence_copy = ET.SubElement(cam_media_copy, 'sequence')
-            for attr, value in cam_sequence.attrib.items():
-                if attr == 'format':
-                    cam_sequence_copy.set('format', 'r3')  # Use compound format
-                elif attr == 'duration':
-                    # Convert duration to proper framerate format
-                    converted_duration = self._convert_time_format(value)
-                    cam_sequence_copy.set(attr, converted_duration)
-                else:
-                    cam_sequence_copy.set(attr, value)
-            
-            # Copy the spine structure and convert any time values
-            cam_spine = cam_sequence.find('spine')
-            if cam_spine is not None:
-                self._copy_element_with_conversion(cam_spine, cam_sequence_copy)
-        
-        # SSB compound
-        ssb_media_copy = ET.SubElement(resources_elem, 'media')
-        ssb_media_copy.set('id', 'r6')  # Use consistent IDs like template
-        ssb_name = f"{original_name} - SSB" if project_type == "SHORTS" else f"{original_name} - DC SSB"
-        ssb_media_copy.set('name', ssb_name)
-        # Use shared UID if provided, otherwise generate new one
-        ssb_uid = shared_uids['ssb'] if shared_uids else str(uuid.uuid4()).upper()
-        ssb_media_copy.set('uid', ssb_uid)
-        ssb_media_copy.set('modDate', datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S -0400"))
-        
-        # Copy the sequence from the original SSB compound
-        ssb_sequence = ssb_media.find('sequence')
-        if ssb_sequence is not None:
-            ssb_sequence_copy = ET.SubElement(ssb_media_copy, 'sequence')
-            for attr, value in ssb_sequence.attrib.items():
-                if attr == 'format':
-                    ssb_sequence_copy.set('format', 'r3')  # Use compound format
-                elif attr == 'duration':
-                    # Convert duration to proper framerate format
-                    converted_duration = self._convert_time_format(value)
-                    ssb_sequence_copy.set(attr, converted_duration)
-                else:
-                    ssb_sequence_copy.set(attr, value)
-            
-            # Copy the spine structure and convert any time values
-            ssb_spine = ssb_sequence.find('spine')
-            if ssb_spine is not None:
-                self._copy_element_with_conversion(ssb_spine, ssb_sequence_copy)
-        
-        # GS compound
-        gs_media_copy = ET.SubElement(resources_elem, 'media')
-        gs_media_copy.set('id', 'r12')  # Use consistent IDs like template
-        gs_name = f"{original_name} - GS" if project_type == "SHORTS" else f"{original_name} - DC GS"
-        gs_media_copy.set('name', gs_name)
-        # Use shared UID if provided, otherwise generate new one
-        gs_uid = shared_uids['gs'] if shared_uids else str(uuid.uuid4()).upper()
-        gs_media_copy.set('uid', gs_uid)
-        gs_media_copy.set('modDate', datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S -0400"))
-        
-        # Copy the sequence from the original GS compound
-        gs_sequence = gs_media.find('sequence')
-        if gs_sequence is not None:
-            gs_sequence_copy = ET.SubElement(gs_media_copy, 'sequence')
-            for attr, value in gs_sequence.attrib.items():
-                if attr == 'format':
-                    gs_sequence_copy.set('format', 'r3')  # Use compound format
-                elif attr == 'duration':
-                    # Convert duration to proper framerate format
-                    converted_duration = self._convert_time_format(value)
-                    gs_sequence_copy.set(attr, converted_duration)
-                else:
-                    gs_sequence_copy.set(attr, value)
-            
-            # Copy the spine structure and convert any time values
-            gs_spine = gs_sequence.find('spine')
-            if gs_spine is not None:
-                self._copy_element_with_conversion(gs_spine, gs_sequence_copy)
-        
-        # Add other necessary resources (assets, effects, etc.) from original files
-        # Skip the compound media elements we already added
-        skip_ids = {'r1', 'r2', 'r3', 'r6', 'r12'}
-
-        for resource_id, resource in all_resources.items():
-            if resource_id not in skip_ids and resource.tag != 'media':
-                resources_elem.append(resource)
-
-        # Create library structure
-        # Derive library location from output path - use parent directory of output XML
-        library = ET.SubElement(root, 'library')
-        if output_path:
-            output_parent = Path(output_path).parent.parent  # Go up from /files/ to date folder
-            encoded_path = quote(f'{output_parent}/{original_name}.fcpbundle/', safe='/:')
-            library_location = f'file://{encoded_path}'
-        else:
-            # Fallback: use input file's location
-            cam_parent = Path(cam_xml_path).parent.parent
-            encoded_path = quote(f'{cam_parent}/{original_name}.fcpbundle/', safe='/:')
-            library_location = f'file://{encoded_path}'
-        library.set('location', library_location)
-
-        event = ET.SubElement(library, 'event')
-        event.set('name', 'Auto-Editor Media Group')
-        # Use shared event UID if provided, otherwise generate new one
-        event_uid = shared_uids['event'] if shared_uids else str(uuid.uuid4()).upper()
-        event.set('uid', event_uid)
-
-        project = ET.SubElement(event, 'project')
-        project_name = f"{original_name} {project_type.lower()}{part_suffix}"
-        project.set('name', project_name)
-        project.set('uid', str(uuid.uuid4()).upper())
-        project.set('modDate', datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S -0400"))
-        
-        # Create the main timeline sequence
-        # Calculate total duration from cam_cuts
-        total_duration = self._calculate_total_duration(cam_cuts)
-        
-        sequence = ET.SubElement(project, 'sequence')
-        sequence.set('format', 'r1')
-        sequence.set('duration', total_duration)
-        sequence.set('tcStart', '0s')
-        sequence.set('tcFormat', 'NDF')
-        sequence.set('audioLayout', 'stereo')
-        sequence.set('audioRate', '48k')
-        
-        spine = ET.SubElement(sequence, 'spine')
-
-        # Calculate the offset adjustment for this segment
-        # (subtract the first clip's offset so the segment starts at 0s)
-        segment_start_offset_str = '0s'
-        if cam_cuts:
-            segment_start_offset_str = cam_cuts[0].get('offset', '0s')
-
-        # Build timeline with multi-lane structure for each cut
-        # Track expected offset to ensure continuity
-        expected_offset = "0s"
-
-        for i, ref_clip in enumerate(cam_cuts):
-            # Get timing from original cut
-            offset = ref_clip.get('offset', '0s')
-            duration = ref_clip.get('duration', '30/30s')
-            start = ref_clip.get('start', '0s')
-
-            # Convert duration and start to proper framerate
-            converted_duration = self._convert_time_format(duration)
-            converted_start = self._convert_time_format(start)
-
-            # Use expected_offset for continuity (only convert first clip's offset)
-            if i == 0:
-                # First clip: adjust and convert offset
-                adjusted_offset = self._subtract_time_fractions(offset, segment_start_offset_str)
-                converted_offset = self._convert_time_format(adjusted_offset)
-                expected_offset = converted_offset
-            else:
-                # Subsequent clips: use expected offset to maintain continuity
-                converted_offset = expected_offset
-            
-            # Create main CAM ref-clip (video only)
-            main_clip = ET.SubElement(spine, 'ref-clip')
-            main_clip.set('ref', 'r2')  # CAM compound
-            main_clip.set('offset', converted_offset)
-            main_clip.set('name', cam_name)
-            main_clip.set('duration', converted_duration)
-            main_clip.set('srcEnable', 'video')  # Video only for main spine
-            
-            # Adjust start time if present
-            if converted_start != '0s':
-                main_clip.set('start', converted_start)
-            
-            # Add conform-rate
-            conform_rate = ET.SubElement(main_clip, 'conform-rate')
-            conform_rate.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
-
-            # Lane -1: CAM audio (master audio - topmost audio lane)
-            cam_audio = ET.SubElement(main_clip, 'ref-clip')
-            cam_audio.set('ref', 'r2')  # CAM compound
-            cam_audio.set('lane', '-1')
-            # Nested clips offset matches start for proper frame alignment
-            cam_audio.set('offset', converted_start)
-            cam_audio.set('name', cam_name)
-            cam_audio.set('duration', converted_duration)
-            cam_audio.set('srcEnable', 'audio')  # Audio only
-            if converted_start != '0s':
-                cam_audio.set('start', converted_start)
-
-            cam_audio_conform = ET.SubElement(cam_audio, 'conform-rate')
-            cam_audio_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
-
-            # Lane -2: SSB audio (below master audio)
-            ssb_audio = ET.SubElement(main_clip, 'ref-clip')
-            ssb_audio.set('ref', 'r6')  # SSB compound
-            ssb_audio.set('lane', '-2')
-            # Nested clips offset matches start for proper frame alignment
-            ssb_audio.set('offset', converted_start)
-            ssb_audio.set('name', ssb_name)
-            ssb_audio.set('duration', converted_duration)
-            ssb_audio.set('srcEnable', 'audio')  # Audio only
-            if converted_start != '0s':
-                ssb_audio.set('start', converted_start)
-
-            ssb_audio_conform = ET.SubElement(ssb_audio, 'conform-rate')
-            ssb_audio_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
-
-            # Note: No GS for shorts - only CAM and SSB
-
-            # Lane 1: SSB video
-            ssb_video = ET.SubElement(main_clip, 'ref-clip')
-            ssb_video.set('ref', 'r6')  # SSB compound
-            ssb_video.set('lane', '1')
-            # Nested clips offset matches start for proper frame alignment
-            ssb_video.set('offset', converted_start)
-            ssb_video.set('name', ssb_name)
-            ssb_video.set('duration', converted_duration)
-            ssb_video.set('srcEnable', 'video')  # Video only
-            if converted_start != '0s':
-                ssb_video.set('start', converted_start)
-
-            ssb_video_conform = ET.SubElement(ssb_video, 'conform-rate')
-            ssb_video_conform.set('srcFrameRate', self.detected_framerate if self.detected_framerate else '29.97')
-
-            # Calculate next expected offset to maintain continuity
-            expected_offset = self._add_time_fractions(converted_offset, converted_duration)
-        
-        # Add smart collections
-        self._add_smart_collections(library)
-        
-        # Save the master project XML
-        if output_path is None:
-            if part_suffix:
-                # Extract part number from suffix like " part 1"
-                output_filename = f"{original_name}_{project_type}{part_suffix.replace(' ', '_')}.fcpxml"
-            else:
-                output_filename = f"{original_name}_{project_type}.fcpxml"
-            output_path = Path(cam_xml_path).parent / output_filename
-        else:
-            # If output_path was provided, add part suffix to it
-            if part_suffix:
-                base_path = Path(output_path)
-                output_path = base_path.parent / f"{base_path.stem}{part_suffix.replace(' ', '_')}{base_path.suffix}"
-
-        tree = ET.ElementTree(root)
-        self.xml_utils.save_fcpxml(tree, str(output_path))
-
-        return str(output_path)
-    
     def _parse_time_to_seconds(self, time_str: str) -> float:
         """Parse FCPXML time string to seconds."""
         if not time_str or time_str == '0s':
@@ -1017,8 +714,22 @@ class ShortsMasterProjectGenerator:
         project.set('uid', str(uuid.uuid4()).upper())
         project.set('modDate', datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S -0400"))
 
-        # Calculate total duration from cam_cuts
-        total_duration = self._calculate_total_duration(cam_cuts)
+        # Calculate the offset adjustment for this segment (the spine rebases every
+        # clip to 0 by subtracting this from its offset).
+        segment_start_offset_str = '0s'
+        if cam_cuts:
+            segment_start_offset_str = cam_cuts[0].get('offset', '0s')
+
+        # Sequence duration must be measured from the REBASED end, not the last clip's
+        # original absolute offset (which over-lengthens segment 2+ by its start offset).
+        # For single-segment projects (segment start offset 0) this is numerically
+        # identical to the un-rebased total.
+        total_duration = self._convert_time_format(
+            self._subtract_time_fractions(
+                self._calculate_total_duration(cam_cuts),
+                segment_start_offset_str
+            )
+        )
 
         sequence = ET.SubElement(project, 'sequence')
         sequence.set('format', 'r1')
@@ -1031,11 +742,6 @@ class ShortsMasterProjectGenerator:
         spine = ET.SubElement(sequence, 'spine')
 
         # Build timeline with multi-lane structure for each cut
-        # Calculate the offset adjustment for this segment
-        segment_start_offset_str = '0s'
-        if cam_cuts:
-            segment_start_offset_str = cam_cuts[0].get('offset', '0s')
-
         # Track expected offset to ensure continuity
         expected_offset = "0s"
 

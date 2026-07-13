@@ -67,9 +67,8 @@ class DCSSBGenerator:
                     }
                     print(f"Processed {audio_type} audio: {processed_path}")
                 except Exception as e:
-                    print(f"Warning: Failed to process {audio_type} audio ({audio_sources[audio_type]}): {e}")
-                    # Continue without this audio source instead of failing
-                    continue
+                    print(f"Error: Failed to process {audio_type} audio ({audio_sources[audio_type]}): {e}")
+                    raise
 
         # Don't fail if no audio sources were processed - DC SSB can work without audio
         if not processed_audio_sources:
@@ -110,16 +109,17 @@ class DCSSBGenerator:
         # Create format elements
         # Get original format from compound XML for timeline compatibility
         original_format = tree.find('.//format')
-        if original_format is not None:
-            # Copy the original format for timeline compatibility
-            timeline_format = ET.SubElement(resources, 'format')
-            timeline_format.set('id', 'r1')
-            timeline_format.set('name', original_format.get('name', 'FFVideoFormatRateUndefined'))
-            timeline_format.set('frameDuration', original_format.get('frameDuration', '1/30s'))
-            timeline_format.set('width', original_format.get('width', str(video_settings.get('width', 1920))))
-            timeline_format.set('height', original_format.get('height', str(video_settings.get('height', 1080))))
-            timeline_format.set('colorSpace', original_format.get('colorSpace', '1-1-1 (Rec. 709)'))
-        
+        if original_format is None:
+            raise ValueError("input compound XML has no <format> element")
+        # Copy the original format for timeline compatibility
+        timeline_format = ET.SubElement(resources, 'format')
+        timeline_format.set('id', 'r1')
+        timeline_format.set('name', original_format.get('name', 'FFVideoFormatRateUndefined'))
+        timeline_format.set('frameDuration', original_format.get('frameDuration', '1/30s'))
+        timeline_format.set('width', original_format.get('width', str(video_settings.get('width', 1920))))
+        timeline_format.set('height', original_format.get('height', str(video_settings.get('height', 1080))))
+        timeline_format.set('colorSpace', original_format.get('colorSpace', '1-1-1 (Rec. 709)'))
+
         # Compound clip format (for internal compound structure)
         video_format = self.xml_utils.create_format_element(
             'r1_dc_ssb', 
@@ -183,11 +183,28 @@ class DCSSBGenerator:
 
         cam2_asset_id = None
         cam2_name = None
+        cam2_retime_map = None
         if 'cam2' in video_sources and video_sources['cam2']:
             cam2_path = video_sources['cam2']
             cam2_asset_id = "r_cam2_video"
             cam2_name = Path(cam2_path).stem
-            pass  # 0
+
+            # Only retime if this is a capture source (has "capture" in filename)
+            # Output sources are already synced with master
+            is_capture = 'capture' in Path(cam2_path).name.lower()
+
+            if is_capture:
+                # Detect framerate and calculate retime map for capture sources
+                cam2_fps = self.audio_processor.get_video_framerate(cam2_path)
+                cam2_retime_map = self.xml_utils.calculate_retime_map(original_duration, cam2_fps, 29.97)
+                if cam2_retime_map:
+                    print(f"  cam2 video: {cam2_fps:.2f}fps → 29.97fps (capture source, will apply timeMap)")
+                else:
+                    print(f"  cam2 video: {cam2_fps:.2f}fps (capture source, no retiming needed)")
+            else:
+                # Output source - no retiming needed
+                print(f"  cam2 video: output source, using native timing (no retiming)")
+
             cam2_asset = self.xml_utils.create_asset_element(
                 cam2_asset_id, cam2_name, cam2_path, original_duration,
                 'r1_dc_ssb', has_audio=False, has_video=True
@@ -254,22 +271,26 @@ class DCSSBGenerator:
             start=trim_duration
         )
         
-        # Add screen audio to gap structure (lane -2)
-        if 'screen' in audio_assets:
-            screen_audio_info = processed_audio_sources['screen']
-            screen_audio_clip = self.xml_utils.create_clip_with_audio_effects(
-                Path(screen_audio_info['path']).stem,
-                audio_assets['screen'],
-                "-2",  # Lane -2 for screen audio
-                trim_duration,
-                trimmed_content_duration,
-                'screen',    # Pass audio type for volume adjustment
-                resources,    # Pass resources (though not used in simplified version)
-                source_duration=screen_audio_info['duration']
-            )
-            gap.append(screen_audio_clip)
-            pass  # 0
-                    
+        # Add audio sources to gap structure (negative lanes starting at -2, descending)
+        current_audio_lane = -2  # Start at lane -2 for first audio track
+        for audio_type in audio_sources_config:
+            if audio_type in audio_assets:
+                audio_info = processed_audio_sources[audio_type]
+                audio_clip = self.xml_utils.create_clip_with_audio_effects(
+                    Path(audio_info['path']).stem,
+                    audio_assets[audio_type],
+                    str(current_audio_lane),
+                    trim_duration,
+                    trimmed_content_duration,
+                    audio_type,  # Pass audio type for volume adjustment
+                    resources,   # Pass resources
+                    enabled=True,
+                    channels=audio_info['channels'],
+                    source_duration=audio_info['duration']
+                )
+                gap.append(audio_clip)
+                current_audio_lane -= 1
+
         # Add master audio clip
         # Enable master audio if no external audio sources provided (master-only mode)
         enable_master_audio = len(audio_sources) == 0
@@ -456,7 +477,7 @@ class DCSSBGenerator:
                 camera2_name = f"{original_name} - Camera 2"
                 cam2_transforms = {'crop': [91.3865, 1.12389, 2.04329, 51.3326], 'crop_mode': 'trim', 'transform': {'position': [-88.6903, -49.2458], 'scale': 0.801898}}
 
-            cam2_clip = self.xml_utils.create_video_clip(camera2_name, camera2_asset, "6", trim_duration, trimmed_content_duration, cam2_transforms)
+            cam2_clip = self.xml_utils.create_video_clip(camera2_name, camera2_asset, "6", trim_duration, trimmed_content_duration, cam2_transforms, retime_map=cam2_retime_map if cam2_asset_id else None)
             gap.append(cam2_clip)
             
             # Add camera 2 border if specified (lane 7 - immediately above camera 2)

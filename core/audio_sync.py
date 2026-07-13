@@ -90,18 +90,8 @@ class AudioSyncAnalyzer:
 
     def _load_drift_config(self) -> dict:
         """Load drift correction configuration from config file."""
-        config_path = Path(__file__).parent.parent / 'config' / 'drift_corrections.json'
-        try:
-            with open(config_path, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Warning: Could not load drift config: {e}", file=sys.stderr)
-            # Return defaults
-            return {
-                'vmix_outputs': {'enabled': True, 'speed_factor': 1.0},
-                'vmix_sources': {'enabled': True, 'speed_factor': 0.9999763884},
-                'soundboard': {'enabled': True, 'speed_factor': 1.0000158402}
-            }
+        from .drift_config import load_drift_config
+        return load_drift_config()
 
     def merge_audio_files(self, file1: str, file2: Optional[str] = None) -> str:
         """Merge two audio files into a temporary combined file.
@@ -140,9 +130,11 @@ class AudioSyncAnalyzer:
             subprocess.run(cmd, capture_output=True, text=True, check=True)
             return temp_merged.name
         except subprocess.CalledProcessError as e:
-            # Clean up temp file
             Path(temp_merged.name).unlink(missing_ok=True)
-            return file1
+            raise RuntimeError(
+                f"Failed to merge audio files '{file1}' and '{file2}' for sync detection: "
+                f"{e.stderr[-500:] if e.stderr else e}"
+            ) from e
 
     def extract_audio_segment(self, file_path: str, start_seconds: float = 0,
                              duration_seconds: float = 60) -> Tuple[np.ndarray, int]:
@@ -180,8 +172,12 @@ class AudioSyncAnalyzer:
             # Load audio using scipy
             sample_rate, audio_data = wavfile.read(temp_wav.name)
 
-            # Clean up temp file
-            Path(temp_wav.name).unlink()
+            if len(audio_data) == 0:
+                raise RuntimeError(
+                    f"Extracted audio segment from {file_path} is empty "
+                    f"(start={start_seconds}s, duration={duration_seconds}s) — "
+                    "the requested range may be past the end of the file"
+                )
 
             # Normalize to [-1, 1]
             if audio_data.dtype == np.int16:
@@ -191,8 +187,8 @@ class AudioSyncAnalyzer:
 
             return audio_data, sample_rate
 
-        except subprocess.CalledProcessError as e:
-            raise
+        finally:
+            Path(temp_wav.name).unlink(missing_ok=True)
 
     def find_offset_cross_correlation(self, master_path: str, source_path: str,
                                      search_window_seconds: float = 30,
@@ -209,9 +205,13 @@ class AudioSyncAnalyzer:
             Tuple of (offset_seconds, correlation_score)
             - offset_seconds: How many seconds to shift source to align with master (positive = delay source)
             - correlation_score: Quality of match (0-1, higher is better)
+
+        Note: both files are read from t=0 and the master window extends past the
+        source window, so the detectable offset range is [0, search_window] — the
+        source starting BEFORE the master (a negative offset) cannot be detected
+        by this method and would peak at 0.
         """
         # Extract audio from both files
-        # Start at search_window to allow for negative offsets
         master_audio, master_sr = self.extract_audio_segment(
             master_path,
             start_seconds=0,
@@ -223,6 +223,18 @@ class AudioSyncAnalyzer:
             start_seconds=0,
             duration_seconds=analysis_duration
         )
+
+        # mode='valid' requires the master segment to be at least as long as the
+        # source segment; if the master file is shorter than the analysis window,
+        # scipy would silently correlate with swapped semantics and produce an
+        # offset with the wrong meaning.
+        if len(master_audio) < len(source_audio):
+            raise RuntimeError(
+                f"Master audio segment ({len(master_audio) / master_sr:.1f}s) is shorter than "
+                f"the source analysis segment ({len(source_audio) / source_sr:.1f}s). "
+                f"Master file '{master_path}' is too short for sync detection "
+                f"(needs at least {search_window_seconds + analysis_duration:.0f}s)."
+            )
 
         # Perform cross-correlation
         correlation = signal.correlate(master_audio, source_audio, mode='valid')
@@ -256,87 +268,12 @@ class AudioSyncAnalyzer:
             print(f"Error getting duration from {file_path}: {e}")
             raise
 
-    def detect_clock_drift(self, master_path: str, source_path: str,
-                          offset_seconds: float) -> Tuple[float, float]:
-        """Detect clock drift between source and master using dual cross-correlation.
-
-        Compares waveform alignment at the start and end of the recording to measure
-        how much the clock drift has accumulated over time. This is independent of
-        file durations and works even if files were re-rendered to different lengths.
-
-        Args:
-            master_path: Path to master file
-            source_path: Path to source file
-            offset_seconds: Known offset at the start
-
-        Returns:
-            Tuple of (speed_factor, drift_frames_at_2997)
-            - speed_factor: Multiply source speed by this to match master (e.g., 1.001 = 0.1% faster)
-            - drift_frames_at_2997: Drift in frames at 29.97fps (for reference)
-        """
-        master_duration = self.get_duration(master_path)
-        source_duration = self.get_duration(source_path)
-
-        # Use the shorter duration to ensure we don't read past end of either file
-        safe_duration = min(master_duration, source_duration)
-
-        # Measure alignment at START (use the offset we already detected)
-        offset_at_start = offset_seconds
-
-        # Measure alignment at END (30 seconds from the end)
-        # Extract last 30 seconds from both files
-        analysis_duration = 30  # seconds to analyze
-        end_position = safe_duration - analysis_duration - 10  # 10s buffer before actual end
-
-        if end_position < analysis_duration + 10:
-            # File too short for dual correlation, fall back to duration-based
-            effective_source_duration = source_duration
-            effective_master_duration = master_duration - offset_seconds
-            speed_factor = effective_source_duration / effective_master_duration
-            duration_diff = effective_source_duration - effective_master_duration
-            drift_frames = duration_diff * 29.97
-            return speed_factor, drift_frames
-
-        # Extract audio from end of both files
-        master_end_audio, master_sr = self.extract_audio_segment(
-            master_path,
-            start_seconds=end_position,
-            duration_seconds=analysis_duration
-        )
-
-        source_end_audio, source_sr = self.extract_audio_segment(
-            source_path,
-            start_seconds=end_position,
-            duration_seconds=analysis_duration
-        )
-
-        # Cross-correlate to find offset at the end
-        correlation = signal.correlate(master_end_audio, source_end_audio, mode='valid')
-        peak_index = np.argmax(correlation)
-        offset_at_end = peak_index / master_sr
-
-        # Calculate drift: difference in offsets over time
-        drift_over_time = offset_at_end - offset_at_start
-        drift_frames = drift_over_time * 29.97
-
-        # Only apply speed correction if drift is significant
-        # Threshold: More than 10 frames of drift over the recording
-        # (smaller drifts are likely measurement noise, not actual clock drift)
-        DRIFT_THRESHOLD_FRAMES = 10
-
-        if abs(drift_frames) > DRIFT_THRESHOLD_FRAMES:
-            # Calculate speed factor
-            # If drift_over_time is positive: source is falling behind (too slow, needs speedup)
-            # If drift_over_time is negative: source is ahead (too fast, needs slowdown)
-            # INVERTED: Subtract drift instead of add
-            speed_factor = (end_position - drift_over_time) / end_position
-            print(f"  Drift: {drift_frames:.1f} frames over {end_position / 60:.1f} min → speed={speed_factor:.10f}", file=sys.stderr)
-        else:
-            # Drift is negligible, no speed correction needed
-            speed_factor = 1.0
-            print(f"  Drift: {drift_frames:.1f} frames over {end_position / 60:.1f} min → negligible, no speed correction", file=sys.stderr)
-
-        return speed_factor, drift_frames
+    # NOTE: A detect_clock_drift() method used to live here. It was dead code
+    # (no callers) and its end-of-file measurement was broken: it correlated two
+    # equal-length segments with mode='valid', which yields a single-element
+    # result, so the "offset at end" was always 0 and any nonzero start offset
+    # would have been misread as drift. Drift correction is done via the
+    # empirically measured device factors in drift_corrections.json instead.
 
     def analyze_sync(self, master_path: str, source_path: str,
                     search_window: float = 30) -> Dict:
@@ -355,8 +292,8 @@ class AudioSyncAnalyzer:
                 - drift_frames: Drift in frames at 29.97fps
                 - is_soundboard: Whether this is a soundboard file
         """
-        source_name = Path(source_path).name
-        is_soundboard = 'sb.' in source_name.lower() or source_name.lower().endswith('sb.wav')
+        from .naming import is_soundboard_filename
+        is_soundboard = is_soundboard_filename(source_path)
 
         # Find offset using cross-correlation
         offset_seconds, correlation_score = self.find_offset_cross_correlation(
@@ -386,9 +323,10 @@ class AudioSyncAnalyzer:
                     master_duration = processor.get_duration_seconds(master_path)
                     drift_frames = (speed_factor - 1.0) * master_duration * 29.97
                     print(f"  🎚️  Soundboard device-specific drift correction: {speed_factor:.10f} ({drift_frames:.1f} frames over {master_duration/3600:.1f}h)", file=sys.stderr)
-                except:
-                    # If we can't get duration, just note the correction
-                    print(f"  🎚️  Soundboard device-specific drift correction: {speed_factor:.10f}", file=sys.stderr)
+                except Exception as e:
+                    # drift_frames is informational only (the speed factor is what
+                    # gets applied), so a failed duration probe is logged, not fatal
+                    print(f"  🎚️  Soundboard device-specific drift correction: {speed_factor:.10f} (duration probe failed: {e})", file=sys.stderr)
 
         result = {
             'offset_seconds': offset_seconds,
@@ -439,8 +377,11 @@ class MediaSyncProcessor:
             data = json.loads(result.stdout)
             return 'streams' in data and len(data['streams']) > 0
         except Exception as e:
-            print(f"Warning: Could not check audio stream: {e}")
-            return False  # Assume no audio if check fails
+            # A failed probe must not be treated as "no audio" — that would
+            # silently reroute the file to framerate-only sync with no offset.
+            raise RuntimeError(
+                f"Could not determine whether {video_path} has an audio stream: {e}"
+            ) from e
 
     def _apply_framerate_sync_only(self, video_path: str, output_path: Optional[str] = None) -> str:
         """Apply framerate sync only (no audio analysis).
@@ -533,15 +474,19 @@ class MediaSyncProcessor:
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
             data = json.loads(result.stdout)
 
-            if 'streams' in data and len(data['streams']) > 0:
-                r_frame_rate = data['streams'][0].get('r_frame_rate', '30000/1001')
-                num, den = map(int, r_frame_rate.split('/'))
-                return num / den
-            else:
-                return 29.97
+            if 'streams' not in data or len(data['streams']) == 0:
+                raise RuntimeError(f"No video stream found in {video_path}")
+            r_frame_rate = data['streams'][0].get('r_frame_rate')
+            if not r_frame_rate:
+                raise RuntimeError(f"Video stream in {video_path} has no r_frame_rate")
+            num, den = map(int, r_frame_rate.split('/'))
+            if den == 0 or num == 0:
+                raise RuntimeError(f"Invalid r_frame_rate '{r_frame_rate}' in {video_path}")
+            return num / den
         except Exception as e:
-            print(f"Warning: Could not detect framerate: {e}")
-            return 29.97
+            # Do not silently assume 29.97 — a wrong framerate here changes
+            # whether (and how) the file gets converted.
+            raise RuntimeError(f"Could not detect framerate of {video_path}: {e}") from e
 
     def apply_sync_to_audio(self, input_path: str, offset_seconds: float,
                            speed_factor: float, output_path: Optional[str] = None) -> str:
@@ -563,7 +508,8 @@ class MediaSyncProcessor:
         output_path = Path(output_path)
 
         # Check if this is a soundboard file (needs dual mono conversion)
-        is_soundboard = 'sb' in input_path.name.lower() and ('sb.' in input_path.name.lower() or input_path.name.lower().endswith('sb.wav'))
+        from .naming import is_soundboard_filename
+        is_soundboard = is_soundboard_filename(str(input_path))
 
         # Build ffmpeg filter
         filters = []

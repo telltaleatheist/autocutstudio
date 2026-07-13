@@ -104,6 +104,17 @@ export class DuganAutomixer {
     const analysisLen = Math.min(...monoLengths);
     const numFrames = Math.floor((analysisLen - windowSamples) / hopSamples) + 1;
 
+    // A track shorter than the analysis window yields numFrames < 1, which later
+    // blows up with an opaque RangeError (negative-length typed arrays). Fail
+    // with a clear message instead.
+    if (numFrames < 1) {
+      throw new Error(
+        `Track too short for Dugan analysis: shortest track is ${analysisLen} samples ` +
+        `(${(analysisLen / sampleRate).toFixed(2)}s), need at least ${windowSamples} samples ` +
+        `(${WINDOW_MS}ms) for a single analysis frame`
+      );
+    }
+
     // Trim RMS arrays to common frame count
     for (let i = 0; i < rmsArrays.length; i++) {
       if (rmsArrays[i].length > numFrames) {
@@ -165,23 +176,55 @@ export class DuganAutomixer {
     // ── PASS 2: Streaming gain application + encode ───────────────────
     // Stream-decode each track, apply gains on the fly, pipe to encoder.
     // Only one small chunk is in memory at a time.
+    //
+    // All-or-nothing: stage every track to its own temp file first, and only
+    // rename the temps over the originals once EVERY track has succeeded. A
+    // failure partway through therefore leaves all originals untouched — a
+    // re-run then re-processes clean inputs rather than double-applying gain to
+    // the tracks that already got overwritten.
     log.info('  Pass 2: streaming gain application and encoding...');
 
+    const staged: { type: string; finalPath: string; tmpPath: string }[] = [];
+
+    try {
+      for (let i = 0; i < tracks.length; i++) {
+        const ch = probes[i].channels;
+        const trackGains = smoothedGains[i];
+
+        log.info(`  Processing ${tracks[i].type}: ${ch}ch, ${numFrames} gain frames`);
+
+        const tmpPath = await this.streamApplyGains(
+          tracks[i].filePath, probes[i], trackGains,
+          numFrames, hopSamples, windowHalf, firstCenter, lastCenter
+        );
+
+        staged.push({ type: tracks[i].type, finalPath: tracks[i].filePath, tmpPath });
+      }
+    } catch (err) {
+      // Roll back: discard every temp produced so far; originals are intact.
+      for (const s of staged) {
+        try { fs.unlinkSync(s.tmpPath); } catch { /* ignore */ }
+      }
+      throw err;
+    }
+
+    // Every track processed successfully — swap the temps in. Temps live in the
+    // same directory as their originals, so these renames are same-filesystem
+    // (atomic) and effectively can't partially fail.
     const results: DuganResult[] = [];
-
-    for (let i = 0; i < tracks.length; i++) {
-      const ch = probes[i].channels;
-      const trackGains = smoothedGains[i];
-
-      log.info(`  Processing ${tracks[i].type}: ${ch}ch, ${numFrames} gain frames`);
-
-      await this.streamApplyGains(
-        tracks[i].filePath, probes[i], trackGains,
-        numFrames, hopSamples, windowHalf, firstCenter, lastCenter
-      );
-
-      results.push({ type: tracks[i].type, filePath: tracks[i].filePath });
-      log.info(`  Wrote ${tracks[i].type}: ${tracks[i].filePath}`);
+    for (const s of staged) {
+      try {
+        fs.renameSync(s.tmpPath, s.finalPath);
+      } catch (err) {
+        for (const rem of staged) {
+          try { fs.unlinkSync(rem.tmpPath); } catch { /* ignore */ }
+        }
+        throw new Error(
+          `Failed to finalize ${s.type} (${s.tmpPath} → ${s.finalPath}): ${(err as Error).message}`
+        );
+      }
+      results.push({ type: s.type, filePath: s.finalPath });
+      log.info(`  Wrote ${s.type}: ${s.finalPath}`);
     }
 
     log.info(`DuganAutomixer: DONE — ${results.length} tracks processed and overwritten in-place`);
@@ -215,9 +258,11 @@ export class DuganAutomixer {
         }
 
         // Parse CSV output: codec_name,sample_rate,channels
-        let codec = 'pcm_s24le';
-        let sampleRate = 48000;
-        let channels = 1;
+        // Start from "unknown" rather than assuming pcm_s24le/48000/1 — silently
+        // keeping those defaults would mis-process a stereo/44.1k track.
+        let codec: string | null = null;
+        let sampleRate: number | null = null;
+        let channels: number | null = null;
 
         for (const line of stdout.trim().split('\n')) {
           const parts = line.trim().split(',');
@@ -229,6 +274,12 @@ export class DuganAutomixer {
             const ch = parseInt(parts[2], 10);
             if (!isNaN(ch)) channels = ch;
           }
+        }
+
+        if (!codec || sampleRate === null || sampleRate <= 0 || channels === null || channels <= 0) {
+          return reject(new Error(
+            `ffprobe returned unparseable stream info for ${filePath}: "${stdout.trim()}"`
+          ));
         }
 
         resolve({ codec, sampleRate, channels });
@@ -358,7 +409,9 @@ export class DuganAutomixer {
 
   /**
    * Stream-decode a track, apply Dugan gains on the fly, and pipe to encoder.
-   * Overwrites the input file in-place.
+   * Writes the gain-adjusted audio to a temp file and resolves with that temp
+   * path — it deliberately does NOT overwrite the original. The caller stages
+   * every track and only swaps the temps in once all have succeeded.
    * Never loads the entire file into memory.
    */
   private streamApplyGains(
@@ -370,7 +423,7 @@ export class DuganAutomixer {
     windowHalf: number,
     firstCenter: number,
     lastCenter: number
-  ): Promise<void> {
+  ): Promise<string> {
     return new Promise((resolve, reject) => {
       const ffmpeg = this.binaryResolver.getFfmpegPath();
       const ch = info.channels;
@@ -430,17 +483,12 @@ export class DuganAutomixer {
       const tryFinalize = () => {
         if (!decoderDone || !encoderDone) return;
 
-        // All processes done — clean up listeners before file operations
+        // All processes done — clean up listeners before handing back.
         removeAllProcessListeners();
 
-        // Rename temp file over original
-        try {
-          fs.renameSync(tmpPath, filePath);
-          resolve();
-        } catch (err) {
-          try { fs.unlinkSync(tmpPath); } catch {}
-          reject(err);
-        }
+        // Do NOT rename over the original here — the caller stages every track
+        // and swaps them all in only after ALL have succeeded (all-or-nothing).
+        resolve(tmpPath);
       };
 
       // Gain application state

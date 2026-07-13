@@ -88,18 +88,8 @@ class AudioProcessor:
 
     def _load_drift_config(self) -> dict:
         """Load drift correction configuration from config file."""
-        config_path = Path(__file__).parent.parent / 'config' / 'drift_corrections.json'
-        try:
-            with open(config_path, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Warning: Could not load drift config: {e}", file=sys.stderr)
-            # Return defaults
-            return {
-                'vmix_outputs': {'enabled': True, 'speed_factor': 1.0},
-                'vmix_sources': {'enabled': True, 'speed_factor': 0.9999763884},
-                'soundboard': {'enabled': True, 'speed_factor': 1.0000158402}
-            }
+        from .drift_config import load_drift_config
+        return load_drift_config()
 
     def apply_drift_correction(self, input_path: str, drift_frames: float, 
                               video_duration: float, fps: float = 29.97,
@@ -117,7 +107,13 @@ class AudioProcessor:
             Path to the corrected audio file
         """
         input_path = Path(input_path)
-        
+
+        if video_duration <= 0:
+            raise ValueError(
+                f"apply_drift_correction requires a positive video_duration, got {video_duration} "
+                f"for {input_path.name}"
+            )
+
         # Calculate correction factor
         # Positive drift = expand audio (slower/longer), Negative drift = shrink audio (faster/shorter)
         total_frames = video_duration * fps
@@ -264,61 +260,71 @@ class AudioProcessor:
             raise
     
     def get_audio_info(self, file_path: str) -> Tuple[str, int, int]:
-        """Get audio duration, sample rate, and channels using ffprobe."""
+        """Get audio duration, sample rate, and channels using ffprobe.
+
+        Raises loudly rather than fabricating defaults: a wrong duration or
+        sample rate silently corrupts every downstream timing calculation.
+        """
+        # File must exist
+        if not Path(file_path).exists():
+            raise FileNotFoundError(f"Audio file does not exist: {file_path}")
+
+        # ffprobe must be available
+        if not self.ffprobe_path:
+            raise RuntimeError(
+                "ffprobe not found. Install ffmpeg/ffprobe and ensure it is on PATH "
+                f"(needed to read audio info for {file_path})."
+            )
+
+        # Probe the file
         try:
-            # First check if file exists
-            if not Path(file_path).exists():
-                print(f"Warning: Audio file does not exist: {file_path}")
-                # Return default values that allow processing to continue
-                return "3600000/30000s", 48000, 2  # Default 2 minute duration
-
-            # Check if ffprobe is available
-            if not self.ffprobe_path:
-                print(f"Warning: ffprobe not available, using default audio info")
-                return "3600000/30000s", 48000, 2
-
             result = subprocess.run([
                 self.ffprobe_path, '-v', 'quiet', '-print_format', 'json',
                 '-show_format', '-show_streams', str(file_path)
             ], capture_output=True, text=True, check=True)
-            
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"ffprobe failed to read audio info from {file_path}: {e.stderr or e}"
+            ) from e
+
+        # Parse JSON
+        try:
             data = json.loads(result.stdout)
-            
-            # Find audio stream
-            audio_stream = None
-            for stream in data['streams']:
-                if stream['codec_type'] == 'audio':
-                    audio_stream = stream
-                    break
-            
-            if not audio_stream:
-                # Try to handle as video file with audio
-                for stream in data['streams']:
-                    if stream['codec_type'] == 'video':
-                        # Use video duration as fallback
-                        duration_seconds = float(data['format'].get('duration', 120))
-                        frame_rate_den = 30000
-                        duration_fcpx = f"{int(duration_seconds * frame_rate_den)}/{frame_rate_den}s"
-                        return duration_fcpx, 48000, 2
-                
-                print(f"Warning: No audio stream found in {file_path}, using defaults")
-                return "3600000/30000s", 48000, 2
-            
-            duration_seconds = float(data['format'].get('duration', 120))
-            sample_rate = int(audio_stream.get('sample_rate', 48000))
-            channels = int(audio_stream.get('channels', 2))
-            
-            # Convert to FCPX time format
-            frame_rate_den = 30000
-            duration_fcpx = f"{int(duration_seconds * frame_rate_den)}/{frame_rate_den}s"
-            
-            return duration_fcpx, sample_rate, channels
-            
-        except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as e:
-            print(f"Warning: Error getting audio info from {file_path}: {e}")
-            print(f"Using default values to continue processing")
-            # Return reasonable defaults instead of raising
-            return "3600000/30000s", 48000, 2  # Default 2 minute duration, 48kHz, stereo
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"Could not parse ffprobe JSON output for {file_path}: {e}"
+            ) from e
+
+        # Find audio stream
+        audio_stream = None
+        for stream in data.get('streams', []):
+            if stream.get('codec_type') == 'audio':
+                audio_stream = stream
+                break
+
+        if not audio_stream:
+            raise ValueError(f"No audio stream found in {file_path}")
+
+        # Require the fields we depend on - never fabricate them
+        duration_raw = data.get('format', {}).get('duration')
+        if duration_raw is None:
+            raise RuntimeError(f"ffprobe output for {file_path} is missing format.duration")
+        sample_rate_raw = audio_stream.get('sample_rate')
+        if sample_rate_raw is None:
+            raise RuntimeError(f"ffprobe output for {file_path} is missing audio stream sample_rate")
+        channels_raw = audio_stream.get('channels')
+        if channels_raw is None:
+            raise RuntimeError(f"ffprobe output for {file_path} is missing audio stream channels")
+
+        duration_seconds = float(duration_raw)
+        sample_rate = int(sample_rate_raw)
+        channels = int(channels_raw)
+
+        # Convert to FCPX time format
+        frame_rate_den = 30000
+        duration_fcpx = f"{int(duration_seconds * frame_rate_den)}/{frame_rate_den}s"
+
+        return duration_fcpx, sample_rate, channels
     
     def convert_audio_format(self, input_path: str, output_format: str = 'wav',
                            output_path: Optional[str] = None) -> str:
@@ -393,36 +399,50 @@ class AudioProcessor:
 
         Returns:
             Frame rate as float (e.g., 29.97, 30.0, 60.0)
+
+        Raises:
+            RuntimeError: if ffprobe fails or no positive framerate can be determined.
         """
         try:
             result = subprocess.run([
                 'ffprobe', '-v', 'quiet', '-print_format', 'json',
                 '-show_streams', '-select_streams', 'v:0', str(file_path)
             ], capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"ffprobe failed to read framerate from {file_path}: {e.stderr or e}"
+            ) from e
 
+        try:
             data = json.loads(result.stdout)
             video_stream = data['streams'][0]
+        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            raise RuntimeError(
+                f"Could not parse ffprobe framerate output for {file_path}: {e}"
+            ) from e
 
-            # Try r_frame_rate first (most accurate)
-            r_frame_rate = video_stream.get('r_frame_rate', '0/1')
-            if '/' in r_frame_rate:
-                num, den = r_frame_rate.split('/')
+        # Try r_frame_rate first (most accurate)
+        r_frame_rate = video_stream.get('r_frame_rate', '0/1')
+        if '/' in r_frame_rate:
+            num, den = r_frame_rate.split('/')
+            if float(den) != 0:
                 fps = float(num) / float(den)
                 if fps > 0:
                     return fps
 
-            # Fallback to avg_frame_rate
-            avg_frame_rate = video_stream.get('avg_frame_rate', '0/1')
-            if '/' in avg_frame_rate:
-                num, den = avg_frame_rate.split('/')
+        # Fallback to avg_frame_rate
+        avg_frame_rate = video_stream.get('avg_frame_rate', '0/1')
+        if '/' in avg_frame_rate:
+            num, den = avg_frame_rate.split('/')
+            if float(den) != 0:
                 fps = float(num) / float(den)
-                return fps
+                if fps > 0:
+                    return fps
 
-            return 0.0
-
-        except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as e:
-            print(f"Warning: Could not detect framerate for {file_path}: {e}")
-            return 0.0
+        raise RuntimeError(
+            f"Could not determine a positive framerate for {file_path} "
+            f"(r_frame_rate={r_frame_rate!r}, avg_frame_rate={avg_frame_rate!r})"
+        )
 
     def get_actual_video_framerate(self, file_path: str) -> float:
         """Get the ACTUAL framerate by calculating from frame count and duration.
@@ -495,14 +515,22 @@ class AudioProcessor:
                 'ffprobe', '-v', 'quiet', '-print_format', 'json',
                 '-show_format', str(file_path)
             ], capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"ffprobe failed to read duration from {file_path}: {e.stderr or e}"
+            ) from e
 
+        try:
             data = json.loads(result.stdout)
-            duration = float(data['format'].get('duration', 0))
-            return duration
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"Could not parse ffprobe duration output for {file_path}: {e}"
+            ) from e
 
-        except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as e:
-            print(f"Warning: Could not get video duration from {file_path}: {e}")
-            return 0.0
+        duration_raw = data.get('format', {}).get('duration')
+        if duration_raw is None:
+            raise RuntimeError(f"ffprobe output for {file_path} is missing format.duration")
+        return float(duration_raw)
 
     def get_video_frame_count(self, file_path: str) -> int:
         """Get total frame count from video file.
@@ -520,15 +548,23 @@ class AudioProcessor:
                 '-count_frames',
                 str(file_path)
             ], capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"ffprobe failed to count frames in {file_path}: {e.stderr or e}"
+            ) from e
 
+        try:
             data = json.loads(result.stdout)
             video_stream = data['streams'][0]
-            nb_frames = int(video_stream.get('nb_frames', 0))
-            return nb_frames
+        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            raise RuntimeError(
+                f"Could not parse ffprobe frame count output for {file_path}: {e}"
+            ) from e
 
-        except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, ValueError) as e:
-            print(f"Warning: Could not get frame count from {file_path}: {e}")
-            return 0
+        nb_frames_raw = video_stream.get('nb_frames')
+        if nb_frames_raw is None:
+            raise RuntimeError(f"ffprobe output for {file_path} is missing nb_frames")
+        return int(nb_frames_raw)
 
     def sync_video_for_2997fps(self, input_path: str, output_path: Optional[str] = None) -> str:
         """Convert video to 29.97fps timeline, auto-detecting source framerate.

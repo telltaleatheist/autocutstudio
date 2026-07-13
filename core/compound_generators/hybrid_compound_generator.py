@@ -126,6 +126,9 @@ class HybridCompoundGenerator:
 
         # Add segmented clips for each lane
         for start_time, end_time, mode in segments:
+            # The camera detector only emits 'solo' or 'dc'; anything else is a bug.
+            if mode not in ('solo', 'dc'):
+                raise ValueError(f"Unknown segment mode {mode!r} (expected 'solo' or 'dc')")
             duration_seconds = end_time - start_time
             offset_str = self._seconds_to_time_str(start_time + gap_start_seconds)
             start_str = self._seconds_to_time_str(start_time)
@@ -224,21 +227,51 @@ class HybridCompoundGenerator:
         gaps = spine.findall('gap')
         gap = gaps[-1]  # Content gap is the last one (first is empty trim gap)
 
-        # Find all video clips and sort by lane
-        video_clips = []
+        # Identify the cam2 video and cam2 border clips by the explicit lane numbers
+        # that each DC generator assigns them (verified against dc_gs_generator.py and
+        # dc_ssb_generator.py). The previous "top two lanes" heuristic mis-selected a
+        # different layer whenever the cam2 border was not emitted.
+        CAM2_LANES = {
+            'GS': {'video': '8', 'border': '9'},    # dc_gs_generator.py
+            'SSB': {'video': '6', 'border': '7'},   # dc_ssb_generator.py
+        }
+        if compound_type not in CAM2_LANES:
+            raise ValueError(
+                f"Unknown compound_type {compound_type!r} for hybrid simple "
+                f"(expected one of {sorted(CAM2_LANES)})"
+            )
+        cam2_video_lane = CAM2_LANES[compound_type]['video']
+        cam2_border_lane = CAM2_LANES[compound_type]['border']
+
+        # Locate the cam2 video and cam2 border clips by their explicit lanes
+        cam2_video_clip = None
+        cam2_border_clip = None
         for child in list(gap):
             if child.tag == 'video':
-                lane_num = int(child.get('lane', '0'))
-                video_clips.append((lane_num, child))
+                lane = child.get('lane')
+                if lane == cam2_video_lane:
+                    cam2_video_clip = child
+                elif lane == cam2_border_lane:
+                    cam2_border_clip = child
 
-        # Sort to find highest lanes (cam2 and border)
-        video_clips.sort(key=lambda x: x[0], reverse=True)
+        if cam2_video_clip is None:
+            raise ValueError(
+                f"DC {compound_type} hybrid: cam2 video clip not found on lane {cam2_video_lane}"
+            )
 
-        # Assume top 2 video lanes are cam2 border and cam2 video
-        clips_to_segment = []
-        if len(video_clips) >= 2:
-            clips_to_segment.append(video_clips[0][1])  # cam2 border
-            clips_to_segment.append(video_clips[1][1])  # cam2 video
+        # The border is optional — the DC generators only emit it when a border
+        # asset is configured. Segment just the video in that case (previously the
+        # top-two-lanes heuristic would grab an unrelated layer instead).
+        if cam2_border_clip is None:
+            print(
+                f"  DC {compound_type} hybrid: no cam2 border on lane {cam2_border_lane} "
+                "(none configured) — segmenting cam2 video only",
+                file=sys.stderr
+            )
+            clips_to_segment = [cam2_video_clip]
+        else:
+            # Segment the border first, then the video (preserves original order)
+            clips_to_segment = [cam2_border_clip, cam2_video_clip]
 
         # Remove these clips from gap
         for clip in clips_to_segment:
@@ -249,6 +282,9 @@ class HybridCompoundGenerator:
 
         # Add segmented clips
         for start_time, end_time, mode in segments:
+            # The camera detector only emits 'solo' or 'dc'; anything else is a bug.
+            if mode not in ('solo', 'dc'):
+                raise ValueError(f"Unknown segment mode {mode!r} (expected 'solo' or 'dc')")
             duration_seconds = end_time - start_time
             offset_str = self._seconds_to_time_str(start_time + gap_start_seconds)
             start_str = self._seconds_to_time_str(start_time)

@@ -190,6 +190,10 @@ export function listStatus(): ComponentStatus[] {
 
 const installing = new Map<string, AbortController>();
 
+// Monotonic counter so two install() invocations never share a staging dir name
+// (and can't delete each other's staging mid-install).
+let installSeq = 0;
+
 function basenameFromUrl(url: string, fallback: string): string {
   try {
     const base = path.basename(new URL(url).pathname);
@@ -263,6 +267,12 @@ export async function install(
   const component = getComponent(id);
   if (!component) return { id, ok: false, error: `Unknown component: ${id}` };
 
+  // Guard against a concurrent install of the same component — two runs would
+  // stomp each other's staging dir and state. Fail fast with a clear message.
+  if (installing.has(id)) {
+    return { id, ok: false, error: `Install already in progress for ${id}` };
+  }
+
   const emit = (p: InstallProgress) => {
     try {
       onProgress?.(p);
@@ -276,7 +286,8 @@ export async function install(
   const installDir = installDirFor(component);
   // Stage into a sibling dir, then atomically swap in — never clobber a working
   // install (possibly placed by another OwenMorgan app) until the new one is ready.
-  const staging = `${installDir}.installing-${process.pid}`;
+  // The unique suffix ensures two invocations can't share/delete one another's dir.
+  const staging = `${installDir}.installing-${process.pid}-${Date.now()}-${++installSeq}`;
 
   try {
     emit({ id, phase: 'resolve', pct: 0, message: 'Preparing…' });
@@ -395,7 +406,12 @@ export async function ensureRequired(
       continue;
     }
     if (!isPublished(pickArtifact(component))) {
-      log.warn(`[ASSETS] ${component.id} not published for this platform yet — skipping (app will use fallback)`);
+      // A REQUIRED component with no published artifact for this platform is a
+      // real failure — reporting ok:true here made first-run setup claim success
+      // on e.g. win32 with no Python/ffmpeg actually installed.
+      const reason = `${component.id} is required but has no published artifact for ${currentPlatform()}-${currentArch()}`;
+      log.error(`[ASSETS] ${reason}`);
+      failed.push(component.id);
       continue;
     }
     log.info(`[ASSETS] Installing required component: ${component.id}`);

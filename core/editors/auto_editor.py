@@ -151,18 +151,24 @@ class AutoEditor(BaseEditor):
                 )
             else:
                 result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"Re-encoding failed (ffmpeg exit {result.returncode})")
+                    print(f"ffmpeg stderr: {result.stderr[-2000:] if result.stderr else '(empty)'}")
+                    # A partial output must never pass the exists() check below
+                    output_path.unlink(missing_ok=True)
+                    return None
 
             if output_path.exists():
                 print("Re-encoding completed successfully")
                 return str(output_path)
             else:
                 print("Re-encoding failed: output file not created")
-                if not self.progress_callback:
-                    print(f"ffmpeg stderr: {result.stderr}")
                 return None
 
         except Exception as e:
             print(f"Error during re-encoding: {e}")
+            # Delete any partial output so it is never treated as a successful re-encode
+            output_path.unlink(missing_ok=True)
             return None
     
     def get_video_info(self, file_path: str) -> Tuple[str, str, int, int]:
@@ -215,10 +221,10 @@ class AutoEditor(BaseEditor):
                 frame_duration = "1/30s"
                 duration = f"{total_frames}/30s"
             else:
-                # Fallback - use the 479 denominator from your example
-                frame_duration = "20/479s"
-                duration = f"{int(total_frames * 20)}/479s"
-            
+                raise ValueError(
+                    f"Unsupported framerate {fps} for {file_path} — expected ~23.976/24/29.97/30"
+                )
+
             return duration, frame_duration, width, height
             
         except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as e:
@@ -243,14 +249,12 @@ class AutoEditor(BaseEditor):
             resources = root.find('resources')
             
             if project is None or sequence is None or spine is None or resources is None:
-                print(f"Error: Could not find required XML elements in {xml_path}")
-                return None
-            
+                raise ValueError(f"Could not find required XML elements in {xml_path}")
+
             # Get all the clips
             clips = spine.findall('asset-clip')
             if not clips:
-                print(f"No clips found in {xml_path}")
-                return None
+                raise ValueError(f"No clips found in {xml_path}")
             
             print(f"Converting {len(clips)} individual clips to compound clip structure")
             
@@ -289,8 +293,7 @@ class AutoEditor(BaseEditor):
             # Find the existing format
             original_format = resources.find(f".//*[@id='{seq_format}']")
             if original_format is None:
-                print(f"Error: Could not find format {seq_format}")
-                return None
+                raise ValueError(f"Could not find format {seq_format} in {xml_path}")
             
             # Remove the old auto-editor modified asset
             old_asset = resources.find(f".//*[@id='{original_asset_ref}']")
@@ -430,11 +433,7 @@ class AutoEditor(BaseEditor):
             return output_path
             
         except ET.ParseError as e:
-            print(f"XML parsing error in {xml_path}: {e}")
-            return None
-        except Exception as e:
-            print(f"Error converting {xml_path}: {e}")
-            return None
+            raise ValueError(f"XML parsing error in {xml_path}: {e}") from e
     
     def get_supported_formats(self):
         """Return list of supported formats."""

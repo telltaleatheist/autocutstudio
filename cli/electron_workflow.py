@@ -34,6 +34,7 @@ from core.audio_processor import AudioProcessor
 from core.editors.auto_editor import AutoEditor
 from core.editors.smart_cut_filter import SmartCutFilter
 from core.skip_logic import SkipDecisionEngine
+from core.naming import is_soundboard_filename
 import zipfile
 import select
 
@@ -67,6 +68,10 @@ def signal_handler(signum, frame):
 _skip_requested = False
 _last_skipped_file = None  # Track the file being processed when skip was requested
 
+# Parent (Electron) PID captured at startup. Used while blocking on stdin for the
+# Dugan automixer response so we can detect a dead parent instead of hanging forever.
+_PARENT_PID = os.getppid()
+
 def skip_signal_handler(signum, frame):
     """Handle skip signal (SIGUSR1)."""
     global _skip_requested
@@ -76,7 +81,11 @@ def skip_signal_handler(signum, frame):
 # Register signal handlers for cancel/interrupt
 signal.signal(signal.SIGTERM, signal_handler)  # Kill/cancel
 signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
-signal.signal(signal.SIGUSR1, skip_signal_handler)  # Skip signal
+if hasattr(signal, 'SIGUSR1'):
+    signal.signal(signal.SIGUSR1, skip_signal_handler)  # Skip signal
+else:
+    # Windows has no SIGUSR1 - registering it crashes at import with AttributeError
+    print("⚠ Skip signals unavailable on this platform (no SIGUSR1)", file=sys.stderr)
 
 def emit_progress(progress, message, sub_progress=None):
     """Emit progress update as JSON to stdout."""
@@ -194,13 +203,30 @@ def main():
         input_line = sys.stdin.readline()
         data = json.loads(input_line.strip())
 
-        # Load configuration from user config directory
-        # On macOS: ~/Library/Application Support/AutoCutStudio/config/
-        config_path = Path.home() / 'Library' / 'Application Support' / 'AutoCutStudio' / 'config' / 'autostudio_config.yaml'
+        # Load configuration from the user config directory.
+        # Electron sets AUTOCUT_CONFIG_DIR to the exact directory the Settings UI
+        # writes to; honour it so the CLI and the app never disagree on where
+        # config lives. Otherwise fall back to the platform's app-data dir that
+        # matches Electron's userData location.
+        config_dir_env = os.environ.get('AUTOCUT_CONFIG_DIR')
+        if config_dir_env:
+            config_path = Path(config_dir_env) / 'autostudio_config.yaml'
+        elif sys.platform == 'darwin':
+            config_path = (Path.home() / 'Library' / 'Application Support' /
+                           'AutoCutStudio' / 'config' / 'autostudio_config.yaml')
+        elif sys.platform == 'win32':
+            appdata = os.environ.get('APPDATA') or str(Path.home())
+            config_path = (Path(appdata) / 'AutoCutStudio' / 'config' /
+                           'autostudio_config.yaml')
+        else:
+            xdg = os.environ.get('XDG_CONFIG_HOME') or str(Path.home() / '.config')
+            config_path = (Path(xdg) / 'AutoCutStudio' / 'config' /
+                           'autostudio_config.yaml')
 
         if not config_path.exists():
             raise FileNotFoundError(
-                "No configuration found. Go to Settings > Relink Assets to set up your asset paths."
+                f"No configuration found at {config_path}. "
+                "Go to Settings > Relink Assets to set up your asset paths."
             )
 
         print(f"Using config: {config_path}", file=sys.stderr)
@@ -215,8 +241,17 @@ def main():
         auto_duck = data.get('autoDuck', False)
         use_downloaded_stream = data.get('useDownloadedStream', False)
 
+        # Stage tracking: ffmpeg tick callbacks report sub-progress against
+        # whatever main-flow stage is currently active. set_stage records the
+        # active stage AND emits it; ffmpeg_progress_callback reads it back.
+        _current_stage = {'progress': 0, 'message': ''}
+
+        def set_stage(progress, message):
+            _current_stage.update({'progress': progress, 'message': message})
+            emit_progress(progress, message)
+
         # Step 0.5: Analyze skip capabilities and emit to frontend
-        emit_progress(3, 'Analyzing which operations can be skipped...')
+        set_stage(3, 'Analyzing which operations can be skipped...')
         skip_engine = SkipDecisionEngine(master_video, audio_sources_input, video_sources)
         skip_decisions = skip_engine.get_all_skip_decisions()
         emit_skip_capabilities(skip_decisions)
@@ -224,7 +259,7 @@ def main():
         # Print skip summary to stderr for debugging
         print(skip_engine.generate_skip_summary(), file=sys.stderr)
 
-        emit_progress(5, 'Detecting framerate...')
+        set_stage(5, 'Detecting framerate...')
         detected_framerate = detect_framerate(master_video)
 
         # Create progress callback for FFmpeg operations (emits sub-progress)
@@ -234,21 +269,19 @@ def main():
 
             Args:
                 progress_info: Dict with keys: frame, fps, time, speed, progress_percent
+
+            Emits the *current* workflow stage (tracked in _current_stage via
+            set_stage) with the ffmpeg completion percentage as sub_progress, so
+            per-tick ffmpeg updates no longer clobber whichever stage is actually
+            running with a hardcoded "Processing custom video sources..." message.
             """
             if 'progress_percent' in progress_info:
                 percent = progress_info['progress_percent']
-                speed = progress_info.get('speed', 0)
+                emit_progress(_current_stage['progress'],
+                              _current_stage['message'],
+                              sub_progress=percent)
 
-                # Build message with speed info if available
-                if speed > 0:
-                    message = f"Processing: {percent:.1f}% (speed: {speed:.1f}x)"
-                else:
-                    message = f"Processing: {percent:.1f}%"
-
-                # Emit as sub-progress so it doesn't interfere with main workflow progress
-                emit_progress(35, "Processing custom video sources...", sub_progress=percent)
-
-        emit_progress(10, 'Running auto-editor to identify cuts...')
+        set_stage(10, 'Running auto-editor to identify cuts...')
 
         # Step 1: Run auto-editor
         editor = AutoEditor(config, progress_callback=ffmpeg_progress_callback)
@@ -270,7 +303,7 @@ def main():
                   "(no individual audio tracks to reference)", file=sys.stderr)
         elif screen_audio and Path(screen_audio).exists():
             try:
-                emit_progress(15, 'Analyzing screen audio for smart cuts...')
+                set_stage(15, 'Analyzing screen audio for smart cuts...')
                 ref_output = str(Path(screen_audio).parent /
                                 f"{Path(screen_audio).stem}_SCREEN_ALTERED.fcpxml")
                 # -55dB threshold for screen audio (quieter than mic audio).
@@ -287,13 +320,16 @@ def main():
                 except Exception:
                     pass
             except Exception as e:
-                print(f"WARNING: Smart cut filter failed: {e}", file=sys.stderr)
+                # Continuing with unfiltered cuts would cut away exactly the
+                # video-watching segments this filter exists to protect. Fail loud.
+                emit_error(f"Smart cut filter failed: {e}")
                 import traceback
                 traceback.print_exc(file=sys.stderr)
+                raise
 
         all_xml_files = [altered_xml]
 
-        emit_progress(20, 'Converting to compound clip structure...')
+        set_stage(20, 'Converting to compound clip structure...')
 
         # Step 2: Convert to compound clip
         compound_xml = editor.convert_to_compound(altered_xml, str(master_video))
@@ -302,7 +338,7 @@ def main():
 
         all_xml_files.append(compound_xml)
 
-        emit_progress(30, 'Processing audio sources...')
+        set_stage(30, 'Processing audio sources...')
 
         # Step 3: Process audio files with optional advanced sync
         audio_processor = AudioProcessor(config, progress_callback=ffmpeg_progress_callback)
@@ -336,7 +372,7 @@ def main():
                 # 1. Type name ends with 'Sb' (e.g., mic1Sb, screenSb) - camelCase
                 # 2. Or filename contains 'sb' (backwards compatibility)
                 is_soundboard = (audio_type.endswith('Sb') or
-                                'sb' in Path(audio_path).name.lower())
+                                is_soundboard_filename(audio_path))
 
                 if is_soundboard:
                     soundboard_files[audio_type] = audio_path
@@ -345,6 +381,7 @@ def main():
 
         # If we have soundboard files and advanced sync, sync them all at once
         if soundboard_files and use_advanced_sync:
+            sync_errors = {}  # per-track sync failures, checked below and in except
             try:
                 from core.soundboard_sync import sync_soundboard_files
 
@@ -367,8 +404,21 @@ def main():
                     normalized_sb_files[base_type] = sb_path
 
                 # Run unified soundboard sync
-                emit_progress(30, 'Syncing soundboard files (unified detection)...')
+                set_stage(30, 'Syncing soundboard files (unified detection)...')
                 sb_results = sync_soundboard_files(normalized_sb_files, vmix_files)
+
+                # A soundboard track that failed to sync must not silently vanish
+                # from the timeline. If any result carries an 'error', surface all
+                # of them and abort the whole run.
+                sync_errors = {
+                    name: info['error']
+                    for name, info in sb_results.items()
+                    if isinstance(info, dict) and 'error' in info
+                }
+                if sync_errors:
+                    detail = "; ".join(f"{name}: {err}" for name, err in sync_errors.items())
+                    emit_error(f"Soundboard sync failed for: {detail}")
+                    raise RuntimeError(f"Soundboard sync failed for: {detail}")
 
                 # Store synced files in processed_audio
                 # sb_results has normalized keys ('mic1', 'screen', etc.)
@@ -405,17 +455,25 @@ def main():
                             'drift': first_result['drift_frames']
                         }
 
-                print(f"\n✓ Soundboard unified sync complete!", file=sys.stderr)
-                print(f"  Offset: {soundboard_sync_params['offset']:.3f}s", file=sys.stderr)
-                print(f"  Speed: {soundboard_sync_params['speed']:.6f}", file=sys.stderr)
-                print(f"  Drift: {soundboard_sync_params['drift']:.1f} frames\n", file=sys.stderr)
+                # soundboard_sync_params stays None if sb_results was empty or the
+                # first entry lacked offset_seconds; guard the summary to avoid a
+                # None deref that would fall through into the except.
+                if soundboard_sync_params:
+                    print(f"\n✓ Soundboard unified sync complete!", file=sys.stderr)
+                    print(f"  Offset: {soundboard_sync_params['offset']:.3f}s", file=sys.stderr)
+                    print(f"  Speed: {soundboard_sync_params['speed']:.6f}", file=sys.stderr)
+                    print(f"  Drift: {soundboard_sync_params['drift']:.1f} frames\n", file=sys.stderr)
 
             except Exception as e:
-                print(f"⚠ Warning: Soundboard unified sync failed: {e}", file=sys.stderr)
-                print(f"  Falling back to individual sync for each file", file=sys.stderr)
+                # The unified path applies different corrections than per-file sync;
+                # silently falling back masks the failure and produces a subtly wrong
+                # timeline. Fail loud. (If a per-track error was already surfaced
+                # above, don't double-report it.)
+                if not sync_errors:
+                    emit_error(f"Soundboard unified sync failed: {e}")
                 import traceback
                 traceback.print_exc(file=sys.stderr)
-                # Don't add to processed_audio - let them be processed individually
+                raise
 
         for audio_type, audio_path in audio_sources_input.items():
             if audio_path:
@@ -447,7 +505,7 @@ def main():
                 # Output files are already synced with master and should be used as-is
                 filename = Path(audio_path).name.lower()
                 type_is_soundboard = audio_type.endswith('Sb')
-                is_output_file = not type_is_soundboard and 'sb' not in filename and 'capture' not in filename
+                is_output_file = not type_is_soundboard and not is_soundboard_filename(filename) and 'capture' not in filename
 
                 if is_output_file:
                     # Output file - use as-is without any sync processing
@@ -469,7 +527,12 @@ def main():
                             }
                         }
                     except Exception as e:
-                        print(f"Error getting audio info: {e}", file=sys.stderr)
+                        # get_audio_info now raises only on real problems; silently
+                        # dropping the track would remove a required output file.
+                        emit_error(f"Failed to read audio info for {audio_type} ({audio_path}): {e}")
+                        import traceback
+                        traceback.print_exc(file=sys.stderr)
+                        raise
                     continue
 
                 try:
@@ -488,7 +551,7 @@ def main():
 
                     if use_advanced_sync:
                         # Advanced sync using cross-correlation
-                        emit_progress(30, f'Syncing {audio_type} audio with master...')
+                        set_stage(30, f'Syncing {audio_type} audio with master...')
                         print(f"\n{'='*60}", file=sys.stderr)
                         print(f"Processing {audio_type}: {Path(audio_path).name}", file=sys.stderr)
 
@@ -573,25 +636,15 @@ def main():
                     # Don't add to processed_audio - will be omitted from output
                     continue
                 except Exception as e:
-                    print(f"Warning: Failed to process {audio_type} audio: {e}", file=sys.stderr)
+                    # "Using the original file without sync" silently substitutes an
+                    # unsynced track that will drift against the timeline. Fail loud.
+                    emit_error(f"Failed to sync {audio_type} audio: {e}")
                     import traceback
                     traceback.print_exc(file=sys.stderr)
-                    print(f"Using original file without sync", file=sys.stderr)
-                    # Fallback to original file
-                    try:
-                        duration, sample_rate, channels = audio_processor.get_audio_info(audio_path)
-                        # Store with normalized type for compound generators
-                        processed_audio[normalized_type] = {
-                            'path': audio_path,
-                            'duration': duration,
-                            'sample_rate': sample_rate,
-                            'channels': channels
-                        }
-                    except Exception as e2:
-                        print(f"Error getting audio info: {e2}", file=sys.stderr)
+                    raise
 
         # Step 3.5: Process video sources with optional advanced sync
-        emit_progress(35, 'Processing custom video sources...')
+        set_stage(35, 'Processing custom video sources...')
         processed_video_sources = {}
 
         # DEBUG: Show what video sources we received
@@ -633,11 +686,16 @@ def main():
                     # durations despite different framerates. FCPX will handle the playback.
                     processed_video_sources[video_type] = original_path
 
-                    # Detect framerate for logging
-                    video_fps = audio_processor.get_video_framerate(original_path)
-                    print(f"✓ {video_type} video prepared (no re-encoding):", file=sys.stderr)
-                    print(f"  Source framerate: {video_fps:.2f}fps", file=sys.stderr)
-                    print(f"  Duration matches master - FCPX will handle playback", file=sys.stderr)
+                    # Detect framerate for logging ONLY. get_video_framerate now raises
+                    # on probe failure; isolate it so a failed *log* probe cannot
+                    # discard the video source we just assigned above.
+                    try:
+                        video_fps = audio_processor.get_video_framerate(original_path)
+                        print(f"✓ {video_type} video prepared (no re-encoding):", file=sys.stderr)
+                        print(f"  Source framerate: {video_fps:.2f}fps", file=sys.stderr)
+                        print(f"  Duration matches master - FCPX will handle playback", file=sys.stderr)
+                    except Exception as probe_err:
+                        print(f"⚠️  Could not probe {video_type} framerate (logging only): {probe_err}", file=sys.stderr)
 
                 except InterruptedError as e:
                     # Skip was requested - will use master quadrant
@@ -661,8 +719,11 @@ def main():
                 processed_video_sources[cam_type] = video_sources[cam_type]
                 print(f"  Copied {cam_type} video without processing", file=sys.stderr)
 
-        # Use processed video sources for the rest of the workflow
-        video_sources = processed_video_sources if processed_video_sources else video_sources
+        # Use processed video sources for the rest of the workflow.
+        # NOTE: assign directly — the old `... if processed_video_sources else video_sources`
+        # fallback silently un-skipped videos the user chose to skip (an empty dict
+        # meant "use master quadrant for everything", not "fall back to originals").
+        video_sources = processed_video_sources
 
         # DEBUG: Show final video sources being used
         print(f"\n✓ Final video sources for compound generation:", file=sys.stderr)
@@ -672,7 +733,7 @@ def main():
 
         # Step 3.5: Apply Dugan automixer if enabled (BEFORE generating any compounds)
         if auto_duck:
-            emit_progress(38, 'Applying Dugan automixer...')
+            set_stage(38, 'Applying Dugan automixer...')
             print("\n=== Dugan Automixer Enabled ===", file=sys.stderr)
 
             # Build track list for Dugan - include all processed audio tracks
@@ -691,46 +752,72 @@ def main():
 
             if len(dugan_tracks) >= 2:
                 # Send ducking request to Electron (TypeScript Dugan automixer)
-                emit_progress(38, f'Sending {len(dugan_tracks)} tracks to Dugan automixer...')
+                set_stage(38, f'Sending {len(dugan_tracks)} tracks to Dugan automixer...')
                 print(json.dumps({
                     'type': 'ducking_request',
                     'tracks': dugan_tracks
                 }), flush=True)
 
-                # Wait for ducking_complete response on stdin
+                # Wait for the ducking_complete response on stdin. On POSIX we poll
+                # with select so a crashed Electron parent is noticed instead of
+                # blocking forever; there is deliberately NO overall timeout because
+                # legitimate ducking work can run long.
                 print("Waiting for Dugan automixer response from Electron...", file=sys.stderr)
-                response_line = sys.stdin.readline()
-                if response_line:
-                    response = json.loads(response_line.strip())
-                    if response.get('type') == 'ducking_complete':
-                        if response.get('error'):
-                            print(f"⚠ Dugan automixer error: {response['error']}", file=sys.stderr)
-                            emit_progress(39, f'Dugan automixer FAILED: {response["error"]}')
-                        else:
-                            # Update processed_audio paths with ducked versions
-                            ducked_tracks = response.get('tracks', [])
-                            for track in ducked_tracks:
-                                t_type = track['type']
-                                t_path = track['path']
-                                if t_type in processed_audio:
-                                    processed_audio[t_type]['path'] = t_path
-                                    print(f"✓ Updated {t_type} with Dugan-processed file", file=sys.stderr)
-                            print(f"✓ Dugan automixer applied to {len(ducked_tracks)} tracks", file=sys.stderr)
-                            emit_progress(39, f'Dugan automixer applied to {len(ducked_tracks)} tracks')
-                    else:
-                        print(f"⚠ Unexpected response type: {response.get('type')}", file=sys.stderr)
-                        emit_progress(39, f'Dugan: unexpected response type: {response.get("type")}')
+                if sys.platform == 'win32':
+                    response_line = sys.stdin.readline()
                 else:
-                    print("⚠ No response received from Electron for Dugan automixer", file=sys.stderr)
-                    emit_progress(39, 'Dugan: no response received from Electron')
+                    response_line = None
+                    while True:
+                        ready, _, _ = select.select([sys.stdin], [], [], 5.0)
+                        if ready:
+                            response_line = sys.stdin.readline()
+                            break
+                        # Timed out with no data: is our parent still alive?
+                        current_ppid = os.getppid()
+                        if current_ppid == 1 or current_ppid != _PARENT_PID:
+                            raise RuntimeError("Electron exited while waiting for Dugan automixer response")
+
+                # EOF: stdin closed with no response. Continuing with unducked tracks
+                # would silently ship the wrong mix, so fail loud.
+                if not response_line:
+                    raise RuntimeError("Electron closed stdin without a Dugan automixer response")
+
+                try:
+                    response = json.loads(response_line.strip())
+                except Exception as parse_err:
+                    raise RuntimeError(
+                        f"Invalid Dugan automixer response (not JSON): {parse_err}: {response_line!r}")
+
+                if response.get('type') == 'ducking_complete':
+                    if response.get('error'):
+                        # Previously logged and continued with unducked tracks.
+                        emit_error(f"Dugan automixer failed: {response['error']}")
+                        raise RuntimeError(f"Dugan automixer failed: {response['error']}")
+                    # Update processed_audio paths with ducked versions
+                    ducked_tracks = response.get('tracks', [])
+                    for track in ducked_tracks:
+                        t_type = track['type']
+                        t_path = track['path']
+                        if t_type in processed_audio:
+                            processed_audio[t_type]['path'] = t_path
+                            print(f"✓ Updated {t_type} with Dugan-processed file", file=sys.stderr)
+                    print(f"✓ Dugan automixer applied to {len(ducked_tracks)} tracks", file=sys.stderr)
+                    set_stage(39, f'Dugan automixer applied to {len(ducked_tracks)} tracks')
+                else:
+                    raise RuntimeError(
+                        f"Unexpected response type from Electron during Dugan wait: {response.get('type')}")
             else:
                 print(f"⚠ Only {len(dugan_tracks)} track(s) available - need at least 2 for Dugan", file=sys.stderr)
-                emit_progress(39, f'Dugan skipped: only {len(dugan_tracks)} track(s), need 2+')
+                set_stage(39, f'Dugan skipped: only {len(dugan_tracks)} track(s), need 2+')
 
             print("=== Dugan Automixer Complete ===\n", file=sys.stderr)
 
         # Step 4: Generate compound clips
         generated_clips = []
+        # Collect per-step failures. Individual generation steps stay non-fatal so a
+        # partial run still zips its successful outputs, but any failure is recorded
+        # and surfaced (emit_error + non-zero exit) after the ZIP is built.
+        step_failures = []
         progress_per_clip = 50 / 6
         current_progress = 40
 
@@ -755,7 +842,7 @@ def main():
         ssb_dual_path = None
 
         # Generate CAM Solo
-        emit_progress(current_progress, 'Generating CAM Solo compound clip...')
+        set_stage(current_progress, 'Generating CAM Solo compound clip...')
         try:
             cam_generator = CamGenerator(config)
             cam_solo_path = cam_generator.generate_cam_compound(
@@ -770,10 +857,11 @@ def main():
             })
         except Exception as e:
             print(f"Error generating CAM Solo: {e}", file=sys.stderr)
+            step_failures.append(f"CAM Solo: {e}")
         current_progress += progress_per_clip
 
         # Generate CAM Dual
-        emit_progress(current_progress, 'Generating CAM Dual Camera compound clip...')
+        set_stage(current_progress, 'Generating CAM Dual Camera compound clip...')
         try:
             dc_cam_generator = DCCamGenerator(config)
             cam_dual_path = dc_cam_generator.generate_dc_cam_compound(
@@ -788,6 +876,7 @@ def main():
             })
         except Exception as e:
             print(f"Error generating CAM Dual: {e}", file=sys.stderr)
+            step_failures.append(f"CAM Dual: {e}")
         current_progress += progress_per_clip
 
         # Build GS audio sources (all audio types)
@@ -803,7 +892,7 @@ def main():
                     print(f"Using VMix/regular file for {audio_type}", file=sys.stderr)
 
         # Generate GS Solo
-        emit_progress(current_progress, 'Generating GS Solo compound clip...')
+        set_stage(current_progress, 'Generating GS Solo compound clip...')
         try:
             gs_generator = GSGenerator(config)
             gs_solo_path = gs_generator.generate_gs_compound(
@@ -820,10 +909,11 @@ def main():
             print(f"Error generating GS Solo: {e}", file=sys.stderr)
             import traceback
             traceback.print_exc(file=sys.stderr)
+            step_failures.append(f"GS Solo: {e}")
         current_progress += progress_per_clip
 
         # Generate GS Dual
-        emit_progress(current_progress, 'Generating GS Dual Camera compound clip...')
+        set_stage(current_progress, 'Generating GS Dual Camera compound clip...')
         try:
             dc_gs_generator = DCGSGenerator(config)
             gs_dual_path = dc_gs_generator.generate_dc_gs_compound(
@@ -838,13 +928,14 @@ def main():
             })
         except Exception as e:
             print(f"Error generating GS Dual: {e}", file=sys.stderr)
+            step_failures.append(f"GS Dual: {e}")
         current_progress += progress_per_clip
 
         # Build SSB audio sources (same as GS)
         ssb_audio_sources = gs_audio_sources.copy()
 
         # Generate SSB Solo
-        emit_progress(current_progress, 'Generating SSB Solo compound clip...')
+        set_stage(current_progress, 'Generating SSB Solo compound clip...')
         try:
             ssb_generator = SSBGenerator(config)
             ssb_solo_path = ssb_generator.generate_ssb_compound(
@@ -859,10 +950,11 @@ def main():
             })
         except Exception as e:
             print(f"Error generating SSB Solo: {e}", file=sys.stderr)
+            step_failures.append(f"SSB Solo: {e}")
         current_progress += progress_per_clip
 
         # Generate SSB Dual
-        emit_progress(current_progress, 'Generating SSB Dual Camera compound clip...')
+        set_stage(current_progress, 'Generating SSB Dual Camera compound clip...')
         try:
             dc_ssb_generator = DCSSBGenerator(config)
             ssb_dual_path = dc_ssb_generator.generate_dc_ssb_compound(
@@ -877,6 +969,7 @@ def main():
             })
         except Exception as e:
             print(f"Error generating SSB Dual: {e}", file=sys.stderr)
+            step_failures.append(f"SSB Dual: {e}")
         current_progress += progress_per_clip
 
         # Get original name from master video path
@@ -889,7 +982,7 @@ def main():
         camera_segments = None  # Will be populated by hybrid generation for reuse in shorts
         if cam_dual_path and gs_dual_path and ssb_dual_path:
             try:
-                emit_progress(88, 'Generating adaptive hybrid compounds...')
+                set_stage(88, 'Generating adaptive hybrid compounds...')
                 print(f"\nGenerating hybrid compounds from DC compounds", file=sys.stderr)
                 hybrid_gen = HybridCompoundGenerator(config)
                 # Use the same output directory as the DC compounds
@@ -914,9 +1007,10 @@ def main():
                 import traceback
                 traceback.print_exc(file=sys.stderr)
                 camera_segments = None  # Set to None if hybrid generation failed
+                step_failures.append(f"Hybrid Compounds: {e}")
 
         # Generate master projects
-        emit_progress(90, 'Generating Master SOLO project...')
+        set_stage(90, 'Generating Master SOLO project...')
         print(f"Master SOLO check - cam_solo_path: {cam_solo_path}, gs_solo_path: {gs_solo_path}, ssb_solo_path: {ssb_solo_path}", file=sys.stderr)
         if cam_solo_path and gs_solo_path and ssb_solo_path:
             try:
@@ -936,10 +1030,12 @@ def main():
                 print(f"Error generating Master SOLO: {e}", file=sys.stderr)
                 import traceback
                 traceback.print_exc(file=sys.stderr)
+                step_failures.append(f"Master SOLO: {e}")
         else:
             print(f"Cannot generate Master SOLO - missing required compounds", file=sys.stderr)
+            step_failures.append("Master SOLO: missing required compounds (CAM/GS/SSB Solo)")
 
-        emit_progress(92, 'Generating Master DC project...')
+        set_stage(92, 'Generating Master DC project...')
         print(f"Master DC check - cam_dual_path: {cam_dual_path}, gs_dual_path: {gs_dual_path}, ssb_dual_path: {ssb_dual_path}", file=sys.stderr)
         if cam_dual_path and gs_dual_path and ssb_dual_path:
             try:
@@ -959,36 +1055,47 @@ def main():
                 print(f"Error generating Master DC: {e}", file=sys.stderr)
                 import traceback
                 traceback.print_exc(file=sys.stderr)
+                step_failures.append(f"Master DC: {e}")
         else:
             print(f"Cannot generate Master DC - missing required compounds", file=sys.stderr)
+            step_failures.append("Master DC: missing required compounds (CAM/GS/SSB Dual)")
 
         # Generate Master Hybrid project if hybrid compounds exist
         if hybrid_cam_path and hybrid_gs_path and hybrid_ssb_path:
             try:
-                emit_progress(94, 'Generating Master Hybrid project...')
+                set_stage(94, 'Generating Master Hybrid project...')
                 print(f"Generating Master Hybrid project", file=sys.stderr)
                 master_gen = MasterProjectGenerator(config)
                 # Use the DC method but with hybrid compounds - the compounds themselves handle the adaptation
                 master_hybrid_paths = master_gen.generate_dc_master_project(
                     hybrid_cam_path, hybrid_gs_path, hybrid_ssb_path, original_name
                 )
-                # Rename from DC to Hybrid in the generated files
+                # Rename from DC to Hybrid in the generated files. Collect every
+                # rename: new_path previously leaked out of this loop, so an empty
+                # loop crashed with NameError and multiple renames pointed the clip
+                # path at the wrong (last) file.
+                renamed_paths = []
                 for path in master_hybrid_paths:
                     if Path(path).exists():
                         new_path = Path(path).parent / Path(path).name.replace('_DC', '_HYBRID')
                         Path(path).rename(new_path)
                         all_xml_files.append(str(new_path))
+                        renamed_paths.append(str(new_path))
 
                 generated_clips.append({
                     'type': 'master_hybrid',
                     'name': 'Master Hybrid Project',
-                    'path': str(new_path) if master_hybrid_paths else None
+                    'path': renamed_paths[0] if renamed_paths else None
                 })
-                print(f"Successfully generated Master Hybrid: {new_path}", file=sys.stderr)
+                if master_hybrid_paths and not renamed_paths:
+                    step_failures.append(
+                        "Master Hybrid: generator returned paths but none could be renamed to _HYBRID")
+                print(f"Successfully generated Master Hybrid: {renamed_paths[0] if renamed_paths else None}", file=sys.stderr)
             except Exception as e:
                 print(f"Error generating Master Hybrid: {e}", file=sys.stderr)
                 import traceback
                 traceback.print_exc(file=sys.stderr)
+                step_failures.append(f"Master Hybrid: {e}")
 
         # Generate Shorts compounds and master project
         print(f"\n\n🔴🔴🔴 SHORTS SECTION STARTING 🔴🔴🔴", file=sys.stderr)
@@ -1001,10 +1108,15 @@ def main():
         shorts_hybrid_cam_path = None
         shorts_hybrid_ssb_path = None
 
+        # Construct the shorts generators ONCE, up front. They used to be created
+        # inside the solo try blocks and reused in the dual blocks — if a solo block
+        # failed before its assignment, the dual block died with NameError.
+        shorts_cam_gen = ShortsCamGenerator(config)
+        shorts_ssb_gen = ShortsSSBGenerator(config)
+
         try:
-            emit_progress(94, 'Generating Shorts CAM Solo compound...')
+            set_stage(94, 'Generating Shorts CAM Solo compound...')
             print(f"\nGenerating Shorts CAM Solo compound", file=sys.stderr)
-            shorts_cam_gen = ShortsCamGenerator(config)
             output_dir = str(Path(cam_solo_path).parent) if cam_solo_path else str(Path(master_video).parent)
             shorts_cam_solo_path = shorts_cam_gen.generate_shorts_cam_compound(
                 compound_xml, cam_audio_sources, 'solo', None, False, video_sources,
@@ -1016,11 +1128,11 @@ def main():
             print(f"Error generating Shorts CAM Solo: {e}", file=sys.stderr)
             import traceback
             traceback.print_exc(file=sys.stderr)
+            step_failures.append(f"Shorts CAM Solo: {e}")
 
         try:
-            emit_progress(94.5, 'Generating Shorts SSB Solo compound...')
+            set_stage(94.5, 'Generating Shorts SSB Solo compound...')
             print(f"\nGenerating Shorts SSB Solo compound", file=sys.stderr)
-            shorts_ssb_gen = ShortsSSBGenerator(config)
             shorts_ssb_solo_path = shorts_ssb_gen.generate_shorts_ssb_compound(
                 compound_xml, ssb_audio_sources, 'solo', None, False, video_sources,
                 use_downloaded_stream=use_downloaded_stream
@@ -1031,9 +1143,10 @@ def main():
             print(f"Error generating Shorts SSB Solo: {e}", file=sys.stderr)
             import traceback
             traceback.print_exc(file=sys.stderr)
+            step_failures.append(f"Shorts SSB Solo: {e}")
 
         try:
-            emit_progress(95, 'Generating Shorts CAM Dual compound...')
+            set_stage(95, 'Generating Shorts CAM Dual compound...')
             print(f"\nGenerating Shorts CAM Dual compound", file=sys.stderr)
             shorts_cam_dual_path = shorts_cam_gen.generate_shorts_cam_compound(
                 compound_xml, cam_audio_sources, 'dual', None, False, video_sources,
@@ -1045,9 +1158,10 @@ def main():
             print(f"Error generating Shorts CAM Dual: {e}", file=sys.stderr)
             import traceback
             traceback.print_exc(file=sys.stderr)
+            step_failures.append(f"Shorts CAM Dual: {e}")
 
         try:
-            emit_progress(95.5, 'Generating Shorts SSB Dual compound...')
+            set_stage(95.5, 'Generating Shorts SSB Dual compound...')
             print(f"\nGenerating Shorts SSB Dual compound", file=sys.stderr)
             shorts_ssb_dual_path = shorts_ssb_gen.generate_shorts_ssb_compound(
                 compound_xml, ssb_audio_sources, 'dual', None, False, video_sources,
@@ -1059,11 +1173,12 @@ def main():
             print(f"Error generating Shorts SSB Dual: {e}", file=sys.stderr)
             import traceback
             traceback.print_exc(file=sys.stderr)
+            step_failures.append(f"Shorts SSB Dual: {e}")
 
         # Generate Shorts Hybrid compounds if both CAM and SSB DC exist
         if shorts_cam_dual_path and shorts_ssb_dual_path:
             try:
-                emit_progress(96, 'Generating Shorts Hybrid compounds...')
+                set_stage(96, 'Generating Shorts Hybrid compounds...')
                 print(f"\nGenerating Shorts Hybrid compounds", file=sys.stderr)
                 shorts_hybrid_gen = ShortsHybridGenerator(config)
                 output_dir = str(Path(shorts_cam_dual_path).parent)
@@ -1081,11 +1196,12 @@ def main():
                 print(f"Error generating Shorts Hybrid compounds: {e}", file=sys.stderr)
                 import traceback
                 traceback.print_exc(file=sys.stderr)
+                step_failures.append(f"Shorts Hybrid compounds: {e}")
 
         # Generate Shorts Master Project if hybrid compounds exist
         if shorts_hybrid_cam_path and shorts_hybrid_ssb_path:
             try:
-                emit_progress(97, 'Generating Master Shorts project...')
+                set_stage(97, 'Generating Master Shorts project...')
                 print(f"\nGenerating Master Shorts project", file=sys.stderr)
                 shorts_master_gen = ShortsMasterProjectGenerator(config)
                 master_shorts_paths = shorts_master_gen.generate_shorts_master_project(
@@ -1102,14 +1218,25 @@ def main():
                 print(f"Error generating Master Shorts: {e}", file=sys.stderr)
                 import traceback
                 traceback.print_exc(file=sys.stderr)
+                step_failures.append(f"Master Shorts: {e}")
 
         # Create ZIP file
-        emit_progress(98, 'Creating compound clips ZIP file...')
+        set_stage(98, 'Creating compound clips ZIP file...')
         session_name = Path(master_video).stem.replace(' master', '')
         output_dir = Path(master_video).parent
         zip_path = create_xml_zip(all_xml_files, output_dir, session_name)
 
-        emit_progress(100, 'Processing complete!')
+        set_stage(100, 'Processing complete!')
+
+        # Individual generation steps are non-fatal so a partial run still zips its
+        # successful outputs — but a failed step must not masquerade as success.
+        if step_failures:
+            emit_error(
+                "Workflow finished with failed steps: "
+                + "; ".join(step_failures)
+                + f" — successful outputs were zipped to {zip_path}"
+            )
+            sys.exit(1)
 
         # Emit success
         emit_success({

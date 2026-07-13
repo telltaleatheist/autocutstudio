@@ -201,47 +201,19 @@ class ShortsSSBGenerator:
                 )
                 resources.append(cam1_asset)
 
-            # Check if optional screen video source is provided
-            screen_asset_id = None
-            screen_name = None
-            screen_retime_map = None
+            # Dedicated screen video sources are NOT supported by the vertical
+            # shorts layout: the horizontal generator's placement constants don't
+            # apply to 1080x1920, and no vertical constants were ever defined.
+            # This generator always crops the screen quadrant out of the master.
+            # (Previously it built an r_screen_video asset + retime map here and
+            # then silently discarded them, leaving an orphan asset in resources.)
             if 'screen' in video_sources and video_sources['screen']:
-                screen_path = video_sources['screen']
-                screen_asset_id = "r_screen_video"
-                screen_name = Path(screen_path).stem
-
-                # Detect framerate
-                screen_fps = self.audio_processor.get_video_framerate(screen_path)
-
-                # METHOD B: Metadata-based drift correction
-                # Get video duration and corresponding audio duration (if available)
-                screen_video_duration = self.audio_processor.get_video_duration_seconds(screen_path)
-                screen_audio_duration = None
-
-                # Try to get audio duration from the screen audio source
-                if 'screen' in processed_audio_sources and processed_audio_sources['screen']:
-                    screen_audio_path = processed_audio_sources['screen']['path']
-                    screen_audio_duration = self.audio_processor.get_duration_seconds(screen_audio_path)
-                    print(f"  screen: video={screen_video_duration:.2f}s, audio={screen_audio_duration:.2f}s", file=sys.stderr)
-
-                # Calculate retime map using Method B (metadata) or Method C (framerate fallback)
-                screen_retime_map = self.xml_utils.calculate_retime_map(
-                    original_duration, screen_fps, 29.97,
-                    video_duration=screen_video_duration if screen_audio_duration else None,
-                    audio_duration=screen_audio_duration
+                print(
+                    "  ⚠️  Shorts SSB: dedicated screen video source is not supported in the "
+                    "vertical layout — using the screen quadrant cropped from the master "
+                    "(no drift retiming applied)",
+                    file=sys.stderr
                 )
-
-                # Create asset for the screen video
-                screen_asset = self.xml_utils.create_asset_element(
-                    screen_asset_id,
-                    screen_name,
-                    screen_path,
-                    original_duration,
-                    'r1_shorts_ssb',
-                    has_audio=False,
-                    has_video=True
-                )
-                resources.append(screen_asset)
 
             # Create ssb compound media element
             ssb_media = self.xml_utils.create_media_compound(
@@ -563,7 +535,8 @@ class ShortsSSBGenerator:
                             )
                             gap.append(border_clip)
             
-            # Add screen video - use transforms from config
+            # Add screen video - always cropped from the master using the shorts
+            # config transforms (dedicated screen sources unsupported, see above)
             screen_config = layout_config.get('screen', {})
             if screen_config:
                 screen_video_asset = original_asset_id

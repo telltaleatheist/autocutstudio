@@ -184,9 +184,19 @@ def sync_soundboard_files_simple(
     # Run sync
     results = sync_soundboard_files(soundboard_dict, vmix_dict, output_dir)
 
-    # Extract results
-    offset = results.get('mic1', {}).get('offset_seconds', 0.0)
-    speed = results.get('mic1', {}).get('speed_factor', 1.0)
+    # Extract results - never silently substitute offset 0.0 / speed 1.0
+    mic1_result = results.get('mic1')
+    if mic1_result is None:
+        raise RuntimeError(
+            "Soundboard sync produced no result for 'mic1'; cannot determine offset/speed"
+        )
+    if 'error' in mic1_result:
+        raise RuntimeError(
+            f"Soundboard sync failed for 'mic1': {mic1_result['error']}"
+        )
+
+    offset = mic1_result['offset_seconds']
+    speed = mic1_result['speed_factor']
     synced_files = [r['path'] for r in results.values() if 'path' in r]
 
     return offset, speed, synced_files

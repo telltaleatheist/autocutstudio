@@ -59,9 +59,9 @@ class DCCamGenerator:
                     }
                     print(f"Processed {audio_type} audio: {processed_path}")
                 except Exception as e:
-                    print(f"Warning: Failed to process {audio_type} audio ({audio_path}): {e}")
-                    processed_audio_sources[audio_type] = None
-        
+                    print(f"Error: Failed to process {audio_type} audio ({audio_path}): {e}")
+                    raise
+
         # Get original compound info
         original_compound = root.find('.//media[@id="compound1"]')
         original_asset = root.find('.//asset[@id="r_original"]')
@@ -111,16 +111,17 @@ class DCCamGenerator:
         # Create format elements
         # Get original format from compound XML for timeline compatibility
         original_format = tree.find('.//format')
-        if original_format is not None:
-            # Copy the original format for timeline compatibility
-            timeline_format = ET.SubElement(resources, 'format')
-            timeline_format.set('id', 'r1')
-            timeline_format.set('name', original_format.get('name', 'FFVideoFormatRateUndefined'))
-            timeline_format.set('frameDuration', original_format.get('frameDuration', '1/30s'))
-            timeline_format.set('width', original_format.get('width', str(video_settings.get('width', 1920))))
-            timeline_format.set('height', original_format.get('height', str(video_settings.get('height', 1080))))
-            timeline_format.set('colorSpace', original_format.get('colorSpace', '1-1-1 (Rec. 709)'))
-        
+        if original_format is None:
+            raise ValueError("input compound XML has no <format> element")
+        # Copy the original format for timeline compatibility
+        timeline_format = ET.SubElement(resources, 'format')
+        timeline_format.set('id', 'r1')
+        timeline_format.set('name', original_format.get('name', 'FFVideoFormatRateUndefined'))
+        timeline_format.set('frameDuration', original_format.get('frameDuration', '1/30s'))
+        timeline_format.set('width', original_format.get('width', str(video_settings.get('width', 1920))))
+        timeline_format.set('height', original_format.get('height', str(video_settings.get('height', 1080))))
+        timeline_format.set('colorSpace', original_format.get('colorSpace', '1-1-1 (Rec. 709)'))
+
         # Compound clip format (for internal compound structure)
         video_format = self.xml_utils.create_format_element(
             'r1_dc_cam', 

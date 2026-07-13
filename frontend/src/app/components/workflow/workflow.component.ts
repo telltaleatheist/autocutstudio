@@ -44,6 +44,10 @@ export class WorkflowComponent implements OnInit, OnDestroy {
 
   // Processing
   isProcessing = false;
+  // Synchronous re-entrancy guard for processWorkflow(). isProcessing only flips
+  // once the running job propagates back through the async subscription, leaving a
+  // window where a double-click could start a second Python process.
+  private isStartingWorkflow = false;
   consoleOutput: string[] = [];
   currentJobId = '';
   currentProgress = 0;
@@ -282,22 +286,29 @@ export class WorkflowComponent implements OnInit, OnDestroy {
 
   // Process workflow
   async processWorkflow() {
-    // Validation - just return silently, button is disabled when invalid
-    if (!this.masterVideoPath) {
-      alert('Please select a master video.');
+    // Synchronous re-entrancy guard — must run before any await so a rapid
+    // double-click can't spawn a second workflow and orphan the first process.
+    if (this.isProcessing || this.isStartingWorkflow) {
       return;
     }
-
-    // Check if all audio sources have types assigned (only if there are audio sources)
-    if (this.audioSources.length > 0) {
-      const unassignedAudio = this.audioSources.filter(s => !s.type);
-      if (unassignedAudio.length > 0) {
-        alert('Please assign types to all audio sources.');
-        return;
-      }
-    }
+    this.isStartingWorkflow = true;
 
     try {
+      // Validation - just return silently, button is disabled when invalid
+      if (!this.masterVideoPath) {
+        alert('Please select a master video.');
+        return;
+      }
+
+      // Check if all audio sources have types assigned (only if there are audio sources)
+      if (this.audioSources.length > 0) {
+        const unassignedAudio = this.audioSources.filter(s => !s.type);
+        if (unassignedAudio.length > 0) {
+          alert('Please assign types to all audio sources.');
+          return;
+        }
+      }
+
       // Build audio and video sources objects
       const audioSourcesObj: { [key: string]: string } = {};
       const audioSyncSettings: { [key: string]: boolean } = {};
@@ -339,6 +350,11 @@ export class WorkflowComponent implements OnInit, OnDestroy {
     } catch (error) {
       console.error('Error starting workflow:', error);
       alert('Error starting workflow: ' + error);
+    } finally {
+      // Always release the guard. By now a successful start has already set the
+      // running job (so isProcessing keeps the button disabled); on any early
+      // return or failure this re-enables the action.
+      this.isStartingWorkflow = false;
     }
   }
 

@@ -10,7 +10,12 @@ export interface ProcessingJob {
   message: string;
   output: string[];
   error?: string;
-  results?: any[];
+  // Structured error text emitted by Python (via stderr/error events), preferred
+  // over regex-scraped console output when the job fails.
+  emittedError?: string;
+  // Success result payload from Python (zipPath/clips/session), delivered via the
+  // workflow-complete callback rather than an output event.
+  results?: any;
   startTime?: Date;
   endTime?: Date;
   // Skip functionality
@@ -120,7 +125,7 @@ export class ProcessingService {
       const updatedJob = {
         ...currentJob,
         progress: data.progress,
-        message: this.truncateMessage(data.data),
+        message: this.truncateMessage(String(data.data ?? '')),
         subProgress: data.sub_progress || 0
       };
       this.currentJob$.next(updatedJob);
@@ -160,42 +165,61 @@ export class ProcessingService {
 
     // Handle skip_capabilities event (legacy format)
     if (data.type === 'skip_capabilities') {
-      const parsedData = typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
-      const updatedJob = {
-        ...currentJob,
-        skipDecisions: parsedData.decisions
-      };
-      this.currentJob$.next(updatedJob);
+      try {
+        const parsedData = typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
+        const updatedJob = {
+          ...currentJob,
+          skipDecisions: parsedData.decisions
+        };
+        this.currentJob$.next(updatedJob);
+      } catch (e) {
+        // Malformed payload — don't let it kill the subscription for the rest of the job.
+        console.warn('[ProcessingService] Failed to parse skip_capabilities payload:', e);
+      }
       return;
     }
 
     // Handle operation_start event (legacy format)
     if (data.type === 'operation_start') {
-      const parsedData = typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
-      const updatedJob = {
-        ...currentJob,
-        currentOperation: parsedData.operation,
-        canSkipCurrent: parsedData.can_skip,
-        subProgress: 0  // Reset sub-progress
-      };
-      this.currentJob$.next(updatedJob);
+      try {
+        const parsedData = typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
+        const updatedJob = {
+          ...currentJob,
+          currentOperation: parsedData.operation,
+          canSkipCurrent: parsedData.can_skip,
+          subProgress: 0  // Reset sub-progress
+        };
+        this.currentJob$.next(updatedJob);
+      } catch (e) {
+        // Malformed payload — don't let it kill the subscription for the rest of the job.
+        console.warn('[ProcessingService] Failed to parse operation_start payload:', e);
+      }
       return;
     }
 
     // Handle regular output — cap at 500 lines to prevent memory leaks
     const MAX_OUTPUT_LINES = 500;
+    const line = String(data.data ?? '');
     let output: string[];
     if (currentJob.output.length >= MAX_OUTPUT_LINES) {
       // Drop oldest lines to stay within limit
-      output = [...currentJob.output.slice(-MAX_OUTPUT_LINES + 1), data.data];
+      output = [...currentJob.output.slice(-MAX_OUTPUT_LINES + 1), line];
     } else {
-      output = [...currentJob.output, data.data];
+      output = [...currentJob.output, line];
     }
-    const updatedJob = {
+    const updatedJob: ProcessingJob = {
       ...currentJob,
       output,
       message: this.extractLastMessage(output)
     };
+
+    // Capture structured Python errors. The `type==='error'` payload is forwarded
+    // by the main process through onError → a 'stderr' workflow-output event, so
+    // both surface here as 'stderr' (or a defensive 'error'). Retain the latest
+    // non-empty text so a failed job can prefer it over regex-scraped output.
+    if ((data.type === 'stderr' || data.type === 'error') && line.trim()) {
+      updatedJob.emittedError = line.trim();
+    }
 
     this.currentJob$.next(updatedJob);
   }
@@ -242,7 +266,7 @@ export class ProcessingService {
   /**
    * Handle workflow completion
    */
-  private handleWorkflowComplete(data: { jobId: string; exitCode: number }): void {
+  private handleWorkflowComplete(data: { jobId: string; exitCode: number; result?: any }): void {
     console.log('[ProcessingService] Received workflow-complete event:', data);
     const currentJob = this.currentJob$.value;
     console.log('[ProcessingService] Current job at completion:', currentJob);
@@ -259,7 +283,9 @@ export class ProcessingService {
     let errorDetails = '';
 
     if (data.exitCode !== 0) {
-      errorDetails = this.extractErrorDetails(currentJob.output);
+      // Prefer the structured error text Python emitted over regex-scraped console
+      // output; fall back to scraping only when no structured error was captured.
+      errorDetails = currentJob.emittedError || this.extractErrorDetails(currentJob.output);
 
       // Create a user-friendly error message
       if (errorDetails.includes('ModuleNotFoundError') || errorDetails.includes('ImportError')) {
@@ -281,6 +307,9 @@ export class ProcessingService {
       progress: 100,
       message: data.exitCode === 0 ? 'Workflow completed successfully!' : errorMessage,
       error: data.exitCode !== 0 ? errorDetails : undefined,
+      // The success result (zipPath/clips/session) only reaches the renderer via the
+      // completion callback, so capture it here onto the job's results field.
+      results: data.exitCode === 0 && data.result !== undefined ? data.result : currentJob.results,
       endTime: new Date()
     };
 
@@ -309,7 +338,7 @@ export class ProcessingService {
    * Extract last meaningful message from output and truncate if needed
    */
   private extractLastMessage(output: string[]): string {
-    const lines = output.join('').split('\n').filter(line => line.trim());
+    const lines = output.map(l => String(l ?? '')).join('').split('\n').filter(line => line.trim());
     const lastLine = lines[lines.length - 1] || 'Processing...';
     return this.truncateMessage(lastLine);
   }
@@ -318,10 +347,11 @@ export class ProcessingService {
    * Truncate message to max 100 characters for progress display
    */
   private truncateMessage(message: string, maxLength: number = 100): string {
-    if (message.length <= maxLength) {
-      return message;
+    const str = String(message ?? '');
+    if (str.length <= maxLength) {
+      return str;
     }
-    return message.substring(0, maxLength - 3) + '...';
+    return str.substring(0, maxLength - 3) + '...';
   }
 
   /**

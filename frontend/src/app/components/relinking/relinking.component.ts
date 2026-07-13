@@ -29,11 +29,12 @@ export class RelinkingComponent implements OnInit {
   }
 
   async loadAssetPaths() {
-    try {
-      // Load current asset paths from backend
-      let backgrounds: any = {};
-      let borders: any = {};
+    // Load current asset paths from backend. Declared before the try so a
+    // persistent IPC failure can fall back to empty paths without recursing.
+    let backgrounds: any = {};
+    let borders: any = {};
 
+    try {
       if (this.electronService.isElectron()) {
         const result = await this.electronService.getAssetConfig();
         console.log('Asset config result:', result);
@@ -45,9 +46,13 @@ export class RelinkingComponent implements OnInit {
           console.warn('Failed to load asset config from backend:', result.error);
         }
       }
+    } catch (error) {
+      console.error('Error loading asset config:', error);
+      // Fall through with empty backgrounds/borders — no recursion, UI stays usable.
+    }
 
-      // Always populate the assets list (even if paths are empty)
-      this.assets = [
+    // Always populate the assets list (even if paths are empty)
+    this.assets = [
         // Backgrounds
         {
           key: 'space_background',
@@ -191,15 +196,12 @@ export class RelinkingComponent implements OnInit {
           }
         ];
 
-      // Check validity of each path
+    // Check validity of each path (best-effort — a validation failure must not
+    // bubble out and must not trigger a reload).
+    try {
       await this.validateAllPaths();
     } catch (error) {
-      console.error('Error loading asset paths:', error);
-      // Even if there's an error, ensure we have an empty assets array
-      if (this.assets.length === 0) {
-        console.warn('Assets array is empty after error, initializing with empty paths');
-        await this.loadAssetPaths();
-      }
+      console.error('Error validating asset paths:', error);
     }
   }
 

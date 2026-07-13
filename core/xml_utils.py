@@ -21,18 +21,8 @@ class FCPXMLUtils:
     @staticmethod
     def _load_drift_config() -> dict:
         """Load drift correction configuration from config file."""
-        config_path = Path(__file__).parent.parent / 'config' / 'drift_corrections.json'
-        try:
-            with open(config_path, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Warning: Could not load drift config: {e}", file=sys.stderr)
-            # Return defaults
-            return {
-                'vmix_outputs': {'enabled': True, 'speed_factor': 1.0},
-                'vmix_sources': {'enabled': True, 'speed_factor': 0.9999763884},
-                'soundboard': {'enabled': True, 'speed_factor': 1.0000158402}
-            }
+        from .drift_config import load_drift_config
+        return load_drift_config()
 
     @staticmethod
     def save_fcpxml(tree: ET.ElementTree, output_path: str):
@@ -309,8 +299,9 @@ class FCPXMLUtils:
             resources.append(noise_gate_effect)
         
         return compressor_effect_id, noise_gate_effect_id
-    
-    def create_audio_clip(name: str, ref: str, lane: str, offset: str, 
+
+    @staticmethod
+    def create_audio_clip(name: str, ref: str, lane: str, offset: str,
                         duration: str, audio_type: Optional[str] = None,
                         resources: Optional[ET.Element] = None) -> ET.Element:
         """Create an audio element for audio clips with basic volume adjustment only."""
@@ -460,48 +451,38 @@ class FCPXMLUtils:
     @staticmethod
     def _ensure_compressor_effect_resource(resources: Optional[ET.Element]) -> None:
         """Ensure Compressor effect resource (r4) exists in resources section."""
-        print(f"[DEBUG] _ensure_compressor_effect_resource called, resources={'None' if resources is None else 'provided'}")
         if resources is None:
-            print("[DEBUG] Resources is None, returning")
             return
 
         # Check if r4 already exists
         existing = resources.find('.//effect[@id="r4"]')
         if existing is not None:
-            print("[DEBUG] r4 already exists, returning")
             return
 
         # Create Compressor effect resource
-        print("[DEBUG] Creating Compressor effect r4")
         effect = ET.Element('effect')
         effect.set('id', 'r4')
         effect.set('name', 'Compressor')
         effect.set('uid', 'AudioUnit: 0x617566780000009a454d4147')
         resources.append(effect)
-        print(f"[DEBUG] Compressor effect r4 added to resources, total effects: {len(resources.findall('.//effect'))}")
 
     @staticmethod
     def _ensure_noise_gate_effect_resource(resources: Optional[ET.Element]) -> None:
         """Ensure Noise Gate effect resource (r5) exists in resources section."""
-        print(f"[DEBUG] _ensure_noise_gate_effect_resource called, resources={'None' if resources is None else 'provided'}")
         if resources is None:
-            print("[DEBUG] Resources is None, returning")
             return
 
         # Check if r5 already exists
         existing = resources.find('.//effect[@id="r5"]')
         if existing is not None:
-            print("[DEBUG] r5 already exists, returning")
             return
 
         # Create Noise Gate effect resource
-        print("[DEBUG] Creating Noise Gate effect r5")
         effect = ET.Element('effect')
         effect.set('id', 'r5')
         effect.set('name', 'Noise Gate')
         effect.set('uid', 'AudioUnit: 0x61756678000000b3454d4147')
         resources.append(effect)
-        print(f"[DEBUG] Noise Gate effect r5 added to resources, total effects: {len(resources.findall('.//effect'))}")
 
     @staticmethod
     def create_asset_clip(name: str, ref: str, lane: str, offset: str, 

@@ -121,6 +121,7 @@ class ShortsHybridGenerator:
         for start_time, end_time, mode in segments:
             duration_seconds = end_time - start_time
             offset_str = self._seconds_to_time_str(start_time)
+            start_str = self._seconds_to_time_str(start_time)  # Shorts have no leading trim gap
             duration_str = self._seconds_to_time_str(duration_seconds)
 
             # Process each video lane
@@ -135,6 +136,7 @@ class ShortsHybridGenerator:
                 new_clip.set('lane', lane)
                 new_clip.set('offset', offset_str)
                 new_clip.set('name', original_clip.get('name'))
+                new_clip.set('start', start_str)  # In-point in source media (no gap offset)
                 new_clip.set('duration', duration_str)
 
                 # Apply segment-specific settings
@@ -225,6 +227,7 @@ class ShortsHybridGenerator:
         for start_time, end_time, mode in segments:
             duration_seconds = end_time - start_time
             offset_str = self._seconds_to_time_str(start_time)
+            start_str = self._seconds_to_time_str(start_time)  # Shorts have no leading trim gap
             duration_str = self._seconds_to_time_str(duration_seconds)
 
             # Process each video lane
@@ -239,6 +242,7 @@ class ShortsHybridGenerator:
                 new_clip.set('lane', lane)
                 new_clip.set('offset', offset_str)
                 new_clip.set('name', original_clip.get('name'))
+                new_clip.set('start', start_str)  # In-point in source media (no gap offset)
                 new_clip.set('duration', duration_str)
 
                 # Set enabled based on mode and lane

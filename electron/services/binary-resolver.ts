@@ -2,6 +2,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { execFileSync } from 'child_process';
+import { app } from 'electron';
 import * as log from 'electron-log';
 import { AppConfig } from '../config/app-config';
 import * as assetManager from './asset-manager';
@@ -307,6 +308,14 @@ export class BinaryResolver {
       PYTHONPATH: AppConfig.resourcesPath
     };
 
+    // Point the Python side at the SAME config directory the Settings UI writes
+    // to, so user-edited speed factors (drift_corrections.json) actually reach
+    // the pipeline. Packaged → userData/config; dev → the project root's config/
+    // (mirrors electron/ipc/ipc-handlers.ts getBundledConfigPath dev resolution).
+    env.AUTOCUT_CONFIG_DIR = app.isPackaged
+      ? path.join(app.getPath('userData'), 'config')
+      : path.join(__dirname, '../../../../', 'config');
+
     // Build PATH so the Python subprocess's bare `ffmpeg`/`ffprobe`/`auto-editor`
     // calls resolve to our managed binaries first, then bundled, then system.
     const pathComponents: string[] = [];
@@ -331,18 +340,21 @@ export class BinaryResolver {
       pathComponents.push(bundledPythonBin);
     }
 
-    // Add common system paths
-    pathComponents.push('/usr/local/bin');
-    pathComponents.push('/opt/homebrew/bin');
-    pathComponents.push('/usr/bin');
-    pathComponents.push('/bin');
+    // Add common system paths — these are unix-only, so don't pollute PATH with
+    // them on Windows (where PATH is ';'-delimited and these dirs don't exist).
+    if (process.platform !== 'win32') {
+      pathComponents.push('/usr/local/bin');
+      pathComponents.push('/opt/homebrew/bin');
+      pathComponents.push('/usr/bin');
+      pathComponents.push('/bin');
+    }
 
     // Add existing PATH
     if (process.env.PATH) {
       pathComponents.push(process.env.PATH);
     }
 
-    env.PATH = pathComponents.join(':');
+    env.PATH = pathComponents.join(path.delimiter);
 
     return env;
   }

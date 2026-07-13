@@ -117,8 +117,16 @@ class AutoCutStudioConfig:
     
     def expand_file_pattern(self, pattern_key: str, date: str) -> str:
         """Expand file pattern with date."""
-        pattern = self.get(f'file_patterns.{pattern_key}', '{date} {pattern_key}')
-        return pattern.format(date=date)
+        pattern = self.get(f'file_patterns.{pattern_key}')
+        if pattern is None:
+            raise KeyError(f"file_patterns.{pattern_key} not found in config")
+        try:
+            return pattern.format(date=date)
+        except (KeyError, IndexError) as e:
+            raise ValueError(
+                f"file_patterns.{pattern_key} references unknown placeholder {e} "
+                f"(pattern: {pattern!r}); only {{date}} is supported"
+            ) from e
     
     def get_asset_path(self, asset_name: str) -> str:
         """Get path for a specific asset using dot notation (e.g., 'borders.cam_border')."""

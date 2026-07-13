@@ -7,7 +7,7 @@ import { Observable, Subject } from 'rxjs';
 })
 export class ElectronService {
   private workflowOutput$ = new Subject<{ jobId: string; type: string; data: string }>();
-  private workflowComplete$ = new Subject<{ jobId: string; exitCode: number }>();
+  private workflowComplete$ = new Subject<{ jobId: string; exitCode: number; result?: any }>();
 
   constructor(private ngZone: NgZone) {
     // Set up event listeners
@@ -47,7 +47,7 @@ export class ElectronService {
   /**
    * Get workflow complete stream
    */
-  getWorkflowComplete(): Observable<{ jobId: string; exitCode: number }> {
+  getWorkflowComplete(): Observable<{ jobId: string; exitCode: number; result?: any }> {
     return this.workflowComplete$.asObservable();
   }
 

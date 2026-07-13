@@ -47,7 +47,7 @@ class CameraDetector:
 
         # Recursive refinement - start with 60min intervals for very coarse overview
         all_samples = []
-        self._recursive_scan(video_path, camera_region, 0, duration, 3600, all_samples)  # Start with 60min intervals
+        self._recursive_scan(video_path, camera_region, 0, duration, 3600, all_samples, duration)  # Start with 60min intervals
 
         # Sort all samples by timestamp
         all_samples = sorted(set(all_samples), key=lambda x: x[0])
@@ -62,7 +62,8 @@ class CameraDetector:
         return segments
 
     def _recursive_scan(self, video_path: str, camera_region: str, start_time: float, end_time: float,
-                        interval: float, samples: List[Tuple[float, str]], depth: int = 0):
+                        interval: float, samples: List[Tuple[float, str]], video_duration: float,
+                        depth: int = 0):
         """
         Recursively scan a time region, refining when changes are detected.
 
@@ -73,6 +74,7 @@ class CameraDetector:
             end_time: End of region to scan (seconds)
             interval: Current sampling interval (seconds)
             samples: List to append samples to
+            video_duration: Total video duration (seconds), for end-of-file edge handling
             depth: Current recursion depth (for logging)
         """
         indent = "  " * depth
@@ -82,7 +84,7 @@ class CameraDetector:
         region_samples = []
         for timestamp in range(int(start_time), int(end_time) + 1, int(interval)):
             if timestamp <= end_time:
-                is_active = self._is_camera_active(video_path, timestamp, camera_region)
+                is_active = self._is_camera_active(video_path, timestamp, camera_region, video_duration)
                 state = 'dc' if is_active else 'solo'
                 region_samples.append((timestamp, state))
                 samples.append((timestamp, state))
@@ -116,24 +118,38 @@ class CameraDetector:
                 refine_start = max(start_time, change_start - interval)
                 refine_end = min(end_time, change_end + interval)
                 self._recursive_scan(video_path, camera_region, refine_start, refine_end,
-                                    next_interval, samples, depth + 1)
+                                    next_interval, samples, video_duration, depth + 1)
 
     def _get_video_duration(self, video_path: str) -> float:
-        """Get video duration in seconds using ffprobe."""
+        """Get video duration in seconds using ffprobe. Raises on failure."""
+        cmd = [
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'json', video_path
+        ]
         try:
-            cmd = [
-                'ffprobe', '-v', 'error',
-                '-show_entries', 'format=duration',
-                '-of', 'json', video_path
-            ]
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            data = json.loads(result.stdout)
-            return float(data['format']['duration'])
-        except Exception as e:
-            print(f"[CameraDetector] Error getting video duration: {e}", file=sys.stderr)
-            return 0.0
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"ffprobe failed to read duration from {video_path}: {e.stderr or e}"
+            ) from e
 
-    def _is_camera_active(self, video_path: str, timestamp: float, region: str) -> bool:
+        try:
+            data = json.loads(result.stdout)
+            duration = float(data['format']['duration'])
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
+            raise RuntimeError(
+                f"Could not parse ffprobe duration output for {video_path}: {e}"
+            ) from e
+
+        if duration <= 0:
+            raise RuntimeError(
+                f"ffprobe reported non-positive duration ({duration}) for {video_path}"
+            )
+        return duration
+
+    def _is_camera_active(self, video_path: str, timestamp: float, region: str,
+                          video_duration: float) -> bool:
         """
         Check if camera is active at a specific timestamp using solid color detection.
 
@@ -141,51 +157,57 @@ class CameraDetector:
         - Solid black = camera never turned on (inactive)
         - Solid blue = camera was turned on then off (inactive)
         - Varied colors/content = active camera (person visible, even if stationary)
+
+        Raises RuntimeError on a mid-video extraction failure: an empty frame there
+        must never be silently registered as "camera inactive" because it flips
+        layout decisions.
         """
-        try:
-            frame_data = self._extract_frame(video_path, timestamp, region)
+        frame_data = self._extract_frame(video_path, timestamp, region)
 
-            if frame_data is None:
+        if not frame_data:
+            # Empty frame data. Seeking past EOF (rc 0, empty stdout) is legitimate
+            # near the end of the file; anywhere else it is a real extraction failure.
+            if timestamp >= video_duration - 2:
                 return False
+            raise RuntimeError(
+                f"Empty frame extracted at {timestamp}s (video duration {video_duration}s) — "
+                "mid-video extraction failure; refusing to silently report camera inactive"
+            )
 
-            img = Image.open(io.BytesIO(frame_data)).convert('RGB')
-            pixels = np.array(img, dtype=np.float32)
+        img = Image.open(io.BytesIO(frame_data)).convert('RGB')
+        pixels = np.array(img, dtype=np.float32)
 
-            # Calculate per-channel statistics
-            r, g, b = pixels[:,:,0], pixels[:,:,1], pixels[:,:,2]
-            mean_r, mean_g, mean_b = r.mean(), g.mean(), b.mean()
-            std_r, std_g, std_b = r.std(), g.std(), b.std()
+        # Calculate per-channel statistics
+        r, g, b = pixels[:,:,0], pixels[:,:,1], pixels[:,:,2]
+        mean_r, mean_g, mean_b = r.mean(), g.mean(), b.mean()
+        std_r, std_g, std_b = r.std(), g.std(), b.std()
 
-            # Overall color variance - how uniform is the frame?
-            overall_std = np.sqrt(std_r**2 + std_g**2 + std_b**2)
+        # Overall color variance - how uniform is the frame?
+        overall_std = np.sqrt(std_r**2 + std_g**2 + std_b**2)
 
-            # Debug output
-            print(f"[CameraDetector] {timestamp}s - RGB mean: ({mean_r:.0f},{mean_g:.0f},{mean_b:.0f}), "
-                  f"RGB std: ({std_r:.1f},{std_g:.1f},{std_b:.1f}), overall_std: {overall_std:.1f}", file=sys.stderr)
+        # Debug output
+        print(f"[CameraDetector] {timestamp}s - RGB mean: ({mean_r:.0f},{mean_g:.0f},{mean_b:.0f}), "
+              f"RGB std: ({std_r:.1f},{std_g:.1f},{std_b:.1f}), overall_std: {overall_std:.1f}", file=sys.stderr)
 
-            # Detect solid black: all channels low with low variance
-            is_black = mean_r < 30 and mean_g < 30 and mean_b < 30 and overall_std < 15
-            # Detect solid blue: blue channel dominant with low variance
-            is_blue = mean_b > 100 and mean_b > mean_r * 1.5 and mean_b > mean_g * 1.5 and overall_std < 30
-            # Detect any solid color: very low variance across the frame
-            is_solid = overall_std < 10
+        # Detect solid black: all channels low with low variance
+        is_black = mean_r < 30 and mean_g < 30 and mean_b < 30 and overall_std < 15
+        # Detect solid blue: blue channel dominant with low variance
+        is_blue = mean_b > 100 and mean_b > mean_r * 1.5 and mean_b > mean_g * 1.5 and overall_std < 30
+        # Detect any solid color: very low variance across the frame
+        is_solid = overall_std < 10
 
-            if is_black:
-                print(f"[CameraDetector] {timestamp}s - SOLID BLACK detected (inactive)", file=sys.stderr)
-                return False
-            elif is_blue:
-                print(f"[CameraDetector] {timestamp}s - SOLID BLUE detected (inactive)", file=sys.stderr)
-                return False
-            elif is_solid:
-                print(f"[CameraDetector] {timestamp}s - SOLID COLOR detected (inactive)", file=sys.stderr)
-                return False
-            else:
-                print(f"[CameraDetector] {timestamp}s - varied content (active)", file=sys.stderr)
-                return True
-
-        except Exception as e:
-            print(f"[CameraDetector] Error checking frame at {timestamp}s: {e}", file=sys.stderr)
+        if is_black:
+            print(f"[CameraDetector] {timestamp}s - SOLID BLACK detected (inactive)", file=sys.stderr)
             return False
+        elif is_blue:
+            print(f"[CameraDetector] {timestamp}s - SOLID BLUE detected (inactive)", file=sys.stderr)
+            return False
+        elif is_solid:
+            print(f"[CameraDetector] {timestamp}s - SOLID COLOR detected (inactive)", file=sys.stderr)
+            return False
+        else:
+            print(f"[CameraDetector] {timestamp}s - varied content (active)", file=sys.stderr)
+            return True
 
     def _extract_frame(self, video_path: str, timestamp: float, region: str) -> bytes:
         """
@@ -197,7 +219,10 @@ class CameraDetector:
             region: Region to extract (top_right, bottom_right, etc.)
 
         Returns:
-            PNG image data as bytes
+            PNG image data as bytes (may be b'' when seeking past EOF with rc 0)
+
+        Raises:
+            RuntimeError: if ffmpeg exits non-zero.
         """
         # Define crop filters for different regions
         # For 1920x1080 video:
@@ -219,24 +244,26 @@ class CameraDetector:
             # Default to top-right
             crop_filter = 'crop=960:540:960:0'
 
-        try:
-            cmd = [
-                'ffmpeg',
-                '-ss', str(timestamp),  # Seek to timestamp
-                '-i', video_path,
-                '-vf', crop_filter,  # Crop to region
-                '-vframes', '1',  # Extract 1 frame
-                '-f', 'image2pipe',  # Output to pipe
-                '-vcodec', 'png',  # PNG format
-                '-'
-            ]
+        cmd = [
+            'ffmpeg',
+            '-ss', str(timestamp),  # Seek to timestamp
+            '-i', video_path,
+            '-vf', crop_filter,  # Crop to region
+            '-vframes', '1',  # Extract 1 frame
+            '-f', 'image2pipe',  # Output to pipe
+            '-vcodec', 'png',  # PNG format
+            '-'
+        ]
 
-            result = subprocess.run(cmd, capture_output=True, check=True)
-            return result.stdout
-
-        except Exception as e:
-            print(f"[CameraDetector] Error extracting frame: {e}", file=sys.stderr)
-            return None
+        result = subprocess.run(cmd, capture_output=True)
+        if result.returncode != 0:
+            stderr_tail = (result.stderr or b'').decode('utf-8', errors='replace')[-2000:]
+            raise RuntimeError(
+                f"ffmpeg failed to extract frame from {video_path} at {timestamp}s "
+                f"(exit {result.returncode}): {stderr_tail}"
+            )
+        # rc 0 with empty stdout happens when seeking past EOF; caller handles it.
+        return result.stdout
 
     def _build_segments(self, states: List[Tuple[float, str]], duration: float) -> List[Tuple[float, float, str]]:
         """

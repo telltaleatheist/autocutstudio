@@ -34,14 +34,47 @@ export class SettingsComponent implements OnInit {
 
   async loadConfig() {
     this.loading = true;
+    this.saveError = null;
     try {
-      this.config = await this.electronService.getDriftCorrections();
+      // The main process returns either the legacy raw config object
+      // ({ vmix_outputs, vmix_sources, soundboard }) or an error envelope
+      // ({ success: false, error }) for corrupt/unreadable config files.
+      const result: any = await this.electronService.getDriftCorrections();
+
+      if (result && result.success === false) {
+        console.error('Failed to load drift corrections:', result.error);
+        this.saveError = (result.error || 'Failed to load configuration') + '. Using defaults.';
+        this.resetToDefaults();
+      } else if (this.isValidDriftConfig(result)) {
+        this.config = result;
+      } else {
+        console.error('Drift corrections config has an unexpected shape:', result);
+        this.saveError = 'Configuration was invalid or incomplete. Using defaults.';
+        this.resetToDefaults();
+      }
     } catch (error) {
       console.error('Failed to load drift corrections:', error);
-      this.saveError = 'Failed to load configuration';
+      this.saveError = 'Failed to load configuration. Using defaults.';
+      this.resetToDefaults();
     } finally {
       this.loading = false;
     }
+  }
+
+  /**
+   * Validate that a loaded config has the three drift categories as objects with
+   * an applies_to array, so template bindings (e.g. applies_to.join) don't explode.
+   */
+  private isValidDriftConfig(config: any): config is DriftConfig {
+    return !!config
+      && typeof config === 'object'
+      && this.isDriftCategory(config.vmix_outputs)
+      && this.isDriftCategory(config.vmix_sources)
+      && this.isDriftCategory(config.soundboard);
+  }
+
+  private isDriftCategory(category: any): boolean {
+    return !!category && typeof category === 'object' && Array.isArray(category.applies_to);
   }
 
   async saveConfig() {

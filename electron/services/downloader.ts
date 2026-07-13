@@ -330,7 +330,15 @@ export async function extractArchive(
 export function findFile(dir: string, predicate: (name: string) => boolean): string | null {
   for (const entry of fs.readdirSync(dir)) {
     const full = path.join(dir, entry);
-    if (fs.statSync(full).isDirectory()) {
+    // A dangling symlink or an unreadable entry must skip that entry, not reject
+    // the whole dependency check.
+    let isDir: boolean;
+    try {
+      isDir = fs.statSync(full).isDirectory();
+    } catch {
+      continue;
+    }
+    if (isDir) {
       const found = findFile(full, predicate);
       if (found) return found;
     } else if (predicate(entry)) {

@@ -61,8 +61,8 @@ class DCGSGenerator:
                     }
                     print(f"Processed {audio_type} audio: {processed_path}")
                 except Exception as e:
-                    print(f"Warning: Failed to process {audio_type} audio ({audio_path}): {e}")
-                    processed_audio_sources[audio_type] = None
+                    print(f"Error: Failed to process {audio_type} audio ({audio_path}): {e}")
+                    raise
 
         # Get original compound info
         original_compound = root.find('.//media[@id="compound1"]')
@@ -98,16 +98,17 @@ class DCGSGenerator:
         
         # Create format elements
         original_format = tree.find('.//format')
-        if original_format is not None:
-            # Copy the original format for timeline compatibility
-            timeline_format = ET.SubElement(resources, 'format')
-            timeline_format.set('id', 'r1')
-            timeline_format.set('name', original_format.get('name', 'FFVideoFormatRateUndefined'))
-            timeline_format.set('frameDuration', original_format.get('frameDuration', '1/30s'))
-            timeline_format.set('width', original_format.get('width', str(video_settings.get('width', 1920))))
-            timeline_format.set('height', original_format.get('height', str(video_settings.get('height', 1080))))
-            timeline_format.set('colorSpace', original_format.get('colorSpace', '1-1-1 (Rec. 709)'))
-        
+        if original_format is None:
+            raise ValueError("input compound XML has no <format> element")
+        # Copy the original format for timeline compatibility
+        timeline_format = ET.SubElement(resources, 'format')
+        timeline_format.set('id', 'r1')
+        timeline_format.set('name', original_format.get('name', 'FFVideoFormatRateUndefined'))
+        timeline_format.set('frameDuration', original_format.get('frameDuration', '1/30s'))
+        timeline_format.set('width', original_format.get('width', str(video_settings.get('width', 1920))))
+        timeline_format.set('height', original_format.get('height', str(video_settings.get('height', 1080))))
+        timeline_format.set('colorSpace', original_format.get('colorSpace', '1-1-1 (Rec. 709)'))
+
         # Compound clip format (for internal compound structure)
         video_format = self.xml_utils.create_format_element(
             'r1_dc_gs', 
@@ -218,8 +219,21 @@ class DCGSGenerator:
             cam2_asset_id = "r_cam2_video"
             cam2_name = Path(cam2_path).stem
 
-            # cam2 is recorded with master, so NO retiming needed - it's already synced
-            print(f"  cam2 video: using native timing (recorded with master, no retiming)")
+            # Only retime if this is a capture source (has "capture" in filename)
+            # Output sources are already synced with master
+            is_capture = 'capture' in Path(cam2_path).name.lower()
+
+            if is_capture:
+                # Detect framerate and calculate retime map for capture sources
+                cam2_fps = self.audio_processor.get_video_framerate(cam2_path)
+                cam2_retime_map = self.xml_utils.calculate_retime_map(original_duration, cam2_fps, 29.97)
+                if cam2_retime_map:
+                    print(f"  cam2 video: {cam2_fps:.2f}fps → 29.97fps (capture source, will apply timeMap)")
+                else:
+                    print(f"  cam2 video: {cam2_fps:.2f}fps (capture source, no retiming needed)")
+            else:
+                # Output source - no retiming needed
+                print(f"  cam2 video: output source, using native timing (no retiming)")
 
             cam2_asset = self.xml_utils.create_asset_element(
                 cam2_asset_id, cam2_name, cam2_path, original_duration,
@@ -695,7 +709,7 @@ class DCGSGenerator:
                 trim_duration,
                 trimmed_content_duration,
                 cam2_transforms,
-                retime_map=None  # Never retime cam2 - it's recorded with master
+                retime_map=cam2_retime_map if cam2_asset_id else None  # Only retime if capture source
             )
             gap.append(cam2_clip)
             
