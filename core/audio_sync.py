@@ -610,13 +610,13 @@ class MediaSyncProcessor:
         audio_filters = []
 
         # Apply speed adjustment
-        if abs(speed_factor - 1.0) > 0.0001:
+        if abs(speed_factor - 1.0) > 0.000001:
             # Video: use setpts to change speed
-            video_filters.append(f'setpts=PTS/{speed_factor:.6f}')
+            video_filters.append(f'setpts=PTS/{speed_factor:.10f}')
 
             # Audio: use atempo (with chaining if needed)
             if 0.5 <= speed_factor <= 2.0:
-                audio_filters.append(f'atempo={speed_factor:.6f}')
+                audio_filters.append(f'atempo={speed_factor:.10f}')
             else:
                 remaining = speed_factor
                 while remaining > 0:
@@ -627,7 +627,7 @@ class MediaSyncProcessor:
                         audio_filters.append('atempo=0.5')
                         remaining /= 0.5
                     else:
-                        audio_filters.append(f'atempo={remaining:.6f}')
+                        audio_filters.append(f'atempo={remaining:.10f}')
                         break
 
         # Apply offset

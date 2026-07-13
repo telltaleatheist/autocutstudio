@@ -1015,6 +1015,7 @@ def main():
         if cam_solo_path and gs_solo_path and ssb_solo_path:
             try:
                 master_gen = MasterProjectGenerator(config)
+                master_gen.detect_framerate(str(master_video))
                 master_solo_paths = master_gen.generate_solo_master_project(
                     cam_solo_path, gs_solo_path, ssb_solo_path, original_name
                 )
@@ -1040,6 +1041,7 @@ def main():
         if cam_dual_path and gs_dual_path and ssb_dual_path:
             try:
                 master_gen = MasterProjectGenerator(config)
+                master_gen.detect_framerate(str(master_video))
                 master_dc_paths = master_gen.generate_dc_master_project(
                     cam_dual_path, gs_dual_path, ssb_dual_path, original_name
                 )
@@ -1066,6 +1068,7 @@ def main():
                 set_stage(94, 'Generating Master Hybrid project...')
                 print(f"Generating Master Hybrid project", file=sys.stderr)
                 master_gen = MasterProjectGenerator(config)
+                master_gen.detect_framerate(str(master_video))
                 # Use the DC method but with hybrid compounds - the compounds themselves handle the adaptation
                 master_hybrid_paths = master_gen.generate_dc_master_project(
                     hybrid_cam_path, hybrid_gs_path, hybrid_ssb_path, original_name
@@ -1204,6 +1207,7 @@ def main():
                 set_stage(97, 'Generating Master Shorts project...')
                 print(f"\nGenerating Master Shorts project", file=sys.stderr)
                 shorts_master_gen = ShortsMasterProjectGenerator(config)
+                shorts_master_gen.detect_framerate(str(master_video))
                 master_shorts_paths = shorts_master_gen.generate_shorts_master_project(
                     shorts_hybrid_cam_path, shorts_hybrid_ssb_path, original_name
                 )
@@ -1224,6 +1228,22 @@ def main():
         set_stage(98, 'Creating compound clips ZIP file...')
         session_name = Path(master_video).stem.replace(' master', '')
         output_dir = Path(master_video).parent
+
+        # create_xml_zip zips these XMLs then DELETES them, so the on-disk paths in
+        # generated_clips would point at files that no longer exist. Rewrite each clip
+        # path to its zip-internal entry name (matching create_xml_zip's arcname
+        # exactly, including the session_name.replace(' ', '_') cleaning) while the
+        # files still exist on disk. A file "made it into the zip" iff it is non-None
+        # and exists — the same condition create_xml_zip uses to decide what to write —
+        # so entries whose path is None or already missing honestly get path None.
+        clean_name = session_name.replace(' ', '_')
+        for clip in generated_clips:
+            clip_path = clip.get('path')
+            if clip_path and Path(clip_path).exists():
+                clip['path'] = f"{clean_name}/{Path(clip_path).name}"
+            else:
+                clip['path'] = None
+
         zip_path = create_xml_zip(all_xml_files, output_dir, session_name)
 
         set_stage(100, 'Processing complete!')

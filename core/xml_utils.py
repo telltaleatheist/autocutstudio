@@ -643,7 +643,7 @@ class FCPXMLUtils:
         source_duration_seconds = T * speed_factor
 
         # Convert back to FCPX format using the same denominator
-        source_duration_num = int(source_duration_seconds * den)
+        source_duration_num = round(source_duration_seconds * den)
         source_duration_str = f"{source_duration_num}/{den}s"
 
         return {
