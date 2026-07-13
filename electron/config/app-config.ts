@@ -54,17 +54,26 @@ export class AppConfig {
     const cliInCwd = fs.existsSync(path.join(process.cwd(), 'cli', 'electron_workflow.py'));
     log.info(`[AppConfig] cliInCwd: ${cliInCwd} (${path.join(process.cwd(), 'cli', 'electron_workflow.py')})`);
 
+    // A SINGLE mode decision drives every derived path so appPath, preloadPath,
+    // and frontendPath can never disagree. `npm start` does not always set
+    // NODE_ENV=development, so running from node_modules/electron OR finding the
+    // CLI in cwd counts as development too. Previously appPath used this broader
+    // signal while preloadPath/frontendPath keyed off NODE_ENV alone — under
+    // `npm start` (no NODE_ENV) appPath resolved dev-style but preloadPath used
+    // the packaged subpath, so the preload was never found and ALL IPC broke.
+    // IMPORTANT: isElectronApp/cliInCwd are MORE important than the isDevelopment
+    // flag because npm start doesn't always set NODE_ENV=development.
+    const useDevPaths = isElectronApp || cliInCwd || AppConfig.isDevelopment;
+    log.info(`[AppConfig] useDevPaths: ${useDevPaths}`);
+
     // Set paths based on environment
-    // IMPORTANT: isElectronApp is MORE important than isDevelopment flag
-    // because npm start doesn't always set NODE_ENV=development
-    if (isElectronApp || cliInCwd) {
-      // Running from node_modules/electron OR CLI exists in cwd - use process.cwd()
-      log.info('[AppConfig] Using process.cwd() (development mode detected)');
-      AppConfig.appPath = process.cwd();
-      AppConfig.resourcesPath = process.cwd();
-    } else if (AppConfig.isDevelopment) {
-      // Development mode but not from Electron.app - use process.cwd()
-      log.info('[AppConfig] Using process.cwd() (isDevelopment=true)');
+    if (useDevPaths) {
+      // Running from node_modules/electron, CLI exists in cwd, or NODE_ENV=development
+      if (isElectronApp || cliInCwd) {
+        log.info('[AppConfig] Using process.cwd() (development mode detected)');
+      } else {
+        log.info('[AppConfig] Using process.cwd() (isDevelopment=true)');
+      }
       AppConfig.appPath = process.cwd();
       AppConfig.resourcesPath = process.cwd();
     } else {
@@ -77,13 +86,15 @@ export class AppConfig {
     log.info(`[AppConfig] Final appPath: ${AppConfig.appPath}`);
     log.info(`[AppConfig] Final resourcesPath: ${AppConfig.resourcesPath}`);
 
-    // Preload script path
-    AppConfig.preloadPath = AppConfig.isDevelopment
+    // Preload script path — derived from the SAME mode decision as appPath so the
+    // preload subpath always matches the appPath resolution style.
+    AppConfig.preloadPath = useDevPaths
       ? path.join(AppConfig.appPath, 'dist-electron', 'preload', 'preload.js')
       : path.join(AppConfig.appPath, 'dist-electron', 'main', 'electron', 'preload.js');
 
-    // Frontend URL
-    AppConfig.frontendPath = AppConfig.isDevelopment
+    // Frontend URL — derived from the SAME mode decision as appPath (both branches
+    // currently resolve to the same subpath, but the mode source is now unified).
+    AppConfig.frontendPath = useDevPaths
       ? path.join(AppConfig.appPath, 'frontend', 'dist', 'autocutstudio-frontend', 'browser', 'index.html')
       : path.join(AppConfig.appPath, 'frontend', 'dist', 'autocutstudio-frontend', 'browser', 'index.html');
 

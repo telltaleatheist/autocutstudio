@@ -18,6 +18,19 @@ import type { InstallProgress } from './asset-types';
 
 const execAsync = promisify(exec);
 
+/**
+ * Integrity expectations for a download, sourced from the asset catalog. Used to
+ * guarantee the finished file can be verified: an empty sha256 AND a zero/absent
+ * `bytes` means the catalog gives us no integrity signal, so the download must
+ * fall back on the server's content-length — and fail if that's missing too.
+ */
+export interface DownloadIntegrity {
+  /** Expected sha256 from the catalog (verified separately by verifySha256). */
+  sha256?: string;
+  /** Expected download size in bytes from the catalog. 0/undefined = unknown. */
+  bytes?: number;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Streamed download with redirects + progress + abort
 // ─────────────────────────────────────────────────────────────────────────────
@@ -27,13 +40,22 @@ export function downloadFile(
   destPath: string,
   id: string,
   onProgress: (p: InstallProgress) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  integrity?: DownloadIntegrity
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(new Error('Download aborted'));
       return;
     }
+
+    // Integrity signals available up-front from the catalog. A truncated stream
+    // must never be silently recorded as installed, so we require at least one
+    // way to prove completeness before accepting the file (see file 'finish').
+    const expectedSha = integrity?.sha256?.trim() ?? '';
+    const hasCatalogSha = expectedSha.length > 0;
+    const catalogBytes =
+      integrity?.bytes !== undefined && integrity.bytes > 0 ? integrity.bytes : 0;
 
     const file = fs.createWriteStream(destPath);
     let activeRequest: http.ClientRequest | null = null;
@@ -171,19 +193,49 @@ export function downloadFile(
               });
               return;
             }
-            // Integrity guard: if the server told us the size, make sure we got
-            // all of it. Catches dropped/truncated connections (no sha256 needed).
-            if (totalBytes > 0 && receivedBytes !== totalBytes) {
+            // Integrity guard. Silent acceptance of a possibly-truncated file is
+            // a bug, so require at least one signal that proves completeness.
+            //
+            // Expected size: prefer the server's content-length (unchanged
+            // behavior for well-behaved servers like GitHub releases); fall back
+            // to the catalog's declared byte count only when the server sent no
+            // content-length, so a known size still guards a header-less server.
+            const expectedBytes =
+              totalBytes > 0 ? totalBytes : catalogBytes;
+
+            if (expectedBytes > 0) {
+              // We know how many bytes to expect — enforce an exact match.
+              if (receivedBytes !== expectedBytes) {
+                finish(() => {
+                  cleanupPartial();
+                  reject(
+                    new Error(
+                      `Incomplete download: received ${receivedBytes} of ${expectedBytes} bytes`
+                    )
+                  );
+                });
+                return;
+              }
+            } else if (!hasCatalogSha) {
+              // No size from the server, no size in the catalog, and no checksum
+              // to fall back on: the file cannot be verified at all. Refuse it
+              // rather than record a possibly-incomplete download as installed.
               finish(() => {
                 cleanupPartial();
                 reject(
                   new Error(
-                    `Incomplete download: received ${receivedBytes} of ${totalBytes} bytes`
+                    `Cannot verify download of ${id}: the server provided no ` +
+                      `content-length and no checksum or expected size is known ` +
+                      `for this asset. Refusing to accept a possibly-incomplete ` +
+                      `file. (${receivedBytes} bytes received from ${currentUrl})`
                   )
                 );
               });
               return;
             }
+            // else: size unknown but a sha256 is available — verifySha256 (run by
+            // the caller after this resolves) will detect any truncation, since a
+            // truncated file hashes differently.
             onProgress({
               id,
               phase: 'download',
@@ -227,12 +279,13 @@ export async function downloadFileWithRetry(
   id: string,
   onProgress: (p: InstallProgress) => void,
   signal?: AbortSignal,
+  integrity?: DownloadIntegrity,
   attempts = 3
 ): Promise<void> {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      await downloadFile(url, destPath, id, onProgress, signal);
+      await downloadFile(url, destPath, id, onProgress, signal, integrity);
       return;
     } catch (err) {
       // A user cancel aborts immediately — do not retry.

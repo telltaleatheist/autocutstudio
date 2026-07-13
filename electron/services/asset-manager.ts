@@ -305,14 +305,20 @@ export async function install(
       const dest = path.join(staging, fileName);
       const tmp = `${dest}.part`;
       fs.mkdirSync(path.dirname(dest), { recursive: true });
-      await downloadFileWithRetry(artifact.url, tmp, id, emit, ac.signal);
+      await downloadFileWithRetry(artifact.url, tmp, id, emit, ac.signal, {
+        sha256: artifact.sha256,
+        bytes: artifact.bytes,
+      });
       await verifySha256(tmp, artifact.sha256, id, emit);
       fs.renameSync(tmp, dest);
     } else {
       const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), `autocut-${id}-`));
       const archivePath = path.join(tmpRoot, basenameFromUrl(artifact.url, 'artifact'));
       try {
-        await downloadFileWithRetry(artifact.url, archivePath, id, emit, ac.signal);
+        await downloadFileWithRetry(artifact.url, archivePath, id, emit, ac.signal, {
+          sha256: artifact.sha256,
+          bytes: artifact.bytes,
+        });
         await verifySha256(archivePath, artifact.sha256, id, emit);
         emit({ id, phase: 'extract', pct: 0, message: 'Extracting…' });
         await extractArchive(archivePath, staging, artifact.url);
