@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 import uuid
 import datetime
 
+from urllib.parse import unquote
 from ..xml_utils import FCPXMLUtils
 from ..audio_processor import AudioProcessor
 
@@ -155,7 +156,7 @@ class SSBGenerator:
             original_video_asset = self.xml_utils.create_asset_element(
                 original_asset_id,
                 original_name,
-                original_src.replace('file://', ''),
+                unquote(original_src.replace('file://', '')),
                 original_duration,
                 'r1_ssb',
                 has_audio=True,

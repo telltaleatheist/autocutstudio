@@ -3,7 +3,7 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import quote, unquote
+from urllib.parse import quote
 import datetime
 import uuid
 import json
@@ -130,7 +130,12 @@ class FCPXMLUtils:
     def create_asset_element(asset_id: str, name: str, file_path: str, 
                            duration: str, format_id: str, has_audio: bool = True,
                            has_video: bool = True, audio_channels: int = 2) -> ET.Element:
-        """Create an asset element for the resources section."""
+        """Create an asset element for the resources section.
+
+        file_path MUST be a raw filesystem path (never percent-encoded).
+        Callers that pull a path out of an existing media-rep 'src' attribute
+        must urllib.parse.unquote() it at that boundary before calling here.
+        """
         asset = ET.Element('asset')
         asset.set('id', asset_id)
         asset.set('name', name)
@@ -145,13 +150,12 @@ class FCPXMLUtils:
             asset.set('audioSources', '1')
             asset.set('audioChannels', str(audio_channels))
         
-        # Create media-rep element with properly URL-encoded path
+        # Create media-rep element with properly URL-encoded path.
+        # file_path is a raw filesystem path; encode it exactly once so that
+        # literal '%' characters in a real filename survive (e.g. "100%20off.mov").
         media_rep = ET.SubElement(asset, 'media-rep')
         media_rep.set('kind', 'original-media')
-        # First decode the path in case it's already encoded, then re-encode
-        # This prevents double-encoding when paths come from existing XML
-        decoded_path = unquote(file_path)
-        encoded_path = quote(decoded_path, safe='/:')
+        encoded_path = quote(file_path, safe='/:')
         media_rep.set('src', f"file://{encoded_path}")
         
         return asset
