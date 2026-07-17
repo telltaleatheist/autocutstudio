@@ -295,11 +295,52 @@ class AudioSyncAnalyzer:
         from .naming import is_soundboard_filename
         is_soundboard = is_soundboard_filename(source_path)
 
-        # Find offset using cross-correlation
-        offset_seconds, correlation_score = self.find_offset_cross_correlation(
-            master_path, source_path,
-            search_window_seconds=search_window
-        )
+        # Find offset using GCC-PHAT (phase-transform cross-correlation).
+        # This robustly locates the source inside the MERGED master even though
+        # the source is only a minority of the mix energy, and detects BOTH signs
+        # of offset — unlike the legacy find_offset_cross_correlation, which reads
+        # both files from t=0 and can only see offsets in [0, +window] (a source
+        # that leads the master reads as 0). Several windows across the whole
+        # recording give a per-window agreement/confidence and a drift estimate.
+        from .gcc_phat_align import measure_offset, CONFIDENCE_THRESHOLD, FRAME_SECONDS
+
+        align = measure_offset(source_path, master_path)
+        offset_seconds = align['tau_seconds']
+        correlation_score = align['confidence']            # min confidence across windows
+        spread_seconds = align['spread_seconds']
+
+        # Trust decision — fail LOUD, never silently place a wrong offset. Trust
+        # the measured offset when the worst-window confidence clears the gate OR
+        # at least two windows clear it AND all windows agree to within one frame.
+        # A single silent window (e.g. a stretch with no desktop audio) can drag
+        # the min confidence down while the rest agree tightly, so cross-window
+        # agreement — not confidence alone — is part of the test.
+        windows_ok = [w for w in align['per_window']
+                      if w['confidence'] >= CONFIDENCE_THRESHOLD]
+        agree = spread_seconds <= FRAME_SECONDS
+        alignment_trusted = (correlation_score >= CONFIDENCE_THRESHOLD
+                             or (len(windows_ok) >= 2 and agree))
+        alignment_message = None
+        if not alignment_trusted:
+            alignment_message = (
+                f"Low-confidence alignment for {Path(source_path).name}: "
+                f"offset={offset_seconds:.3f}s, min_conf={correlation_score:.2f}, "
+                f"window spread={spread_seconds * 1000:.0f}ms across "
+                f"{len(align['per_window'])} windows. Placed best-effort — "
+                f"VERIFY THIS TRACK MANUALLY."
+            )
+            print(f"  ⚠️  {alignment_message}", file=sys.stderr)
+        elif offset_seconds < -FRAME_SECONDS:
+            # In this capture setup companion sources lag the master (rightward /
+            # positive delay); a source measured as LEADING the master by more
+            # than a frame is unusual and worth a look even at high confidence.
+            alignment_message = (
+                f"Unusual LEFTWARD offset for {Path(source_path).name}: "
+                f"{offset_seconds:.3f}s ({offset_seconds / FRAME_SECONDS:+.1f} fr) — "
+                f"sources normally lag the master. Confidence {correlation_score:.2f}; "
+                f"applied as measured but worth a sanity check."
+            )
+            print(f"  ⚠️  {alignment_message}", file=sys.stderr)
 
         # Apply device-specific drift correction if this is a soundboard file
         speed_factor = 1.0
@@ -335,13 +376,23 @@ class AudioSyncAnalyzer:
             'drift_frames': drift_frames,
             'is_soundboard': is_soundboard,
             'source_file': str(source_path),
-            'master_file': str(master_path)
+            'master_file': str(master_path),
+            # PHAT alignment diagnostics (used by the workflow to flag tracks
+            # that need manual review, and to distinguish constant offset from
+            # clock drift).
+            'alignment_trusted': alignment_trusted,
+            'alignment_message': alignment_message,
+            'spread_seconds': spread_seconds,
+            'drift_seconds_est': align['drift_seconds_est'],
         }
 
+        offset_frames = offset_seconds / FRAME_SECONDS
         if speed_factor != 1.0:
-            print(f"  ✓ Offset detected: {offset_seconds:.3f}s (with drift correction: {speed_factor:.10f})", file=sys.stderr)
+            print(f"  ✓ Offset detected: {offset_seconds:.3f}s ({offset_frames:+.1f} fr, "
+                  f"conf {correlation_score:.2f}) (with drift correction: {speed_factor:.10f})", file=sys.stderr)
         else:
-            print(f"  ✓ Offset detected: {offset_seconds:.3f}s (no drift correction needed)", file=sys.stderr)
+            print(f"  ✓ Offset detected: {offset_seconds:.3f}s ({offset_frames:+.1f} fr, "
+                  f"conf {correlation_score:.2f})", file=sys.stderr)
 
         return result
 

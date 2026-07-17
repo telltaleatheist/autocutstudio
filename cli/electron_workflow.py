@@ -505,7 +505,21 @@ def main():
                 # Output files are already synced with master and should be used as-is
                 filename = Path(audio_path).name.lower()
                 type_is_soundboard = audio_type.endswith('Sb')
-                is_output_file = not type_is_soundboard and not is_soundboard_filename(filename) and 'capture' not in filename
+                # Raw companion tracks (mic 1-4, desktop/screen audio, game audio,
+                # sound effects, bluetooth) are NOT pre-synced — they drift a few
+                # frames from the master and MUST go through cross-correlation sync.
+                # The old heuristic ("no 'capture' in the name => already synced")
+                # wrongly treated `mic audio.wav` / `screen audio.wav` as output
+                # files and applied ZERO correction, which is exactly the misalign
+                # the user was fixing by hand. GCC-PHAT safely handles a genuinely
+                # pre-synced file too (it measures ~0 and shifts nothing).
+                RAW_SOURCE_TYPES = {'mic1', 'mic2', 'mic3', 'mic4',
+                                    'screen', 'game', 'soundEffects', 'bluetooth'}
+                is_raw_source = normalized_type in RAW_SOURCE_TYPES
+                is_output_file = (not type_is_soundboard
+                                  and not is_soundboard_filename(filename)
+                                  and 'capture' not in filename
+                                  and not is_raw_source)
 
                 if is_output_file:
                     # Output file - use as-is without any sync processing
@@ -731,6 +745,83 @@ def main():
             if vpath:
                 print(f"  {vtype}: {Path(vpath).name}", file=sys.stderr)
 
+        # Step 3.6: Measure per-source VIDEO alignment offsets.
+        # Companion video sources (screen, game, cam1, cam2) are separate files whose
+        # start time drifts a few frames from the master. We measure each dedicated
+        # source's EMBEDDED AUDIO against the master mix via GCC-PHAT and record a
+        # POSITIVE tau (seconds) that DELAYS the clip rightward on the timeline to align
+        # it. The generators ADD tau to the clip's timeline offset (never to start), so a
+        # missing / zero entry is an exact no-op (existing outputs unchanged).
+        video_offsets = {}
+        if AUDIO_SYNC_AVAILABLE:
+            measure_offset = None
+            try:
+                from core.gcc_phat_align import (
+                    measure_offset, CONFIDENCE_THRESHOLD, FRAME_SECONDS
+                )
+            except Exception as imp_err:
+                measure_offset = None
+                print(f"⚠️  Video offset measurement unavailable (import failed): {imp_err}",
+                      file=sys.stderr)
+            if measure_offset is not None:
+                print("\n▶ Measuring per-source video alignment offsets", file=sys.stderr)
+                for v_type in ['screen', 'game', 'cam1', 'cam2']:
+                    v_path = video_sources.get(v_type)
+                    if not v_path:
+                        continue
+                    try:
+                        # video's embedded audio vs master mix
+                        result = measure_offset(v_path, master_video)
+                        tau = result['tau_seconds']
+                        conf = result['confidence']
+                        spread = result['spread_seconds']
+                        # Trust/gating mirrors core/audio_sync.py analyze_sync: trust when
+                        # the worst-window confidence clears the gate OR at least two
+                        # windows clear it AND all windows agree to within one frame.
+                        windows_ok = [w for w in result['per_window']
+                                      if w['confidence'] >= CONFIDENCE_THRESHOLD]
+                        agree = spread <= FRAME_SECONDS
+                        trusted = (conf >= CONFIDENCE_THRESHOLD
+                                   or (len(windows_ok) >= 2 and agree))
+                        if not trusted:
+                            # Fail LOUD but keep the best-effort tau (do not silently drop).
+                            print(
+                                f"  ⚠️  LOW-CONFIDENCE video offset for {v_type} "
+                                f"({Path(v_path).name}): tau={tau:.3f}s "
+                                f"({tau / FRAME_SECONDS:+.1f} fr), min_conf={conf:.2f}, "
+                                f"spread={spread * 1000:.0f}ms across "
+                                f"{len(result['per_window'])} windows. Stored best-effort "
+                                f"— VERIFY THIS VIDEO MANUALLY.",
+                                file=sys.stderr
+                            )
+                        elif tau < -FRAME_SECONDS:
+                            # Sources normally LAG the master; a leftward lead is unusual.
+                            print(
+                                f"  ⚠️  Unusual LEFTWARD video offset for {v_type} "
+                                f"({Path(v_path).name}): tau={tau:.3f}s "
+                                f"({tau / FRAME_SECONDS:+.1f} fr) — sources normally lag the "
+                                f"master. Confidence {conf:.2f}; applied as measured.",
+                                file=sys.stderr
+                            )
+                        video_offsets[v_type] = tau
+                        print(
+                            f"  ✓ {v_type} video offset: {tau:.3f}s "
+                            f"({tau / FRAME_SECONDS:+.1f} fr, conf {conf:.2f})",
+                            file=sys.stderr
+                        )
+                    except Exception as meas_err:
+                        # A measurement failure must not abort the whole render, but it
+                        # must be visible; treat this source as no shift (0.0).
+                        print(
+                            f"  ⚠️  Failed to measure video offset for {v_type} "
+                            f"({Path(v_path).name}): {meas_err} — using 0.0 (no shift)",
+                            file=sys.stderr
+                        )
+                        video_offsets[v_type] = 0.0
+        else:
+            print("⚠ Video offset measurement skipped (advanced sync deps unavailable)",
+                  file=sys.stderr)
+
         # Step 3.5: Apply Dugan automixer if enabled (BEFORE generating any compounds)
         if auto_duck:
             set_stage(38, 'Applying Dugan automixer...')
@@ -866,7 +957,8 @@ def main():
             dc_cam_generator = DCCamGenerator(config)
             cam_dual_path = dc_cam_generator.generate_dc_cam_compound(
                 compound_xml, cam_audio_sources, None, False, video_sources,
-                use_downloaded_stream=use_downloaded_stream
+                use_downloaded_stream=use_downloaded_stream,
+                video_offsets=video_offsets
             )
             all_xml_files.append(cam_dual_path)
             generated_clips.append({
@@ -918,7 +1010,8 @@ def main():
             dc_gs_generator = DCGSGenerator(config)
             gs_dual_path = dc_gs_generator.generate_dc_gs_compound(
                 compound_xml, gs_audio_sources, None, False, video_sources, auto_duck,
-                use_downloaded_stream=use_downloaded_stream
+                use_downloaded_stream=use_downloaded_stream,
+                video_offsets=video_offsets
             )
             all_xml_files.append(gs_dual_path)
             generated_clips.append({
@@ -959,7 +1052,8 @@ def main():
             dc_ssb_generator = DCSSBGenerator(config)
             ssb_dual_path = dc_ssb_generator.generate_dc_ssb_compound(
                 compound_xml, ssb_audio_sources, None, False, video_sources,
-                use_downloaded_stream=use_downloaded_stream
+                use_downloaded_stream=use_downloaded_stream,
+                video_offsets=video_offsets
             )
             all_xml_files.append(ssb_dual_path)
             generated_clips.append({
@@ -993,7 +1087,8 @@ def main():
                     ssb_dual_path,
                     str(master_video),  # Original master video for detection
                     output_dir,
-                    use_downloaded_stream=use_downloaded_stream
+                    use_downloaded_stream=use_downloaded_stream,
+                    video_offsets=video_offsets
                 )
                 all_xml_files.extend([hybrid_cam_path, hybrid_gs_path, hybrid_ssb_path])
                 generated_clips.append({

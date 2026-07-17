@@ -21,7 +21,8 @@ class DCCamGenerator:
     def generate_dc_cam_compound(self, compound_xml_path: str, audio_sources: Dict[str, str],
                                 output_path: Optional[str] = None,
                                 apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None,
-                                use_downloaded_stream: bool = False) -> str:
+                                use_downloaded_stream: bool = False,
+                                video_offsets: Optional[Dict[str, float]] = None) -> str:
         """Generate dc cam compound clip from existing compound clip XML.
 
         Args:
@@ -31,8 +32,13 @@ class DCCamGenerator:
             apply_audio_sync: Whether to apply 29.97fps sync correction
             video_sources: Optional dictionary of video source paths (e.g., {'cam1': '/path/to/cam.mp4', 'cam2': '/path/to/cam2.mp4'})
             use_downloaded_stream: Whether to use stream recovery transforms for downloaded stream masters
+            video_offsets: Optional per-source video alignment delays (seconds). Accepted
+                for signature consistency but INTENTIONALLY UNUSED here: cam1 (lane 2) and
+                cam2 (lane 4) clips are REBUILT by the hybrid generator, so their delays
+                are injected in _generate_hybrid_cam. Injecting here would be discarded.
         """
         video_sources = video_sources or {}
+        video_offsets = video_offsets or {}  # noqa: F841 - see docstring; injected in hybrid
         
         # Load the original compound clip XML
         tree = self.xml_utils.parse_fcpxml(compound_xml_path)

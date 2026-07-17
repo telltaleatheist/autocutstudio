@@ -22,7 +22,8 @@ class DCSSBGenerator:
     def generate_dc_ssb_compound(self, compound_xml_path: str, audio_sources: Dict[str, str],
                                 output_path: Optional[str] = None,
                                 apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None,
-                                use_downloaded_stream: bool = False) -> str:
+                                use_downloaded_stream: bool = False,
+                                video_offsets: Optional[Dict[str, float]] = None) -> str:
         """Generate dc ssb compound clip from existing compound clip XML.
 
         Args:
@@ -32,8 +33,14 @@ class DCSSBGenerator:
             apply_audio_sync: Whether to apply 29.97fps sync correction
             video_sources: Optional dictionary of video source paths (e.g., {'cam1': '/path/to/cam.mp4', 'cam2': '/path/to/cam2.mp4', 'screen': '/path/to/screen.mp4'})
             use_downloaded_stream: Whether to use stream recovery transforms for downloaded stream masters
+            video_offsets: Optional per-source video alignment delays (seconds) keyed by
+                source type ('screen'/'cam1'). A POSITIVE tau delays that clip rightward
+                on the timeline to align its drifted start with the master. Missing key
+                or 0.0 => no shift (exact current behavior). cam2 is rebuilt by the hybrid
+                generator, so its delay is injected there, not here.
         """
         video_sources = video_sources or {}
+        video_offsets = video_offsets or {}
         
         # Load the original compound clip XML
         tree = self.xml_utils.parse_fcpxml(compound_xml_path)
@@ -362,7 +369,13 @@ class DCSSBGenerator:
                 camera1_name = f"{original_name} - Camera 1"
                 cam1_transforms = {'crop': [2.77778, 51.7584, 91.1816, 1.37531], 'crop_mode': 'trim', 'transform': {'position': [16.7616, 49.9968], 'scale': 1.2026}}
 
-            cam1_clip = self.xml_utils.create_video_clip(camera1_name, camera1_asset, "2", trim_duration, trimmed_content_duration, cam1_transforms)
+            # Delay the DEDICATED cam1 source rightward by its measured offset.
+            # Never shift the master-crop fallback (cam1_asset_id is None).
+            cam1_offset = self._offset_with_video_delay(
+                trim_duration,
+                video_offsets.get('cam1', 0.0) if cam1_asset_id else 0.0
+            )
+            cam1_clip = self.xml_utils.create_video_clip(camera1_name, camera1_asset, "2", cam1_offset, trimmed_content_duration, cam1_transforms)
             gap.append(cam1_clip)
             
             # Add camera 1 border if specified (lane 3 - immediately above camera 1)
@@ -420,7 +433,13 @@ class DCSSBGenerator:
                 screen_video_name = f"{original_name} - Screen"
                 screen_transforms = {'crop': [2.02365, 1.18815, 90.863, 51.1176], 'crop_mode': 'trim', 'transform': {'position': [89.3201, -49.442], 'scale': 1.23001}}
 
-            screen_clip = self.xml_utils.create_video_clip(screen_video_name, screen_video_asset, "4", trim_duration, trimmed_content_duration, screen_transforms, retime_map=screen_retime_map if screen_asset_id else None)
+            # Delay the DEDICATED screen source rightward by its measured offset.
+            # Never shift the master-crop fallback (screen_asset_id is None).
+            screen_offset = self._offset_with_video_delay(
+                trim_duration,
+                video_offsets.get('screen', 0.0) if screen_asset_id else 0.0
+            )
+            screen_clip = self.xml_utils.create_video_clip(screen_video_name, screen_video_asset, "4", screen_offset, trimmed_content_duration, screen_transforms, retime_map=screen_retime_map if screen_asset_id else None)
             gap.append(screen_clip)
             
             # Add screen border if specified (lane 5 - immediately above screen)
@@ -632,6 +651,26 @@ class DCSSBGenerator:
         except Exception as e:
             print(f"Error generating DC SSB compound clip: {e}")
             return 1
+
+    def _offset_with_video_delay(self, base_offset: str, tau_seconds: float) -> str:
+        """Delay a clip's timeline offset rightward by tau_seconds to align a
+        drifted companion video source with the master.
+
+        tau is frame-rounded to the 29.97fps grid (30000/1001) and ADDED to the
+        offset (never to start), which avoids a negative source in-point. A
+        POSITIVE tau delays the clip rightward.
+
+        tau_seconds == 0.0 (the default when no per-source video offset was
+        supplied) returns base_offset UNCHANGED, so existing outputs are
+        bit-for-bit identical unless an offset is explicitly injected.
+        """
+        if not tau_seconds:
+            return base_offset
+        tau_frames = round(tau_seconds * 30000 / 1001)
+        if tau_frames == 0:
+            return base_offset
+        tau_str = f"{tau_frames * 1001}/30000s"
+        return self._add_time_fractions(base_offset, tau_str)
 
     def _add_time_fractions(self, time_str1: str, time_str2: str) -> str:
         """Add two time values as fractions."""
