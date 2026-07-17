@@ -22,7 +22,8 @@ class DCGSGenerator:
     def generate_dc_gs_compound(self, compound_xml_path: str, audio_sources: Dict[str, str],
                             output_path: Optional[str] = None,
                             apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None,
-                            auto_duck: bool = False, use_downloaded_stream: bool = False) -> str:
+                            auto_duck: bool = False, use_downloaded_stream: bool = False,
+                            video_offsets: Optional[Dict[str, float]] = None) -> str:
         """Generate dc gs compound clip from existing compound clip XML.
 
         Args:
@@ -33,8 +34,13 @@ class DCGSGenerator:
             video_sources: Optional dictionary of video source paths (e.g., {'game': '/path/to/game.mp4'})
             auto_duck: Whether to apply universal auto ducking
             use_downloaded_stream: Whether to use stream recovery transforms for downloaded stream masters
+            video_offsets: Optional per-source video alignment delays (seconds) keyed by
+                source type ('screen'/'game'/'cam1'/'cam2'). A POSITIVE tau delays that
+                clip rightward on the timeline to align its drifted start with the master.
+                Missing key or 0.0 => no shift (exact current behavior).
         """
         video_sources = video_sources or {}
+        video_offsets = video_offsets or {}
         
         # Load the original compound clip XML
         tree = self.xml_utils.parse_fcpxml(compound_xml_path)
@@ -465,11 +471,18 @@ class DCGSGenerator:
                     }
                 }
 
+            # Delay the DEDICATED screen source rightward by its measured offset to
+            # align its drifted start with the master. Never shift the master-crop
+            # fallback (screen_asset_id is None).
+            screen_offset = self._offset_with_video_delay(
+                trim_duration,
+                video_offsets.get('screen', 0.0) if screen_asset_id else 0.0
+            )
             screen_clip = self.xml_utils.create_video_clip(
                 screen_name_for_clip,
                 screen_video_asset,
                 "6",
-                trim_duration,
+                screen_offset,
                 trimmed_content_duration,
                 screen_transforms,
                 retime_map=screen_retime_map if screen_asset_id else None
@@ -547,11 +560,17 @@ class DCGSGenerator:
                     }
                 }
 
+            # Delay the DEDICATED cam1 source rightward by its measured offset.
+            # Never shift the master-crop fallback (cam1_asset_id is None).
+            camera1_offset = self._offset_with_video_delay(
+                trim_duration,
+                video_offsets.get('cam1', 0.0) if cam1_asset_id else 0.0
+            )
             camera_clip = self.xml_utils.create_video_clip(
                 camera1_name_for_clip,
                 camera1_asset,
                 "4",
-                trim_duration,
+                camera1_offset,
                 trimmed_content_duration,
                 camera_transforms,
                 retime_map=None  # Never retime cam1 - it's recorded with master
@@ -625,11 +644,17 @@ class DCGSGenerator:
                     }
                 }
 
+            # Delay the DEDICATED game source rightward by its measured offset.
+            # Never shift the master-crop fallback (game_asset_id is None).
+            game_offset = self._offset_with_video_delay(
+                trim_duration,
+                video_offsets.get('game', 0.0) if game_asset_id else 0.0
+            )
             game_clip = self.xml_utils.create_video_clip(
                 game_name_for_clip,
                 game_video_asset,
                 "2",
-                trim_duration,
+                game_offset,
                 trimmed_content_duration,
                 game_transforms,
                 retime_map=game_retime_map if game_asset_id else None
@@ -904,6 +929,26 @@ class DCGSGenerator:
         except Exception as e:
             print(f"Error generating DC GS compound clip: {e}")
             return 1
+
+    def _offset_with_video_delay(self, base_offset: str, tau_seconds: float) -> str:
+        """Delay a clip's timeline offset rightward by tau_seconds to align a
+        drifted companion video source with the master.
+
+        tau is frame-rounded to the 29.97fps grid (30000/1001) and ADDED to the
+        offset (never to start), which avoids a negative source in-point. A
+        POSITIVE tau delays the clip rightward.
+
+        tau_seconds == 0.0 (the default when no per-source video offset was
+        supplied) returns base_offset UNCHANGED, so existing outputs are
+        bit-for-bit identical unless an offset is explicitly injected.
+        """
+        if not tau_seconds:
+            return base_offset
+        tau_frames = round(tau_seconds * 30000 / 1001)
+        if tau_frames == 0:
+            return base_offset
+        tau_str = f"{tau_frames * 1001}/30000s"
+        return self._add_time_fractions(base_offset, tau_str)
 
     def _add_time_fractions(self, time_str1: str, time_str2: str) -> str:
         """Add two time values as fractions."""

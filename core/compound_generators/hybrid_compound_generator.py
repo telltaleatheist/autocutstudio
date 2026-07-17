@@ -2,7 +2,7 @@
 
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List, Optional, Tuple
 import sys
 import copy
 
@@ -27,7 +27,8 @@ class HybridCompoundGenerator:
     def generate_hybrid_compounds(self, dc_cam_path: str, dc_gs_path: str, dc_ssb_path: str,
                                    cut_master_video_path: str,
                                    output_dir: str,
-                                   use_downloaded_stream: bool = False) -> Tuple[str, str, str, List[Tuple[float, float, str]]]:
+                                   use_downloaded_stream: bool = False,
+                                   video_offsets: Optional[Dict[str, float]] = None) -> Tuple[str, str, str, List[Tuple[float, float, str]]]:
         """
         Generate hybrid compound clips that adapt based on camera 2 activity.
 
@@ -40,11 +41,17 @@ class HybridCompoundGenerator:
             cut_master_video_path: Path to the cut master video (for detection)
             output_dir: Directory to save hybrid compounds
             use_downloaded_stream: Whether to use stream-specific cam2 detection region
+            video_offsets: Optional per-source video alignment delays (seconds) keyed by
+                source type ('cam1'/'cam2'). The hybrid generator REBUILDS the cam1/cam2
+                video lanes (which the DC generators leave for it), so their rightward
+                delay is injected here rather than in the DC generators. Missing key or
+                0.0 => no shift (exact current behavior).
 
         Returns:
             Tuple of (hybrid_cam_path, hybrid_gs_path, hybrid_ssb_path, segments)
             segments: List of (start_time, end_time, mode) tuples for reuse in shorts generation
         """
+        video_offsets = video_offsets or {}
         print(f"\n=== Generating Hybrid Compounds ===", file=sys.stderr)
 
         # Check if camera detector is available
@@ -59,12 +66,12 @@ class HybridCompoundGenerator:
 
         # Step 2: Generate hybrid CAM compound
         print(f"\n[2/4] Generating hybrid CAM compound...", file=sys.stderr)
-        hybrid_cam_path = self._generate_hybrid_cam(dc_cam_path, segments, output_dir)
+        hybrid_cam_path = self._generate_hybrid_cam(dc_cam_path, segments, output_dir, video_offsets)
 
         # Step 3: Generate hybrid GS compound
         print(f"\n[3/4] Generating hybrid GS compound...", file=sys.stderr)
         try:
-            hybrid_gs_path = self._generate_hybrid_gs(dc_gs_path, segments, output_dir)
+            hybrid_gs_path = self._generate_hybrid_gs(dc_gs_path, segments, output_dir, video_offsets)
             print(f"[3/4] GS hybrid generated successfully: {hybrid_gs_path}", file=sys.stderr)
         except Exception as e:
             print(f"[3/4] ERROR generating GS hybrid: {e}", file=sys.stderr)
@@ -75,7 +82,7 @@ class HybridCompoundGenerator:
         # Step 4: Generate hybrid SSB compound
         print(f"\n[4/4] Generating hybrid SSB compound...", file=sys.stderr)
         try:
-            hybrid_ssb_path = self._generate_hybrid_ssb(dc_ssb_path, segments, output_dir)
+            hybrid_ssb_path = self._generate_hybrid_ssb(dc_ssb_path, segments, output_dir, video_offsets)
             print(f"[4/4] SSB hybrid generated successfully: {hybrid_ssb_path}", file=sys.stderr)
         except Exception as e:
             print(f"[4/4] ERROR generating SSB hybrid: {e}", file=sys.stderr)
@@ -86,7 +93,8 @@ class HybridCompoundGenerator:
         print(f"\n=== Hybrid Compounds Complete ===", file=sys.stderr)
         return hybrid_cam_path, hybrid_gs_path, hybrid_ssb_path, segments
 
-    def _generate_hybrid_cam(self, dc_cam_path: str, segments: List[Tuple[float, float, str]], output_dir: str) -> str:
+    def _generate_hybrid_cam(self, dc_cam_path: str, segments: List[Tuple[float, float, str]], output_dir: str,
+                             video_offsets: Optional[Dict[str, float]] = None) -> str:
         """
         Generate hybrid CAM compound by splitting and modifying video layers based on segments.
 
@@ -99,6 +107,7 @@ class HybridCompoundGenerator:
         For DC segments:
         - Keep everything as-is from DC compound
         """
+        video_offsets = video_offsets or {}
         tree = self.xml_utils.parse_fcpxml(dc_cam_path)
         root = tree.getroot()
 
@@ -124,13 +133,29 @@ class HybridCompoundGenerator:
         # Get content gap's coordinate offset for segment alignment
         gap_start_seconds = self._time_str_to_seconds(gap.get('start', '0s'))
 
+        # Per-camera rightward delay, applied ONLY when that camera uses its
+        # dedicated source (r_cam1_video / r_cam2_video), never a master crop.
+        # A camera's border lane shares its camera's delay so the border and the
+        # camera it frames move together on the timeline (matching the GS/SSB
+        # hybrid path); otherwise the border would sit a few frames off the
+        # camera at the segment edges. Lanes: 2=cam1, 3=cam1 border, 4=cam2,
+        # 5=cam2 border. Empty video_offsets => all tau 0 => exact no-op.
+        cam1_clip = video_clips_by_lane.get('2')
+        cam2_clip = video_clips_by_lane.get('4')
+        cam1_tau = (video_offsets.get('cam1', 0.0)
+                    if cam1_clip is not None and cam1_clip.get('ref') == 'r_cam1_video'
+                    else 0.0)
+        cam2_tau = (video_offsets.get('cam2', 0.0)
+                    if cam2_clip is not None and cam2_clip.get('ref') == 'r_cam2_video'
+                    else 0.0)
+        lane_tau = {'2': cam1_tau, '3': cam1_tau, '4': cam2_tau, '5': cam2_tau}
+
         # Add segmented clips for each lane
         for start_time, end_time, mode in segments:
             # The camera detector only emits 'solo' or 'dc'; anything else is a bug.
             if mode not in ('solo', 'dc'):
                 raise ValueError(f"Unknown segment mode {mode!r} (expected 'solo' or 'dc')")
             duration_seconds = end_time - start_time
-            offset_str = self._seconds_to_time_str(start_time + gap_start_seconds)
             start_str = self._seconds_to_time_str(start_time)
             duration_str = self._seconds_to_time_str(duration_seconds)
 
@@ -140,9 +165,17 @@ class HybridCompoundGenerator:
                 if original_clip is None:
                     continue
 
+                # Delay this lane by its camera's measured offset (see lane_tau
+                # above): cam1 and its border share cam1's delay; cam2 and its
+                # border share cam2's delay. tau folds into the timeline offset
+                # ONLY — start/duration are left unchanged.
+                ref = original_clip.get('ref')
+                tau = lane_tau.get(lane, 0.0)
+                offset_str = self._delayed_segment_offset(start_time + gap_start_seconds, tau)
+
                 # Create new clip for this segment
                 new_clip = ET.Element('video')
-                new_clip.set('ref', original_clip.get('ref'))
+                new_clip.set('ref', ref)
                 new_clip.set('lane', lane)
                 new_clip.set('offset', offset_str)
                 new_clip.set('name', original_clip.get('name'))
@@ -183,31 +216,35 @@ class HybridCompoundGenerator:
 
         return str(output_path)
 
-    def _generate_hybrid_gs(self, dc_gs_path: str, segments: List[Tuple[float, float, str]], output_dir: str) -> str:
+    def _generate_hybrid_gs(self, dc_gs_path: str, segments: List[Tuple[float, float, str]], output_dir: str,
+                            video_offsets: Optional[Dict[str, float]] = None) -> str:
         """
         Generate hybrid GS compound.
 
         For SOLO segments: Disable cam2 and cam2 border
         For DC segments: Keep everything enabled
         """
-        return self._generate_hybrid_simple(dc_gs_path, segments, output_dir, 'GS')
+        return self._generate_hybrid_simple(dc_gs_path, segments, output_dir, 'GS', video_offsets)
 
-    def _generate_hybrid_ssb(self, dc_ssb_path: str, segments: List[Tuple[float, float, str]], output_dir: str) -> str:
+    def _generate_hybrid_ssb(self, dc_ssb_path: str, segments: List[Tuple[float, float, str]], output_dir: str,
+                             video_offsets: Optional[Dict[str, float]] = None) -> str:
         """
         Generate hybrid SSB compound.
 
         For SOLO segments: Disable cam2 and cam2 border
         For DC segments: Keep everything enabled
         """
-        return self._generate_hybrid_simple(dc_ssb_path, segments, output_dir, 'SSB')
+        return self._generate_hybrid_simple(dc_ssb_path, segments, output_dir, 'SSB', video_offsets)
 
     def _generate_hybrid_simple(self, dc_path: str, segments: List[Tuple[float, float, str]],
-                                 output_dir: str, compound_type: str) -> str:
+                                 output_dir: str, compound_type: str,
+                                 video_offsets: Optional[Dict[str, float]] = None) -> str:
         """
         Generate hybrid compound for GS/SSB.
 
         These just need to disable cam2 and its border during SOLO segments.
         """
+        video_offsets = video_offsets or {}
         tree = self.xml_utils.parse_fcpxml(dc_path)
         root = tree.getroot()
 
@@ -280,13 +317,24 @@ class HybridCompoundGenerator:
         # Get content gap's coordinate offset for segment alignment
         gap_start_seconds = self._time_str_to_seconds(gap.get('start', '0s'))
 
+        # Delay the DEDICATED cam2 source rightward by its measured offset, gated
+        # STRICTLY on the cam2 VIDEO clip's ref: shift only when it uses its dedicated
+        # source (r_cam2_video), never the master crop (r_original_video). The cam2
+        # border SHARES the cam2 video's offset so the two stay locked together on the
+        # timeline. tau folds into the timeline offset ONLY — start/duration unchanged.
+        # video_offsets empty => tau 0 => exact no-op.
+        if cam2_video_clip.get('ref') == 'r_cam2_video':
+            cam2_tau = video_offsets.get('cam2', 0.0)
+        else:
+            cam2_tau = 0.0
+
         # Add segmented clips
         for start_time, end_time, mode in segments:
             # The camera detector only emits 'solo' or 'dc'; anything else is a bug.
             if mode not in ('solo', 'dc'):
                 raise ValueError(f"Unknown segment mode {mode!r} (expected 'solo' or 'dc')")
             duration_seconds = end_time - start_time
-            offset_str = self._seconds_to_time_str(start_time + gap_start_seconds)
+            offset_str = self._delayed_segment_offset(start_time + gap_start_seconds, cam2_tau)
             start_str = self._seconds_to_time_str(start_time)
             duration_str = self._seconds_to_time_str(duration_seconds)
 
@@ -329,6 +377,23 @@ class HybridCompoundGenerator:
             return float(num) / float(den)
 
         return float(time_str)
+
+    def _delayed_segment_offset(self, timeline_seconds: float, tau_seconds: float) -> str:
+        """Frame-aligned timeline offset delayed rightward by tau_seconds.
+
+        The base timeline position and the delay are each rounded to whole
+        29.97fps frames SEPARATELY and then added, so the applied delay is
+        exactly round(tau) frames regardless of where the base falls between
+        frames. This matches the DC generators' _add_time_fractions(base,
+        round(tau)) path, keeping the SAME source aligned identically whether it
+        is placed by a DC generator (GS/SSB) or rebuilt here (CAM/cam2). Folding
+        tau into the seconds before a single round() would instead let the base's
+        sub-frame remainder swallow or add a frame. tau_seconds == 0 => exactly
+        the un-delayed base offset (no-op).
+        """
+        base_frames = round(timeline_seconds * 30000 / 1001)
+        tau_frames = round(tau_seconds * 30000 / 1001) if tau_seconds else 0
+        return f"{(base_frames + tau_frames) * 1001}/30000s"
 
     def _seconds_to_time_str(self, seconds: float) -> str:
         """Convert seconds to FCP XML time string (29.97fps format)."""
