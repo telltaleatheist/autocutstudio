@@ -34,3 +34,12 @@ CLAUDE.md
 
 # Built downloadable asset archives (uploaded to GH releases)
 dist-assets/
+
+# Scratch / diagnostics (not part of the app)
+scratchpad_align/
+scratch/
+scratch-*/
+
+# Python bytecode (general — covers any directory, not just the ones above)
+__pycache__/
+*.pyc
