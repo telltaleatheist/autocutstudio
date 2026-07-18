@@ -594,10 +594,20 @@ function setupAudioHandlers(): void {
  * Python execution handlers
  */
 function setupPythonHandlers(): void {
+  // Resolve managed binaries/envs the same way the rest of the app does.
+  const binaryResolver = new BinaryResolver();
+
   // Execute Python workflow command
   ipcMain.handle('execute-workflow', async (event, options: any) => {
     try {
       const jobId = `job_${Date.now()}`;
+
+      // Tell Python where the optional voice-isolation env lives (absolute path
+      // or null when not installed). The `denoiseMics` boolean already arrives in
+      // `options` from the frontend; this just supplies the env location Python
+      // needs to run core/voice_separation.py.
+      options.voiceSeparatorEnv = binaryResolver.getVoiceSeparatorEnvDir();
+
       log.info(`Starting workflow job: ${jobId}`, options);
 
       // Execute the workflow using the new electron_workflow.py script
