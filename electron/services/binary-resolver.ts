@@ -298,6 +298,30 @@ export class BinaryResolver {
   }
 
   /**
+   * Resolve the optional voice-isolation (audio-separator) env directory.
+   * This is the managed, conda-packed env downloaded into the shared OwenMorgan
+   * location; returns its absolute root, or null when not installed.
+   * Mirrors the managed alt-env resolution used by getAutoEditorPath.
+   */
+  getVoiceSeparatorEnvDir(): string | null {
+    return assetManager.resolveDir('voice-separator-env');
+  }
+
+  /**
+   * Resolve the Python interpreter inside the voice-isolation env, or null when
+   * the env isn't installed. Uses the catalog `entry` (bin/python3 on unix,
+   * python.exe on Windows).
+   */
+  getVoiceSeparatorPython(): string | null {
+    const envDir = this.getVoiceSeparatorEnvDir();
+    if (!envDir) return null;
+    const py = process.platform === 'win32'
+      ? path.join(envDir, 'python.exe')
+      : path.join(envDir, 'bin', 'python3');
+    return fs.existsSync(py) ? py : null;
+  }
+
+  /**
    * Get Python environment variables
    * Includes PATH to bundled binaries if they exist
    */

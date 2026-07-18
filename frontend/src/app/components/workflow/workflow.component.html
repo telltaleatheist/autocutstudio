@@ -96,6 +96,72 @@
         </div>
       </div>
 
+      <!-- Voice Isolation Option (install-gated) -->
+      <div class="form-section auto-duck-section">
+        <!-- Installed: show the toggle, mirroring the Dugan card -->
+        <div class="auto-duck-card" *ngIf="separatorInstalled" [class.enabled]="denoiseMics">
+          <div class="auto-duck-toggle">
+            <label class="toggle-switch">
+              <input type="checkbox" [(ngModel)]="denoiseMics" name="denoiseMics" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="auto-duck-content">
+            <div class="auto-duck-header">
+              <div class="auto-duck-icon">🎙️</div>
+              <h3 class="auto-duck-title">Isolate voice (mic 1 / mic 2)</h3>
+              <span class="auto-duck-badge" *ngIf="denoiseMics">Enabled</span>
+            </div>
+            <p class="auto-duck-description">
+              Removes background noise from mic 1 and mic 2 before alignment, isolating
+              the speaker's voice. Runs on those two tracks only; soundboard and other
+              sources are untouched.
+            </p>
+          </div>
+        </div>
+
+        <!-- Not installed: show the Install affordance instead of the toggle -->
+        <div class="auto-duck-card" *ngIf="!separatorInstalled">
+          <div class="auto-duck-content">
+            <div class="auto-duck-header">
+              <div class="auto-duck-icon">🎙️</div>
+              <h3 class="auto-duck-title">Voice isolation</h3>
+            </div>
+            <p class="auto-duck-description">
+              Optional: isolate the speaker's voice on mic 1 / mic 2 (removes background)
+              before alignment. Download the voice-isolation engine ({{ separatorSizeLabel }})
+              to enable it. This runs once and is shared across apps.
+            </p>
+
+            <!-- Progress while installing -->
+            <div class="progress-bar" *ngIf="separatorInstalling" style="margin-top: 10px;">
+              <div class="progress-fill" [style.width.%]="separatorInstallPct"></div>
+            </div>
+            <small class="input-hint" *ngIf="separatorInstalling">
+              {{ separatorInstallMessage || separatorPhaseLabel(separatorInstallPhase) }}
+              ({{ separatorInstallPct }}%)
+            </small>
+
+            <!-- Error -->
+            <small class="input-hint" *ngIf="separatorError" style="color: #ff7b7b;">
+              {{ separatorError }}
+            </small>
+
+            <!-- Not installable on this platform yet (e.g. Intel artifact unpublished) -->
+            <small class="input-hint" *ngIf="!separatorInstallable && !separatorInstalling">
+              Not available for this platform yet.
+            </small>
+
+            <div class="action-row" *ngIf="!separatorInstalling && separatorInstallable" style="margin-top: 10px;">
+              <button type="button" class="btn-secondary-outline" (click)="installSeparator()">
+                <span class="btn-icon">⬇️</span>
+                <span class="btn-text">Install voice isolation ({{ separatorSizeLabel }})</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Stream Recovery Option -->
       <div class="form-section auto-duck-section">
         <div class="auto-duck-card" [class.enabled]="useDownloadedStream">

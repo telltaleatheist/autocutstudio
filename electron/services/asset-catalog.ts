@@ -110,6 +110,44 @@ const CATALOG: AssetComponent[] = [
     ],
   },
 
+  // ── Voice isolation (audio-separator conda env, optional) ──────────────────
+  // Chunked mel-band-roformer separator used to isolate the speaker's voice on
+  // mic1/mic2 before alignment. Conda-packed like python-env (postInstall:
+  // conda-unpack). The separator model is bundled INSIDE the env at
+  // audio-separator-models/vocals_mel_band_roformer.ckpt.
+  {
+    id: 'voice-separator-env',
+    name: 'Voice isolation',
+    description: 'Optional voice-isolation engine that removes background noise from mic 1 / mic 2 before alignment.',
+    category: 'runtime',
+    required: false,
+    installSubdir: 'voice-separator-env',
+    version: '2026.07.17',
+    entry: process.platform === 'win32' ? 'python.exe' : 'bin/python3',
+    postInstall: 'conda-unpack',
+    artifacts: [
+      {
+        platform: 'darwin',
+        arch: 'arm64',
+        kind: 'archive',
+        url: `${BASE}/autocut-separator-env-macos-arm64.tar.gz`,
+        sha256: '736c98213173c86d26b9f3669a0eab332ee8464cd83a1c77ea2dcc9627f9d3e8',
+        bytes: 1214161322,
+      },
+      // TODO Intel (osx-64): artifact not built/uploaded yet. Left unpublished
+      // (sha256:'' , bytes:0) so isPublished() is false and the app treats voice
+      // isolation as not-downloadable on Intel Macs until this is filled in.
+      {
+        platform: 'darwin',
+        arch: 'x64',
+        kind: 'archive',
+        url: `${BASE}/autocut-separator-env-macos-x64.tar.gz`,
+        sha256: '',
+        bytes: 0,
+      },
+    ],
+  },
+
   // ── Whisper base model (optional; transcript-based features) ────────────────
   {
     id: 'whisper-base',

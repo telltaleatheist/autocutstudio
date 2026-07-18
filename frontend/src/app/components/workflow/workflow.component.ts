@@ -39,6 +39,19 @@ export class WorkflowComponent implements OnInit, OnDestroy {
   // Auto ducking (Dugan automixer) - enabled by default
   autoDuck = true;
 
+  // Voice isolation (audio-separator) — isolate the speaker's voice on mic1/mic2
+  // before alignment. Install-gated: the toggle only appears once the optional
+  // 'voice-separator-env' component is installed; until then we show an Install
+  // affordance. Defaults CHECKED so it's on by default once available.
+  denoiseMics = true;
+  separatorInstalled = false;
+  separatorStatus: any = null;        // ComponentStatus for size/state
+  separatorInstalling = false;
+  separatorInstallPct = 0;
+  separatorInstallPhase = '';
+  separatorInstallMessage = '';
+  separatorError = '';
+
   // Stream recovery mode - use downloaded stream as master
   useDownloadedStream = false;
 
@@ -77,6 +90,11 @@ export class WorkflowComponent implements OnInit, OnDestroy {
   ) {}
 
   ngOnInit() {
+    // Determine whether the optional voice-isolation component is installed, and
+    // wire up install-progress updates for its Install affordance.
+    void this.refreshSeparatorStatus();
+    this.electronService.onAssetProgress((p) => this.onSeparatorProgress(p));
+
     // Subscribe to processing updates (auto-cleaned up on destroy)
     this.processingService.getCurrentJob().pipe(takeUntil(this.destroy$)).subscribe(job => {
       if (job) {
@@ -120,8 +138,96 @@ export class WorkflowComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy() {
+    this.electronService.removeAssetProgressListener();
     this.destroy$.next();
     this.destroy$.complete();
+  }
+
+  /**
+   * Load the install state of the optional voice-isolation component so the
+   * template can show either the toggle (installed) or the Install card.
+   */
+  private async refreshSeparatorStatus(): Promise<void> {
+    try {
+      const res = await this.electronService.listAssets();
+      const comp = (res.components || []).find((c: any) => c.id === 'voice-separator-env');
+      this.separatorStatus = comp || null;
+      this.separatorInstalled = !!comp && comp.state === 'installed';
+    } catch (error) {
+      console.error('Error loading voice-isolation status:', error);
+      this.separatorInstalled = false;
+    } finally {
+      this.cdr.detectChanges();
+    }
+  }
+
+  /** Human-readable download size for the Install card (e.g. "~1.1 GB"). */
+  get separatorSizeLabel(): string {
+    const bytes = this.separatorStatus?.sizeBytes || 0;
+    if (!bytes) return '~1.1 GB';
+    return `~${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  }
+
+  /** True when a published artifact exists for this platform (installable now). */
+  get separatorInstallable(): boolean {
+    return this.separatorStatus?.installable !== false;
+  }
+
+  /**
+   * Download + install the voice-isolation component. Progress is delivered via
+   * onAssetProgress (onSeparatorProgress). On success the toggle replaces the
+   * Install card.
+   */
+  async installSeparator(): Promise<void> {
+    if (this.separatorInstalling) return;
+    this.separatorInstalling = true;
+    this.separatorError = '';
+    this.separatorInstallPct = 0;
+    this.separatorInstallPhase = 'resolve';
+    this.separatorInstallMessage = 'Preparing…';
+    this.cdr.detectChanges();
+
+    try {
+      const result = await this.electronService.installAsset('voice-separator-env');
+      if (result && result.ok) {
+        this.separatorInstalled = true;
+        this.denoiseMics = true;   // default checked once available
+        await this.refreshSeparatorStatus();
+      } else {
+        this.separatorError = result?.error || 'Install failed. Check your connection and retry.';
+      }
+    } catch (error: any) {
+      this.separatorError = error?.message || 'Install failed unexpectedly.';
+    } finally {
+      this.separatorInstalling = false;
+      this.cdr.detectChanges();
+    }
+  }
+
+  /** Handle install progress events for the voice-isolation component only. */
+  private onSeparatorProgress(p: any): void {
+    if (!p || p.id !== 'voice-separator-env') return;
+    this.separatorInstallPhase = p.phase || '';
+    if (typeof p.pct === 'number') this.separatorInstallPct = p.pct;
+    this.separatorInstallMessage = p.message || this.separatorPhaseLabel(p.phase);
+    if (p.phase === 'done') {
+      this.separatorInstallPct = 100;
+    } else if (p.phase === 'error') {
+      this.separatorError = p.message || 'Install failed.';
+    }
+    this.cdr.detectChanges();
+  }
+
+  separatorPhaseLabel(phase: string): string {
+    switch (phase) {
+      case 'download': return 'Downloading…';
+      case 'verify': return 'Verifying…';
+      case 'extract': return 'Extracting…';
+      case 'postinstall': return 'Finalizing…';
+      case 'done': return 'Ready';
+      case 'error': return 'Error';
+      default: return 'Preparing…';
+    }
   }
 
   // Master video selection
@@ -342,6 +448,7 @@ export class WorkflowComponent implements OnInit, OnDestroy {
         audioSyncSettings,
         videoSources: mergedVideoSources,
         autoDuck: this.autoDuck,
+        denoiseMics: this.separatorInstalled && this.denoiseMics,
         useDownloadedStream: this.useDownloadedStream
       };
 
@@ -392,31 +499,22 @@ export class WorkflowComponent implements OnInit, OnDestroy {
       return;
     }
 
-    // Calculate progress rate (percent per second)
-    const timeDelta = (now - this.lastProgressTime) / 1000; // seconds
-    const progressDelta = currentProgress - this.lastProgressUpdate;
-
-    // Update tracking values
+    // Use the AVERAGE rate over the whole operation, not an instantaneous
+    // point-to-point rate. The old instantaneous rate spiked to a bogus tiny
+    // ETA whenever two updates arrived close together — e.g. an instant
+    // silent-section passthrough finishing right after a slow section — which
+    // caused the "24s remaining at 20%" glitch. Averaging over elapsed time is
+    // smooth and self-correcting.
     this.lastProgressUpdate = currentProgress;
     this.lastProgressTime = now;
 
-    // Need meaningful progress change
-    if (progressDelta <= 0 || timeDelta < 0.5) {
-      return; // Keep previous estimate
-    }
-
-    const progressRate = progressDelta / timeDelta; // percent per second
-
-    if (progressRate <= 0) {
+    const elapsedSeconds = (now - this.operationStartTime) / 1000;
+    const avgRate = currentProgress / elapsedSeconds; // percent per second
+    if (avgRate <= 0 || !isFinite(avgRate)) {
       this.estimatedTimeRemaining = 'Calculating...';
       return;
     }
-
-    // Calculate remaining time
-    const remainingProgress = 100 - currentProgress;
-    const remainingSeconds = remainingProgress / progressRate;
-
-    // Format time remaining
+    const remainingSeconds = (100 - currentProgress) / avgRate;
     this.estimatedTimeRemaining = this.formatTimeRemaining(remainingSeconds);
   }
 
