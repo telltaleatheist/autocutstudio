@@ -100,6 +100,17 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
   private videoPlayTimer: number | null = null;
   isPlaying = false;
 
+  // Playhead: absolute master-time seconds, clamped to the visible window [mStart, mStart+WINDOW].
+  // It drives PLAYBACK START and the VIDEO PREVIEW scrub only — never the stored offsets.
+  private playheadTime = 0;
+  // Playhead animation (requestAnimationFrame against audioCtx.currentTime during playback).
+  private rafId: number | null = null;
+  private playbackAnchorCtxTime = 0;  // audioCtx.currentTime at which the playhead == playbackAnchorTime
+  private playbackAnchorTime = 0;     // master-time seconds the playhead started from (pStart)
+  // Playhead drag state.
+  private dragging = false;
+  private wasPlayingBeforeDrag = false;
+
   constructor(private electron: ElectronService, private cdr: ChangeDetectorRef) {}
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -129,6 +140,8 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.stopPlayback();
+    window.removeEventListener('mousemove', this.onWindowMouseMove);
+    window.removeEventListener('mouseup', this.onWindowMouseUp);
     if (this.audioCtx) { void this.audioCtx.close(); this.audioCtx = null; }
     this.electron.removeAlignmentListeners?.();
   }
@@ -300,6 +313,8 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
     this.mStart = Math.max(0, srcWinStart + offsetAtEntry);
     this.srcExtractStart = Math.max(0, srcWinStart - this.PAD_SEC);
     this.srcExtractDur = this.WINDOW_SEC + 2 * this.PAD_SEC;
+    // A new step resets the playhead to the window start.
+    this.playheadTime = this.mStart;
 
     try {
       const [mp, sp] = await Promise.all([
@@ -359,7 +374,7 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!src) return;
     src.endFrames = 0;
     if (this.isPlaying) this.restartPlayback();
-    else this.seekPreviewToCenter();
+    else this.seekPreviewToPlayhead();
     this.render();
   }
 
@@ -464,13 +479,17 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
     const src = this.currentSource!;
     if (this.isStartPhase) src.startFrames += frames; else src.endFrames += frames;
     this.render();
-    // Re-seek the preview to the new center; if playing, restartPlayback re-syncs the video.
+    // Offset changed, so the source-local time under the (fixed) playhead changed: re-seek the
+    // preview so nudging visibly steps the frame. If playing, restartPlayback re-syncs the video.
     if (this.isPlaying) this.restartPlayback();
-    else this.seekPreviewToCenter();
+    else this.seekPreviewToPlayhead();
     this.cdr.detectChanges();
   }
 
   // ── Canvas rendering ────────────────────────────────────────────────────────
+  /** Cool, theme-neutral color for the MASTER waveform (contrasts the orange source). */
+  private readonly MASTER_COLOR = '#4a9eff';
+
   private render(): void {
     const canvas = this.canvasRef?.nativeElement;
     if (!canvas) return;
@@ -492,6 +511,7 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
     const orange = (css.getPropertyValue('--primary-orange') || '#ff6b35').trim();
     const border = (css.getPropertyValue('--border-color') || '#374151').trim();
     const textMuted = (css.getPropertyValue('--text-muted') || '#9ca3af').trim();
+    const textPrimary = (css.getPropertyValue('--text-primary') || '#ffffff').trim();
     const bgCard = (css.getPropertyValue('--bg-card') || '#1e1e1e').trim();
 
     ctx.clearRect(0, 0, W, H);
@@ -500,63 +520,189 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
 
     if (!this.masterPeaks || !this.sourcePeaks) return;
 
-    const laneH = H / 2;
-    // Frame ruler + center reference.
-    this.drawGrid(ctx, W, H, border, textMuted, orange);
+    // Frame gridlines (full height).
+    this.drawGrid(ctx, W, H, border);
 
-    // Master (top lane) — fixed. masterTime at x: mStart + (x/W)*WINDOW_SEC.
-    this.drawWave(ctx, this.masterPeaks, W, 0, laneH,
-      (x) => (this.mStart + (x / W) * this.WINDOW_SEC - this.mStart) / this.WINDOW_SEC,
-      textMuted);
+    // MASTER — full-height filled band, fixed. masterTime at x = mStart + (x/W)*WINDOW, so the
+    // fraction into the master peak array is simply x/W.
+    this.drawWaveBand(ctx, this.masterPeaks, W, 0, H, (x) => x / W, this.MASTER_COLOR, 0.85);
 
-    // Source (bottom lane) — shifted by current offset.
-    // At master time m (x), source-local time = m - offset; bucket over the padded window.
+    // SOURCE — shifted by the current offset. At master time m (x) the source-local time is
+    // m - offset; bucket over the padded extraction window.
     const offset = this.currentOffset();
-    this.drawWave(ctx, this.sourcePeaks, W, laneH, laneH,
-      (x) => {
-        const m = this.mStart + (x / W) * this.WINDOW_SEC;
-        const s = m - offset;
-        return (s - this.srcExtractStart) / this.srcExtractDur;
-      },
-      orange);
+    const srcFrac = (x: number) => {
+      const m = this.mStart + (x / W) * this.WINDOW_SEC;
+      const s = m - offset;
+      return (s - this.srcExtractStart) / this.srcExtractDur;
+    };
 
-    // Lane labels.
-    ctx.fillStyle = textMuted;
-    ctx.font = '11px sans-serif';
-    ctx.fillText('MASTER', 8, 14);
-    ctx.fillText('SOURCE', 8, laneH + 14);
+    if (this.isVideoStep) {
+      // VIDEO: draw the source as an NLE-style clip block that slides with the offset. Its
+      // timeline extent is the decoded (padded) source window mapped through the offset.
+      const blockX0 = ((this.srcExtractStart + offset) - this.mStart) / this.WINDOW_SEC * W;
+      const blockX1 = ((this.srcExtractStart + this.srcExtractDur + offset) - this.mStart) / this.WINDOW_SEC * W;
+      this.drawClipBlock(ctx, blockX0, blockX1, W, H, orange, this.sourcePeaks, srcFrac);
+    } else {
+      // AUDIO: plain translucent overlay over the master.
+      this.drawWaveBand(ctx, this.sourcePeaks, W, 0, H, srcFrac, orange, 0.55);
+    }
+
+    // Playhead (on top of the waveforms), then the color-keyed legend.
+    this.drawPlayhead(ctx, W, H, textPrimary);
+    this.drawLegend(ctx, W, this.MASTER_COLOR, orange, textMuted);
   }
 
-  /** Draw one waveform lane. `frac(x)` returns the [0,1] position into the peak array. */
-  private drawWave(ctx: CanvasRenderingContext2D, peaks: Peaks, W: number, top: number, h: number,
-                   frac: (x: number) => number, color: string): void {
+  /**
+   * Draw a waveform as a FILLED min/max envelope band across the full height. `frac(x)` maps a
+   * canvas x to the [0,1] position into the peak array; samples outside [0,1) are skipped. A
+   * filled band (vs 1px strokes) keeps two overlaid waveforms legible on both themes.
+   */
+  private drawWaveBand(ctx: CanvasRenderingContext2D, peaks: Peaks, W: number, top: number, h: number,
+                       frac: (x: number) => number, color: string, alpha: number): void {
     const n = peaks.min.length;
     const mid = top + h / 2;
     const amp = (h / 2) * 0.9;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
+    const xs: number[] = [], his: number[] = [], los: number[] = [];
     for (let x = 0; x < W; x++) {
       const f = frac(x);
       if (f < 0 || f >= 1) continue;
       const bi = Math.min(n - 1, Math.max(0, Math.floor(f * n)));
-      const lo = peaks.min[bi];
-      const hi = peaks.max[bi];
-      ctx.moveTo(x + 0.5, mid - hi * amp);
-      ctx.lineTo(x + 0.5, mid - lo * amp);
+      xs.push(x); his.push(peaks.max[bi]); los.push(peaks.min[bi]);
     }
+    if (xs.length === 0) return;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(xs[0] + 0.5, mid - his[0] * amp);
+    for (let i = 1; i < xs.length; i++) ctx.lineTo(xs[i] + 0.5, mid - his[i] * amp);
+    for (let i = xs.length - 1; i >= 0; i--) ctx.lineTo(xs[i] + 0.5, mid - los[i] * amp);
+    ctx.closePath();
+    ctx.fill();
+    // A thin center-of-mass stroke along the max edge sharpens the read at low amplitudes.
+    ctx.globalAlpha = Math.min(1, alpha + 0.25);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
     ctx.stroke();
+    ctx.restore();
   }
 
-  private drawGrid(ctx: CanvasRenderingContext2D, W: number, H: number,
-                   border: string, textMuted: string, orange: string): void {
-    // Frame gridlines: vertical lines at each frame boundary across the window.
+  /**
+   * Draw the sliding VIDEO clip block: a rounded-rect container (translucent orange fill + orange
+   * border + label) with the source waveform drawn INSIDE it over the master. The rect uses the
+   * true (unclamped) block edges so an edge that is off-canvas simply reads as "continues beyond";
+   * nudging slides the whole unit. The fill is translucent enough that the master shows through.
+   */
+  private drawClipBlock(ctx: CanvasRenderingContext2D, bx0: number, bx1: number, W: number, H: number,
+                        orange: string, peaks: Peaks, frac: (x: number) => number): void {
+    if (bx1 <= bx0) return;
+    const inset = 6;
+    const top = inset, height = H - 2 * inset;
+    const r = 8;
+
+    // Translucent fill.
+    ctx.save();
+    ctx.globalAlpha = 0.14;
+    ctx.fillStyle = orange;
+    this.roundRectPath(ctx, bx0, top, bx1 - bx0, height, r);
+    ctx.fill();
+    ctx.restore();
+
+    // Source waveform, clipped to the block, over the master underneath.
+    ctx.save();
+    this.roundRectPath(ctx, bx0, top, bx1 - bx0, height, r);
+    ctx.clip();
+    this.drawWaveBand(ctx, peaks, W, 0, H, frac, orange, 0.7);
+    ctx.restore();
+
+    // Border.
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = orange;
+    ctx.lineWidth = 2;
+    this.roundRectPath(ctx, bx0, top, bx1 - bx0, height, r);
+    ctx.stroke();
+    ctx.restore();
+
+    // Label — pinned near the visible left edge of the block, clipped inside it.
+    ctx.save();
+    this.roundRectPath(ctx, bx0, top, bx1 - bx0, height, r);
+    ctx.clip();
+    ctx.globalAlpha = 0.95;
+    ctx.fillStyle = orange;
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textBaseline = 'alphabetic';
+    const label = `${(this.currentSource?.label || 'SOURCE').toUpperCase()} ▸ CLIP`;
+    ctx.fillText(label, Math.max(bx0, 0) + 8, top + 16);
+    ctx.restore();
+  }
+
+  private roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+    const rr = Math.max(0, Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+
+  /** The draggable playhead: a full-height line at the playhead time, with a grab handle on top. */
+  private drawPlayhead(ctx: CanvasRenderingContext2D, W: number, H: number, color: string): void {
+    const x = ((this.playheadTime - this.mStart) / this.WINDOW_SEC) * W;
+    if (x < -1 || x > W + 1) return;
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = 0.9;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x + 0.5, 0);
+    ctx.lineTo(x + 0.5, H);
+    ctx.stroke();
+    // Grab handle (triangle) at the top.
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(x - 5, 0);
+    ctx.lineTo(x + 5, 0);
+    ctx.lineTo(x + 0.5, 9);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /** Small color-keyed legend (MASTER / SOURCE swatches) in the top-right corner. */
+  private drawLegend(ctx: CanvasRenderingContext2D, W: number, masterColor: string, orange: string,
+                     textColor: string): void {
+    ctx.save();
+    ctx.font = '11px sans-serif';
+    ctx.textBaseline = 'middle';
+    const sw = 11, gap = 5, itemGap = 14, pad = 10, y = 12;
+    const entries = [{ c: masterColor, t: 'MASTER' }, { c: orange, t: 'SOURCE' }];
+    let total = 0;
+    for (const e of entries) total += sw + gap + ctx.measureText(e.t).width + itemGap;
+    total -= itemGap;
+    let x = W - pad - total;
+    for (const e of entries) {
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = e.c;
+      ctx.fillRect(x, y - sw / 2, sw, sw);
+      x += sw + gap;
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = textColor;
+      ctx.fillText(e.t, x, y);
+      x += ctx.measureText(e.t).width + itemGap;
+    }
+    ctx.restore();
+  }
+
+  private drawGrid(ctx: CanvasRenderingContext2D, W: number, H: number, border: string): void {
+    // Frame gridlines: vertical lines at each whole-frame boundary across the window.
     const pxPerSec = W / this.WINDOW_SEC;
-    const pxPerFrame = pxPerSec * this.FRAME_SECONDS;
     ctx.strokeStyle = border;
     ctx.globalAlpha = 0.35;
     ctx.lineWidth = 1;
-    // Align gridlines to whole frames relative to mStart.
     const firstFrame = Math.ceil(this.mStart / this.FRAME_SECONDS);
     for (let fr = firstFrame; ; fr++) {
       const t = fr * this.FRAME_SECONDS;
@@ -569,17 +715,49 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
+  }
 
-    // Lane divider.
-    ctx.strokeStyle = border;
-    ctx.beginPath(); ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2); ctx.stroke();
+  // ── Playhead interaction (click / drag to position) ──────────────────────────
+  onCanvasMouseDown(ev: MouseEvent): void {
+    if (this.loading || this.finished || !this.currentSource) return;
+    ev.preventDefault();
+    this.dragging = true;
+    // A click/drag interrupts playback; if we were playing we resume from the new spot on release.
+    this.wasPlayingBeforeDrag = this.isPlaying;
+    if (this.isPlaying) this.stopPlayback();
+    this.setPlayheadFromEvent(ev);
+    window.addEventListener('mousemove', this.onWindowMouseMove);
+    window.addEventListener('mouseup', this.onWindowMouseUp);
+  }
 
-    // Center reference line (the alignment target).
-    ctx.strokeStyle = orange;
-    ctx.globalAlpha = 0.5;
-    ctx.beginPath(); ctx.moveTo(W / 2 + 0.5, 0); ctx.lineTo(W / 2 + 0.5, H); ctx.stroke();
-    ctx.globalAlpha = 1;
-    void pxPerFrame; void textMuted;
+  private onWindowMouseMove = (ev: MouseEvent): void => {
+    if (!this.dragging) return;
+    this.setPlayheadFromEvent(ev);
+  };
+
+  private onWindowMouseUp = (): void => {
+    if (!this.dragging) return;
+    this.dragging = false;
+    window.removeEventListener('mousemove', this.onWindowMouseMove);
+    window.removeEventListener('mouseup', this.onWindowMouseUp);
+    // Clicking / dragging while playing restarts playback from the new playhead position.
+    if (this.wasPlayingBeforeDrag) void this.startPlayback();
+    this.wasPlayingBeforeDrag = false;
+  };
+
+  /** Map a mouse event to an absolute master time (clamped to the window) and move the playhead. */
+  private setPlayheadFromEvent(ev: MouseEvent): void {
+    const canvas = this.canvasRef?.nativeElement;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    // Reuse the render code's cssW mapping (backing store is devicePixelRatio-scaled separately).
+    const cssW = canvas.clientWidth || rect.width || 1;
+    const cssX = ev.clientX - rect.left - (canvas.clientLeft || 0);
+    const frac = Math.min(1, Math.max(0, cssX / cssW));
+    this.playheadTime = this.mStart + frac * this.WINDOW_SEC;
+    this.render();
+    // While scrubbing (not playing) the video preview follows the playhead's source-local frame.
+    if (!this.isPlaying) this.seekPreviewToPlayhead();
   }
 
   @HostListener('window:resize')
@@ -587,7 +765,7 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
 
   // ── Playback (WebAudio) ─────────────────────────────────────────────────────
   async togglePlayback(): Promise<void> {
-    if (this.isPlaying) { this.stopPlayback(); this.seekPreviewToCenter(); return; }
+    if (this.isPlaying) { this.stopPlayback(); this.render(); this.seekPreviewToPlayhead(); return; }
     await this.startPlayback();
   }
 
@@ -617,21 +795,20 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
     const url = this.pathToFileUrl(src.path);
     if (v.src !== url) {
       v.src = url;
-      // Seek to the idle center only once metadata (duration/seekable) is available.
-      const onMeta = () => { v.removeEventListener('loadedmetadata', onMeta); this.seekPreviewToCenter(); };
+      // Seek to the playhead frame only once metadata (duration/seekable) is available.
+      const onMeta = () => { v.removeEventListener('loadedmetadata', onMeta); this.seekPreviewToPlayhead(); };
       v.addEventListener('loadedmetadata', onMeta);
     } else {
-      this.seekPreviewToCenter();
+      this.seekPreviewToPlayhead();
     }
   }
 
-  /** While NOT playing, park the video at the center of the visible master window. */
-  private seekPreviewToCenter(): void {
+  /** While NOT playing, park the video at the playhead's source-local frame (scrubbing). */
+  private seekPreviewToPlayhead(): void {
     const ref = this.previewVideoRef;
     if (!ref || this.isPlaying || !this.isVideoStep) return;
-    // Center of the window in master time is mStart + WINDOW/2; the matching source-local
-    // frame is that minus the current offset (source-local = master - offset). Clamp >= 0.
-    const t = this.mStart + this.WINDOW_SEC / 2 - this.currentOffset();
+    // Source-local frame under the playhead is playheadTime - offset (master - offset). Clamp >= 0.
+    const t = this.playheadTime - this.currentOffset();
     try { ref.nativeElement.currentTime = Math.max(0, t); } catch { /* not seekable yet */ }
   }
 
@@ -641,17 +818,21 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
     try {
       if (!this.audioCtx) this.audioCtx = new AudioContext();
       const offset = this.currentOffset();
+      // Playback runs from the PLAYHEAD to the window end, not from the window start.
+      const pStart = Math.min(this.mStart + this.WINDOW_SEC, Math.max(this.mStart, this.playheadTime));
+      const mDuration = (this.mStart + this.WINDOW_SEC) - pStart;
+      if (mDuration <= 0.02) return;  // playhead at (or past) the end — nothing to play
       // Desired source-local window start can go NEGATIVE when the offset pushes the
       // window before the source's t=0. ffmpeg cannot seek before 0 (the service clamps),
       // so extract from 0 and DELAY the source node's start by the clamped amount —
       // otherwise the verification playback itself would be silently misaligned by
       // exactly that amount.
-      const sDesired = this.mStart - offset;
+      const sDesired = pStart - offset;
       const sDelay = sDesired < 0 ? -sDesired : 0;
-      const sDuration = this.WINDOW_SEC - sDelay;
+      const sDuration = mDuration - sDelay;
       const [m, s] = await Promise.all([
         this.electron.alignmentExtractSamples({
-          filePath: this.masterVideo, startSec: this.mStart, durationSec: this.WINDOW_SEC, sampleRate: this.PLAYBACK_SR
+          filePath: this.masterVideo, startSec: pStart, durationSec: mDuration, sampleRate: this.PLAYBACK_SR
         }),
         sDuration > 0
           ? this.electron.alignmentExtractSamples({
@@ -689,9 +870,26 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
       }
       this.activeNodes = nodes;
       this.isPlaying = true;
-      nodes[0].onended = () => { if (this.isPlaying) { this.isPlaying = false; this.activeNodes = []; this.cdr.detectChanges(); } };
+      // Master (nodes[0]) reaching its end means playback finished: stop the animation and
+      // persist the playhead at the window end.
+      nodes[0].onended = () => {
+        if (this.isPlaying) {
+          this.isPlaying = false;
+          this.activeNodes = [];
+          if (this.rafId !== null) { cancelAnimationFrame(this.rafId); this.rafId = null; }
+          this.playheadTime = this.mStart + this.WINDOW_SEC;
+          this.render();
+          this.cdr.detectChanges();
+        }
+      };
       const t0 = ctx.currentTime + 0.02;
       nodes.forEach((n, i) => n.start(t0 + delays[i]));
+
+      // Animate the playhead against the audio clock, anchored at pStart / t0.
+      this.playbackAnchorCtxTime = t0;
+      this.playbackAnchorTime = pStart;
+      if (this.rafId !== null) cancelAnimationFrame(this.rafId);
+      this.rafId = requestAnimationFrame(this.animatePlayhead);
 
       // Video lip-check: play the SOURCE video muted, IN SYNC with the mixed audio. The
       // source's own embedded audio is already in the mix (audio path above); the muted
@@ -729,7 +927,18 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
     }
   }
 
+  /** rAF loop: advance the playhead by real elapsed audio time from the playback anchor. */
+  private animatePlayhead = (): void => {
+    if (!this.isPlaying || !this.audioCtx) { this.rafId = null; return; }
+    const elapsed = this.audioCtx.currentTime - this.playbackAnchorCtxTime;  // negative before t0
+    const t = this.playbackAnchorTime + Math.max(0, elapsed);
+    this.playheadTime = Math.min(this.mStart + this.WINDOW_SEC, Math.max(this.mStart, t));
+    this.render();
+    this.rafId = requestAnimationFrame(this.animatePlayhead);
+  };
+
   private stopPlayback(): void {
+    if (this.rafId !== null) { cancelAnimationFrame(this.rafId); this.rafId = null; }
     if (this.videoPlayTimer !== null) { clearTimeout(this.videoPlayTimer); this.videoPlayTimer = null; }
     const v = this.previewVideoRef?.nativeElement;
     if (v) { try { v.pause(); } catch { /* already paused */ } }

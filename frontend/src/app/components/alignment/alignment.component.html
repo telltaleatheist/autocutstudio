@@ -51,12 +51,13 @@
          plays in the mix from the audio path. src is set imperatively (file://). -->
     <video #previewVideo class="preview-video" *ngIf="isVideoStep" muted playsinline></video>
 
-    <canvas #waveCanvas class="wave-canvas"></canvas>
+    <canvas #waveCanvas class="wave-canvas" (mousedown)="onCanvasMouseDown($event)"></canvas>
 
     <div class="hint-row">
       <span class="hint">← / → nudge 1 frame</span>
       <span class="hint">Shift + ← / → nudge 10 frames</span>
-      <span class="hint">Space {{ isPlaying ? 'stop' : 'play master + source mixed' }}</span>
+      <span class="hint">Click / drag the playhead to position</span>
+      <span class="hint">Space {{ isPlaying ? 'stop' : 'play from playhead (master + source mixed)' }}</span>
     </div>
 
     <!-- Drift block on END steps where the pipeline refuses drift (cam1 only: audio

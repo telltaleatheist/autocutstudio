@@ -115,6 +115,8 @@
   border-radius: var(--border-radius);
   background: var(--bg-card);
   display: block;
+  cursor: col-resize;
+  touch-action: none;
 }
 
 .hint-row {
