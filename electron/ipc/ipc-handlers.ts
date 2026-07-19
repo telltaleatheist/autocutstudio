@@ -67,7 +67,7 @@ function setupAlignmentHandlers(windowService: WindowService): void {
       pendingPayload = payload || null;
       settled = false;
 
-      const win = windowService.createAlignmentWindow();
+      const win = windowService.createEditorWindow();
 
       // Push the payload once the page has loaded (belt-and-suspenders; the wizard
       // also pulls it via 'alignment:get-payload' so there is no delivery race).
@@ -103,7 +103,7 @@ function setupAlignmentHandlers(windowService: WindowService): void {
       settled = true;
       sendToMain('alignment-complete', { overrides });
     }
-    windowService.closeAlignmentWindow();
+    windowService.closeEditorWindow();
     return { success: true };
   });
 
@@ -112,7 +112,7 @@ function setupAlignmentHandlers(windowService: WindowService): void {
       settled = true;
       sendToMain('alignment-cancelled', { reason: 'user-cancel' });
     }
-    windowService.closeAlignmentWindow();
+    windowService.closeEditorWindow();
     return { success: true };
   });
 

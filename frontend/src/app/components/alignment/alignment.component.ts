@@ -4,10 +4,13 @@ import { ElectronService } from '../../services/electron.service';
 /**
  * Manual-alignment wizard (its own Electron window).
  *
- * Phase: AUDIO only (mic1 / mic2 / screen). The step list is deliberately built from
- * a generic { sourceKind, sourceType, phase } model so VIDEO steps slot in later by
- * appending more entries — nothing else in the wizard is audio-specific except the
- * driftFactor gate (audio drift is not yet supported by the pipeline).
+ * Sources: AUDIO (mic1 / mic2 / screen) then VIDEO (cam1 / cam2 / screen). Video sources
+ * carry embedded scratch audio, so the SAME waveform mechanics align them; a video step
+ * additionally shows a muted <video> preview for a lip-check. The step list is built from
+ * a generic { kind, type, phase } model. Drift (a nonzero END nudge) is gated: refused for
+ * audio and for cam1 (records with the master, never retimed), allowed for the screen/cam2
+ * video sources (manual retime, supported by the pipeline). The game video gets NO step —
+ * it follows wherever the screen video lands (GAME RULE).
  *
  * Each source is aligned against the MASTER waveform in two steps:
  *   - START: ~10 s window at the source's first sustained audio, source pre-shifted by
@@ -67,11 +70,17 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
   private readonly COARSE_FRAMES = 10;
 
   @ViewChild('waveCanvas') canvasRef!: ElementRef<HTMLCanvasElement>;
+  // Lives inside an *ngIf (video steps only), so it is optional and re-queried per step.
+  @ViewChild('previewVideo') previewVideoRef?: ElementRef<HTMLVideoElement>;
 
   masterVideo = '';
   sources: WizardSource[] = [];
   steps: WizardStep[] = [];
   stepIndex = 0;
+
+  // GAME RULE plumbing: whether a game video exists at all (passed through the payload).
+  // Game gets no wizard step; at finish it inherits the screen video's override.
+  private gamePresent = false;
 
   loading = true;
   loadingMessage = 'Preparing…';
@@ -88,6 +97,7 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
   // Playback state.
   private audioCtx: AudioContext | null = null;
   private activeNodes: AudioBufferSourceNode[] = [];
+  private videoPlayTimer: number | null = null;
   isPlaying = false;
 
   constructor(private electron: ElectronService, private cdr: ChangeDetectorRef) {}
@@ -128,6 +138,8 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
     try {
       this.masterVideo = payload.masterVideo;
       const audio = payload.audio || {};
+      const video = payload.video || {};
+      this.gamePresent = !!payload.gamePresent;
 
       // Deterministic, per-source (start,end) ordering. Video kinds append later.
       const AUDIO_ORDER = ['mic1', 'mic2', 'mic3', 'mic4', 'screen', 'game', 'bluetooth', 'soundEffects'];
@@ -169,6 +181,42 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
         });
       }
 
+      // VIDEO sources (appended AFTER all audio, in cam1 → cam2 → screen order). Each
+      // video has embedded scratch audio, so the same coarse-scan + waveform mechanics
+      // apply — scanActivity/extractPeaks/extractSamples decode the file's audio track.
+      // 'game' is never in this map (GAME RULE): it follows screen at finish.
+      const VIDEO_ORDER = ['cam1', 'cam2', 'screen'];
+      const videoTypes = Object.keys(video).sort((a, b) => {
+        const ia = VIDEO_ORDER.indexOf(a); const ib = VIDEO_ORDER.indexOf(b);
+        return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+      });
+      for (const type of videoTypes) {
+        const info = video[type];
+        this.loadingMessage = `Scanning ${this.labelFor('video', type)}…`;
+        this.cdr.detectChanges();
+        const scan = await this.electron.alignmentScanActivity(info.path);
+        if (!scan?.success) {
+          this.fail(`Could not analyse ${this.labelFor('video', type)}: ${scan?.error || 'unknown error'}`);
+          return;
+        }
+        built.push({
+          kind: 'video',
+          type,
+          label: this.labelFor('video', type),
+          path: info.path,
+          measuredOffset: Number(info.offsetSeconds) || 0,
+          confidence: Number(info.confidence) || 0,
+          trusted: !!info.trusted,
+          firstSustainedSec: scan.firstSustainedSec!,
+          lastSustainedSec: scan.lastSustainedSec!,
+          durationSec: scan.durationSec!,
+          startFrames: 0,
+          endFrames: 0,
+          startVisited: false,
+          endVisited: false,
+        });
+      }
+
       this.sources = built;
       this.steps = [];
       built.forEach((_s, i) => {
@@ -185,6 +233,12 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private labelFor(kind: string, type: string): string {
+    if (kind === 'video') {
+      const VIDEO_LABELS: { [k: string]: string } = {
+        cam1: 'Camera 1', cam2: 'Camera 2', screen: 'Screen Video', game: 'Game Video'
+      };
+      return VIDEO_LABELS[type] || type;
+    }
     const LABELS: { [k: string]: string } = {
       mic1: 'Mic 1', mic2: 'Mic 2', mic3: 'Mic 3', mic4: 'Mic 4',
       screen: 'Screen Audio', game: 'Game Audio', bluetooth: 'Bluetooth', soundEffects: 'Sound Effects'
@@ -202,6 +256,15 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
   }
   get isStartPhase(): boolean { return this.currentStep?.phase === 'start'; }
   get isEndPhase(): boolean { return this.currentStep?.phase === 'end'; }
+  get isVideoStep(): boolean { return this.currentSource?.kind === 'video'; }
+  /**
+   * Whether a nonzero END nudge (clock drift) is allowed for a source. The pipeline
+   * SUPPORTS manual retime for the screen and cam2 VIDEO sources; it REFUSES cam1
+   * drift (cam1 records with the master and is never retimed) and audio drift.
+   */
+  private driftAllowedFor(src: WizardSource): boolean {
+    return src.kind === 'video' && (src.type === 'screen' || src.type === 'cam2');
+  }
   get isFirstStep(): boolean { return this.stepIndex === 0; }
   get isLastStep(): boolean { return this.stepIndex === this.steps.length - 1; }
   get stepLabel(): string {
@@ -253,6 +316,9 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
       this.loading = false;
       this.cdr.detectChanges();
       this.render();
+      // On video steps, (re)point the <video> at this source and park it at the center.
+      // The element only exists once change detection has run the video-step *ngIf.
+      this.updatePreviewVideo();
     } catch (err: any) {
       this.fail(`Could not load waveforms: ${err?.message || err}`);
     }
@@ -266,8 +332,10 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
   async onNext(): Promise<void> {
     if (this.loading) return;
     const src = this.currentSource!;
-    // END step gates on drift: audio drift correction is not supported yet.
-    if (this.isEndPhase && src.endFrames !== 0) {
+    // END step gates on drift. A nonzero end nudge is ALLOWED for the screen/cam2 video
+    // sources (manual retime, supported by the pipeline). It is blocked for audio (drift
+    // unsupported) and for cam1 (records with the master, never retimed).
+    if (this.isEndPhase && src.endFrames !== 0 && !this.driftAllowedFor(src)) {
       // Blocked — do not advance, do not drop the nudge. Message shown in template.
       return;
     }
@@ -289,6 +357,7 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!src) return;
     src.endFrames = 0;
     if (this.isPlaying) this.restartPlayback();
+    else this.seekPreviewToCenter();
     this.render();
   }
 
@@ -340,12 +409,32 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
     return src.endFrames * this.FRAME_SECONDS;
   }
   get driftFactor(): number {
-    const T = this.anchorSpanSec;
-    return T / (T + this.endNudgeSeconds);
+    const src = this.currentSource;
+    return src ? this.driftFactorFor(src) : 1;
+  }
+  /** r = T / (T + endNudge) for a given source (numbers sacred; see block comment above). */
+  private driftFactorFor(src: WizardSource): number {
+    const T = Math.max(1e-6, src.lastSustainedSec - src.firstSustainedSec);
+    const endNudge = src.endFrames * this.FRAME_SECONDS;
+    return T / (T + endNudge);
   }
   /** True when the END nudge implies clock drift (any nonzero integer-frame nudge). */
   get hasDrift(): boolean {
     return this.isEndPhase && (this.currentSource?.endFrames ?? 0) !== 0;
+  }
+  /** Drift the pipeline would refuse — blocks Next and shows an explanatory message. */
+  get driftBlocked(): boolean {
+    const src = this.currentSource;
+    return !!src && this.hasDrift && !this.driftAllowedFor(src);
+  }
+  /** Drift the pipeline accepts (screen/cam2 video retime) — allowed, r shown as a note. */
+  get driftAccepted(): boolean {
+    const src = this.currentSource;
+    return !!src && this.hasDrift && this.driftAllowedFor(src);
+  }
+  /** cam1-specific block: cam1 records with the master and must not drift. */
+  get isCam1Block(): boolean {
+    return this.driftBlocked && this.currentSource?.kind === 'video' && this.currentSource?.type === 'cam1';
   }
 
   // ── Readouts ───────────────────────────────────────────────────────────────
@@ -373,7 +462,9 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
     const src = this.currentSource!;
     if (this.isStartPhase) src.startFrames += frames; else src.endFrames += frames;
     this.render();
+    // Re-seek the preview to the new center; if playing, restartPlayback re-syncs the video.
     if (this.isPlaying) this.restartPlayback();
+    else this.seekPreviewToCenter();
     this.cdr.detectChanges();
   }
 
@@ -494,8 +585,52 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
 
   // ── Playback (WebAudio) ─────────────────────────────────────────────────────
   async togglePlayback(): Promise<void> {
-    if (this.isPlaying) { this.stopPlayback(); return; }
+    if (this.isPlaying) { this.stopPlayback(); this.seekPreviewToCenter(); return; }
     await this.startPlayback();
+  }
+
+  // ── Video preview (the lip-check) ───────────────────────────────────────────
+  /**
+   * The wizard window is a file:// origin with webSecurity on, so a same-origin file://
+   * URL loads directly (the window itself is loaded via file:// — see window-service.ts).
+   * Encode each path segment (spaces, #, ? …) while preserving the slashes so the URL is
+   * valid; if a file:// preview ever fails to load, the video 'error' handler surfaces it
+   * instead of shipping a silent black box.
+   */
+  private pathToFileUrl(p: string): string {
+    return 'file://' + p.split('/').map(encodeURIComponent).join('/');
+  }
+
+  /** Point the <video> at the current source and park it at the window center. */
+  private updatePreviewVideo(): void {
+    const src = this.currentSource;
+    const ref = this.previewVideoRef;
+    if (!src || src.kind !== 'video' || !ref) return;
+    const v = ref.nativeElement;
+    v.muted = true;
+    v.onerror = () => {
+      this.errorMessage = `Could not load preview video: ${src.path}`;
+      this.cdr.detectChanges();
+    };
+    const url = this.pathToFileUrl(src.path);
+    if (v.src !== url) {
+      v.src = url;
+      // Seek to the idle center only once metadata (duration/seekable) is available.
+      const onMeta = () => { v.removeEventListener('loadedmetadata', onMeta); this.seekPreviewToCenter(); };
+      v.addEventListener('loadedmetadata', onMeta);
+    } else {
+      this.seekPreviewToCenter();
+    }
+  }
+
+  /** While NOT playing, park the video at the center of the visible master window. */
+  private seekPreviewToCenter(): void {
+    const ref = this.previewVideoRef;
+    if (!ref || this.isPlaying || !this.isVideoStep) return;
+    // Center of the window in master time is mStart + WINDOW/2; the matching source-local
+    // frame is that minus the current offset (source-local = master - offset). Clamp >= 0.
+    const t = this.mStart + this.WINDOW_SEC / 2 - this.currentOffset();
+    try { ref.nativeElement.currentTime = Math.max(0, t); } catch { /* not seekable yet */ }
   }
 
   private async startPlayback(): Promise<void> {
@@ -555,6 +690,35 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
       nodes[0].onended = () => { if (this.isPlaying) { this.isPlaying = false; this.activeNodes = []; this.cdr.detectChanges(); } };
       const t0 = ctx.currentTime + 0.02;
       nodes.forEach((n, i) => n.start(t0 + delays[i]));
+
+      // Video lip-check: play the SOURCE video muted, IN SYNC with the mixed audio. The
+      // source's own embedded audio is already in the mix (audio path above); the muted
+      // video only adds lips. It starts at the source-local window start (sDesired) and is
+      // delayed by the SAME clamp amount (sDelay) as the source audio node so both line up.
+      // NOTE: HTML5 <video> currentTime runs off a different clock than WebAudio and drifts
+      // a little over the 10 s window — acceptable for a lip check (the numeric alignment is
+      // the waveform's job, not the video's).
+      if (this.currentSource?.kind === 'video' && this.previewVideoRef) {
+        const v = this.previewVideoRef.nativeElement;
+        v.muted = true;
+        const vStart = Math.max(0, sDesired);
+        try { v.currentTime = vStart; } catch { /* seek queued until seekable */ }
+        const leadSec = (t0 - ctx.currentTime) + sDelay;   // real-time lead to the source's start
+        if (this.videoPlayTimer !== null) { clearTimeout(this.videoPlayTimer); }
+        this.videoPlayTimer = window.setTimeout(() => {
+          this.videoPlayTimer = null;
+          if (this.isPlaying) {
+            void v.play().catch((e: any) => {
+              // A benign pause-race is filtered by the isPlaying guard; a real failure
+              // (e.g. the file:// source didn't load) surfaces rather than staying silent.
+              if (this.isPlaying) {
+                this.errorMessage = `Preview video playback failed: ${e?.message || e}`;
+                this.cdr.detectChanges();
+              }
+            });
+          }
+        }, Math.max(0, leadSec * 1000));
+      }
       this.cdr.detectChanges();
     } catch (err: any) {
       this.isPlaying = false;
@@ -564,6 +728,9 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private stopPlayback(): void {
+    if (this.videoPlayTimer !== null) { clearTimeout(this.videoPlayTimer); this.videoPlayTimer = null; }
+    const v = this.previewVideoRef?.nativeElement;
+    if (v) { try { v.pause(); } catch { /* already paused */ } }
     for (const n of this.activeNodes) {
       try { n.onended = null; n.stop(); } catch { /* already stopped */ }
     }
@@ -579,23 +746,47 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
 
   // ── Finish / fail ────────────────────────────────────────────────────────────
   private async finish(): Promise<void> {
-    // Contract: every present source must be completed through both phases with no
-    // drift. The linear Next-gating already guarantees this, but verify defensively —
-    // we must never send an override the pipeline would reject (non-1.0 audio drift).
-    const incomplete = this.sources.find(s => !s.startVisited || !s.endVisited || s.endFrames !== 0);
+    // Contract: every present source must be completed through both phases, and any
+    // residual END nudge is only permissible where the pipeline accepts drift (the
+    // screen/cam2 VIDEO sources). The linear Next-gating already guarantees this, but
+    // verify defensively — we must never send an override the pipeline would reject
+    // (audio drift, or cam1 drift).
+    const incomplete = this.sources.find(s =>
+      !s.startVisited || !s.endVisited || (s.endFrames !== 0 && !this.driftAllowedFor(s)));
     if (incomplete) {
       this.errorMessage = `Cannot finish: ${incomplete.label} still has an unresolved end nudge or was not fully stepped through.`;
       this.cdr.detectChanges();
       return;
     }
-    // Each END confirmed no drift (endFrames == 0), so every override is
-    // offset + explicit driftFactor 1.0 (user-verified no drift).
+
     const audioOverrides: { [k: string]: { offsetSeconds: number; driftFactor: number } } = {};
+    const videoOverrides: { [k: string]: { offsetSeconds: number; driftFactor: number } } = {};
     for (const src of this.sources) {
-      audioOverrides[src.type] = { offsetSeconds: this.offsetStart(src), driftFactor: 1.0 };
+      if (src.kind === 'audio') {
+        // Each audio END confirmed no drift (endFrames == 0): offset + explicit 1.0.
+        audioOverrides[src.type] = { offsetSeconds: this.offsetStart(src), driftFactor: 1.0 };
+      } else {
+        // Video: zero end nudge => user-verified no drift (driftFactor 1.0); a nonzero,
+        // accepted nudge (screen/cam2 only) => manual retime with r sent VERBATIM. The
+        // offsetSeconds is always the START offset (measured seed + start-nudge frames).
+        const driftFactor = src.endFrames === 0 ? 1.0 : this.driftFactorFor(src);
+        videoOverrides[src.type] = { offsetSeconds: this.offsetStart(src), driftFactor };
+      }
     }
+
+    // GAME RULE: the game video has no wizard step. If a game video exists AND the screen
+    // video was wizard-aligned here, position game exactly where screen ended up — a COPY
+    // of screen's override. If game exists but screen was NOT aligned (no screen video
+    // source in the wizard), leave game absent so the pipeline auto-aligns it; copying an
+    // unrelated source's offset would be wrong.
+    if (this.gamePresent && videoOverrides['screen']) {
+      videoOverrides['game'] = { ...videoOverrides['screen'] };
+    }
+
     this.finished = true;
-    await this.electron.completeAlignment({ audio: audioOverrides });
+    const overrides: { audio: any; video?: any } = { audio: audioOverrides };
+    if (Object.keys(videoOverrides).length > 0) overrides.video = videoOverrides;
+    await this.electron.completeAlignment(overrides);
   }
 
   private fail(message: string): void {

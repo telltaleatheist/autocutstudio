@@ -47,6 +47,10 @@
       </div>
     </div>
 
+    <!-- Video lip-check preview (video steps only). Muted; the source's audio still
+         plays in the mix from the audio path. src is set imperatively (file://). -->
+    <video #previewVideo class="preview-video" *ngIf="isVideoStep" muted playsinline></video>
+
     <canvas #waveCanvas class="wave-canvas"></canvas>
 
     <div class="hint-row">
@@ -55,14 +59,32 @@
       <span class="hint">Space {{ isPlaying ? 'stop' : 'play master + source mixed' }}</span>
     </div>
 
-    <!-- Drift block on END steps -->
-    <div class="drift-block" *ngIf="hasDrift">
+    <!-- Drift block on END steps where the pipeline refuses drift (audio, or cam1). -->
+    <div class="drift-block" *ngIf="driftBlocked">
       <div class="drift-icon">⛔</div>
-      <div class="drift-text">
+      <div class="drift-text" *ngIf="isCam1Block">
+        <strong>Camera 1 records with the master and should not drift.</strong>
+        Your end nudge ({{ formatFrames(endNudgeSeconds / FRAME_SECONDS) }}, r = {{ driftFactor.toFixed(8) }})
+        implies its clock drifts against the master, but cam1 is captured on the master clock and is
+        never retimed. Re-check the start alignment, or reset the end nudge.
+      </div>
+      <div class="drift-text" *ngIf="!isCam1Block">
         <strong>Audio drift correction isn't supported yet.</strong>
         Your end nudge ({{ formatFrames(endNudgeSeconds / FRAME_SECONDS) }}, r = {{ driftFactor.toFixed(8) }})
         implies the source clock drifts against the master. Re-check the start alignment, or finish
         with offset-only by resetting the end nudge.
+      </div>
+      <button class="btn-secondary-outline" (click)="resetEndNudge()">Reset end nudge</button>
+    </div>
+
+    <!-- Accepted drift on screen/cam2 video END steps: manual retime, r sent verbatim. -->
+    <div class="drift-accepted" *ngIf="driftAccepted">
+      <div class="drift-icon">⏱️</div>
+      <div class="drift-text">
+        <strong>Clock drift accepted.</strong>
+        This source will be retimed by r = {{ driftFactor.toFixed(8) }}
+        (end nudge {{ formatFrames(endNudgeSeconds / FRAME_SECONDS) }}). Reset the end nudge for
+        offset-only alignment.
       </div>
       <button class="btn-secondary-outline" (click)="resetEndNudge()">Reset end nudge</button>
     </div>
@@ -72,7 +94,7 @@
   <footer class="align-footer" *ngIf="!errorMessage">
     <button class="btn-secondary-outline" (click)="onBack()" [disabled]="isFirstStep || loading">Back</button>
     <div class="spacer"></div>
-    <button class="btn-primary" (click)="onNext()" [disabled]="loading || hasDrift">
+    <button class="btn-primary" (click)="onNext()" [disabled]="loading || driftBlocked">
       {{ isLastStep ? 'Finish' : 'Next' }}
     </button>
   </footer>

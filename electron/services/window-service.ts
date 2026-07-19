@@ -9,7 +9,7 @@ import * as path from 'path';
  */
 export class WindowService {
   private mainWindow: BrowserWindow | null = null;
-  private alignmentWindow: BrowserWindow | null = null;
+  private editorWindow: BrowserWindow | null = null;
 
   /**
    * Create the main application window
@@ -48,20 +48,22 @@ export class WindowService {
   }
 
   /**
-   * Create the manual-alignment wizard window (a SECOND BrowserWindow).
+   * Create the secondary editor window (a SECOND BrowserWindow).
    *
-   * Uses the SAME webPreferences/preload as the main window and loads the same
-   * built Angular index, deep-linked to the /alignment route via a hash fragment
-   * (HashLocationStrategy — see app-routing.module.ts). Sized for a timeline UI.
-   * Only one may exist at a time; an existing one is focused instead of duplicated.
+   * Currently hosts the manual-alignment wizard; it will later host more editor
+   * tools, hence the generic name. Uses the SAME webPreferences/preload as the main
+   * window and loads the same built Angular index, deep-linked to the /alignment
+   * route via a hash fragment (HashLocationStrategy — see app-routing.module.ts).
+   * Sized for a timeline UI. Only one may exist at a time; an existing one is
+   * focused instead of duplicated.
    */
-  createAlignmentWindow(): BrowserWindow {
-    if (this.alignmentWindow && !this.alignmentWindow.isDestroyed()) {
-      this.alignmentWindow.focus();
-      return this.alignmentWindow;
+  createEditorWindow(): BrowserWindow {
+    if (this.editorWindow && !this.editorWindow.isDestroyed()) {
+      this.editorWindow.focus();
+      return this.editorWindow;
     }
 
-    this.alignmentWindow = new BrowserWindow({
+    this.editorWindow = new BrowserWindow({
       width: 1200,
       height: 700,
       minWidth: 900,
@@ -79,25 +81,25 @@ export class WindowService {
 
     // Deep-link to the /alignment route. Hash routing makes this work over file://.
     const alignmentUrl = `file://${AppConfig.frontendPath}#/alignment`;
-    log.info(`Loading alignment window from: ${alignmentUrl}`);
-    this.alignmentWindow.loadURL(alignmentUrl);
+    log.info(`Loading editor window from: ${alignmentUrl}`);
+    this.editorWindow.loadURL(alignmentUrl);
 
-    this.alignmentWindow.on('closed', () => {
-      this.alignmentWindow = null;
+    this.editorWindow.on('closed', () => {
+      this.editorWindow = null;
     });
 
-    return this.alignmentWindow;
+    return this.editorWindow;
   }
 
-  getAlignmentWindow(): BrowserWindow | null {
-    return this.alignmentWindow;
+  getEditorWindow(): BrowserWindow | null {
+    return this.editorWindow;
   }
 
-  closeAlignmentWindow(): void {
-    if (this.alignmentWindow && !this.alignmentWindow.isDestroyed()) {
-      this.alignmentWindow.close();
+  closeEditorWindow(): void {
+    if (this.editorWindow && !this.editorWindow.isDestroyed()) {
+      this.editorWindow.close();
     }
-    this.alignmentWindow = null;
+    this.editorWindow = null;
   }
 
   /**

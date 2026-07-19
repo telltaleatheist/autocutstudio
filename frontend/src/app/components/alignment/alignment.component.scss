@@ -95,9 +95,21 @@
   .readout-sub.untrusted { color: #f59e0b; }
 }
 
+.preview-video {
+  flex: 0 0 auto;
+  max-height: 34vh;
+  width: auto;
+  max-width: 100%;
+  align-self: center;
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  background: #000;
+  object-fit: contain;
+}
+
 .wave-canvas {
   flex: 1;
-  min-height: 260px;
+  min-height: 200px;
   width: 100%;
   border: 1px solid var(--border-color);
   border-radius: var(--border-radius);
@@ -118,6 +130,19 @@
   align-items: center;
   background: rgba(245, 158, 11, 0.1);
   border: 1px solid rgba(245, 158, 11, 0.45);
+  border-radius: var(--border-radius);
+  padding: 0.85rem 1rem;
+
+  .drift-icon { font-size: 1.5rem; }
+  .drift-text { flex: 1; font-size: 0.85rem; line-height: 1.45; }
+}
+
+.drift-accepted {
+  display: flex;
+  gap: 0.9rem;
+  align-items: center;
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.45);
   border-radius: var(--border-radius);
   padding: 0.85rem 1rem;
 

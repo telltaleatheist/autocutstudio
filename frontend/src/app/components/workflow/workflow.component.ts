@@ -60,6 +60,10 @@ export class WorkflowComponent implements OnInit, OnDestroy {
   // finishes (their nudged values become alignmentOverrides) or cancels (aborts the run).
   // The wizard covers these normalized audio types; everything else stays automatic.
   private static readonly WIZARD_AUDIO_TYPES = ['mic1', 'mic2', 'screen'];
+  // Video sources the wizard aligns. GAME RULE (user decision): the game video gets
+  // NO wizard step — it is positioned wherever the screen video ends up — so 'game'
+  // is deliberately excluded here and instead follows screen at finish time.
+  private static readonly WIZARD_VIDEO_TYPES = ['cam1', 'cam2', 'screen'];
   alignManually = false;
   measuringAlignment = false;   // busy: GCC-PHAT measurement in flight
   awaitingAlignment = false;    // busy: wizard window open, waiting for the user
@@ -556,11 +560,36 @@ export class WorkflowComponent implements OnInit, OnDestroy {
       return null;
     }
 
+    // 2b. Build the VIDEO seed map. Video sources carry embedded scratch audio, so the
+    // wizard aligns them with the same waveform mechanics as audio. Only cam1/cam2/screen
+    // get steps; 'game' is excluded (GAME RULE) but its PRESENCE is passed through so the
+    // wizard can make game follow screen at finish. A measured video entry with no
+    // resolvable path is skipped — the documented auto path (no override) applies. A video
+    // that could not be measured is simply absent from measure.sources.video (audio-less
+    // video → not measurable → auto path), so it never appears here.
+    const videoMeasures = measure.sources.video || {};
+    const video: { [k: string]: any } = {};
+    for (const videoType of Object.keys(videoMeasures)) {
+      if (!WorkflowComponent.WIZARD_VIDEO_TYPES.includes(videoType)) continue;
+      const filePath = this.pathForVideoType(options, videoType);
+      if (!filePath) continue;
+      const m = videoMeasures[videoType];
+      video[videoType] = {
+        path: filePath,
+        offsetSeconds: m.offsetSeconds,
+        confidence: m.confidence,
+        trusted: m.trusted
+      };
+    }
+    // Presence of a game video (whether or not it was measured) — the wizard needs this
+    // to decide whether to copy the screen override onto game after finishing.
+    const gamePresent = !!(options.videoSources && options.videoSources['game']);
+
     // 3. Wire the result wait BEFORE opening so no event is missed, then open.
     const waitPromise = this.waitForAlignment();
     this.awaitingAlignment = true;
     this.cdr.detectChanges();
-    const open = await this.electronService.openAlignment({ masterVideo: this.masterVideoPath, audio });
+    const open = await this.electronService.openAlignment({ masterVideo: this.masterVideoPath, audio, video, gamePresent });
     if (!open?.success) {
       this.awaitingAlignment = false;
       this.cdr.detectChanges();
@@ -584,6 +613,16 @@ export class WorkflowComponent implements OnInit, OnDestroy {
       s => !s.isVideo && !!s.type && (s.type as string).replace('Sb', '') === normType
     );
     return match ? match.path : null;
+  }
+
+  /**
+   * Resolve the file path for a normalized video type (cam1/cam2/screen/game). Uses the
+   * merged videoSources map that was actually handed to measureAlignment (options), so the
+   * path here is exactly the file that was measured. Empty entry => no path (skip).
+   */
+  private pathForVideoType(options: any, videoType: string): string | null {
+    const p = options?.videoSources?.[videoType];
+    return (typeof p === 'string' && p) ? p : null;
   }
 
   /** Resolve exactly once on wizard complete (overrides) or cancel (null). */
