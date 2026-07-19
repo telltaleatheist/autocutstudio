@@ -571,7 +571,8 @@ class FCPXMLUtils:
     @staticmethod
     def calculate_retime_map(clip_duration: str, source_fps: float, target_fps: float = 29.97,
                            video_duration: Optional[float] = None, audio_duration: Optional[float] = None,
-                           drift_seconds: Optional[float] = None) -> Optional[Dict]:
+                           drift_seconds: Optional[float] = None,
+                           speed_factor: Optional[float] = None) -> Optional[Dict]:
         """Calculate timeMap values for retiming video to correct linear drift.
 
         This implements the mathematical relationship between master timeline (single source of truth)
@@ -600,6 +601,10 @@ class FCPXMLUtils:
             video_duration: Actual video duration in seconds (for Method B)
             audio_duration: Master reference duration in seconds (for Method B)
             drift_seconds: End drift in seconds (for Method A) - positive means too long
+            speed_factor: Explicit retime factor r (MANUAL OVERRIDE, top priority). When
+                provided, it is used verbatim as r (source_duration = T * r), bypassing
+                Methods A/B/C entirely. This is the channel a per-source manual-alignment
+                driftFactor flows through; a value of 1.0 yields an identity (no-op) map.
 
         Returns:
             Dict with timeMap values if correction needed, None otherwise:
@@ -610,15 +615,24 @@ class FCPXMLUtils:
                 'end_value': '<corrected_source_duration>'
             }
         """
-        speed_factor = None
+        # NOTE: `speed_factor` is a parameter (manual override); do NOT reinitialize it
+        # to None here — that would discard a caller-supplied value. It stays None when
+        # not overridden, and Method A / Method C assign it below.
 
         # Parse the clip duration from FCPX format (this is T, the reference time on master)
         num, den = FCPXMLUtils.parse_time(clip_duration)
         T = num / den  # Master timeline duration in seconds
 
+        # MANUAL OVERRIDE (HIGHEST PRIORITY): explicit retime factor r supplied by the
+        # caller (a per-source driftFactor from the manual-alignment UI). Used verbatim,
+        # bypassing every auto method below. Numbers are sacred — no clamping.
+        if speed_factor is not None:
+            speed_factor = float(speed_factor)
+            print(f"  [Override] Manual driftFactor retime: r={speed_factor:.10f}", file=sys.stderr)
+
         # METHOD A (BEST): End-lag measurement
         # If drift_seconds provided, use direct formula: r = T / (T - Δ)
-        if drift_seconds is not None:
+        elif drift_seconds is not None:
             delta = drift_seconds  # Δ = how much too long (or short if negative)
             speed_factor = T / (T - delta)  # r = T / (T - Δ)
             print(f"  [Method A] End-lag drift correction: Δ={delta:.4f}s over T={T:.2f}s → r={speed_factor:.10f}", file=sys.stderr)

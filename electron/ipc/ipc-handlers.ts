@@ -646,6 +646,22 @@ function setupPythonHandlers(): void {
     }
   });
 
+  // Measure per-source alignment offsets WITHOUT generating anything. Runs
+  // electron_workflow.py in measure-only mode and returns the parsed measurement map
+  // ({ audio: {...}, video: {...} }, per source { offsetSeconds, confidence, trusted })
+  // used to pre-seed the manual-alignment UI. Reuses PythonService's spawn/parse infra.
+  ipcMain.handle('alignment:measure', async (event, options: any) => {
+    try {
+      const jobId = `measure_${Date.now()}`;
+      log.info(`Starting alignment measurement job: ${jobId}`, options);
+      const sources = await pythonService.measureAlignment(jobId, options);
+      return { success: true, sources };
+    } catch (error: any) {
+      log.error('Error measuring alignment:', error);
+      return { success: false, error: error?.message || String(error) };
+    }
+  });
+
   // Cancel a running job
   ipcMain.handle('cancel-job', async (event, jobId: string) => {
     try {

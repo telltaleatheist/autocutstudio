@@ -55,6 +55,14 @@ export class WorkflowComponent implements OnInit, OnDestroy {
   // Stream recovery mode - use downloaded stream as master
   useDownloadedStream = false;
 
+  // Manual alignment overrides (Phase 1 plumbing). Optional per-source structure the
+  // future manual-alignment UI populates; when set, it flows unchanged through the IPC
+  // layer into the Python pipeline, which skips GCC-PHAT for those sources and uses the
+  // supplied offset verbatim. Shape: { audio?: { <type>: { offsetSeconds, driftFactor } },
+  // video?: { <type>: { offsetSeconds, driftFactor } } }. Null => full auto (no change).
+  alignmentOverrides: { audio?: { [key: string]: { offsetSeconds: number; driftFactor?: number } };
+                        video?: { [key: string]: { offsetSeconds: number; driftFactor?: number } } } | null = null;
+
   // Processing
   isProcessing = false;
   // Synchronous re-entrancy guard for processWorkflow(). isProcessing only flips
@@ -449,7 +457,9 @@ export class WorkflowComponent implements OnInit, OnDestroy {
         videoSources: mergedVideoSources,
         autoDuck: this.autoDuck,
         denoiseMics: this.separatorInstalled && this.denoiseMics,
-        useDownloadedStream: this.useDownloadedStream
+        useDownloadedStream: this.useDownloadedStream,
+        // Phase 1: carry manual overrides through untouched (null => full auto).
+        alignmentOverrides: this.alignmentOverrides
       };
 
       // Start workflow

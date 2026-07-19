@@ -23,7 +23,8 @@ class DCSSBGenerator:
                                 output_path: Optional[str] = None,
                                 apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None,
                                 use_downloaded_stream: bool = False,
-                                video_offsets: Optional[Dict[str, float]] = None) -> str:
+                                video_offsets: Optional[Dict[str, float]] = None,
+                                video_drift_factors: Optional[Dict[str, float]] = None) -> str:
         """Generate dc ssb compound clip from existing compound clip XML.
 
         Args:
@@ -38,9 +39,14 @@ class DCSSBGenerator:
                 on the timeline to align its drifted start with the master. Missing key
                 or 0.0 => no shift (exact current behavior). cam2 is rebuilt by the hybrid
                 generator, so its delay is injected there, not here.
+            video_drift_factors: Optional per-source manual retime factors r keyed by
+                source type ('screen'/'cam2'). When present for a source, r is used
+                verbatim for that source's timeMap (bypassing the auto drift methods);
+                missing key => existing auto drift/retime path (exact current behavior).
         """
         video_sources = video_sources or {}
         video_offsets = video_offsets or {}
+        video_drift_factors = video_drift_factors or {}
         
         # Load the original compound clip XML
         tree = self.xml_utils.parse_fcpxml(compound_xml_path)
@@ -200,15 +206,19 @@ class DCSSBGenerator:
             # Only retime if this is a capture source (has "capture" in filename)
             # Output sources are already synced with master
             is_capture = 'capture' in Path(cam2_path).name.lower()
+            cam2_drift = video_drift_factors.get('cam2')
 
-            if is_capture:
-                # Detect framerate and calculate retime map for capture sources
+            if is_capture or cam2_drift is not None:
+                # Detect framerate and calculate retime map. A manual driftFactor override
+                # forces a retime even for an output source (user is taking manual control);
+                # otherwise only capture sources are retimed.
                 cam2_fps = self.audio_processor.get_video_framerate(cam2_path)
-                cam2_retime_map = self.xml_utils.calculate_retime_map(original_duration, cam2_fps, 29.97)
+                cam2_retime_map = self.xml_utils.calculate_retime_map(
+                    original_duration, cam2_fps, 29.97, speed_factor=cam2_drift)
                 if cam2_retime_map:
-                    print(f"  cam2 video: {cam2_fps:.2f}fps → 29.97fps (capture source, will apply timeMap)")
+                    print(f"  cam2 video: {cam2_fps:.2f}fps → 29.97fps (will apply timeMap)")
                 else:
-                    print(f"  cam2 video: {cam2_fps:.2f}fps (capture source, no retiming needed)")
+                    print(f"  cam2 video: {cam2_fps:.2f}fps (no retiming needed)")
             else:
                 # Output source - no retiming needed
                 print(f"  cam2 video: output source, using native timing (no retiming)")
@@ -241,11 +251,13 @@ class DCSSBGenerator:
                 screen_audio_duration = self.audio_processor.get_duration_seconds(screen_audio_path)
                 print(f"  screen: video={screen_video_duration:.2f}s, audio={screen_audio_duration:.2f}s", file=sys.stderr)
 
-            # Calculate retime map using Method B (metadata) or Method C (framerate fallback)
+            # Calculate retime map using Method B (metadata) or Method C (framerate fallback).
+            # A manual driftFactor override (if present) takes priority via speed_factor.
             screen_retime_map = self.xml_utils.calculate_retime_map(
                 original_duration, screen_fps, 29.97,
                 video_duration=screen_video_duration if screen_audio_duration else None,
-                audio_duration=screen_audio_duration
+                audio_duration=screen_audio_duration,
+                speed_factor=video_drift_factors.get('screen')
             )
 
             screen_asset = self.xml_utils.create_asset_element(

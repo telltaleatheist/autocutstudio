@@ -308,6 +308,122 @@ def denoise_mic_audio(audio_type, audio_path, voice_sep_env, audio_processor):
     return str(cleaned)
 
 
+def _parse_overrides(raw, kind):
+    """Validate and normalize an alignment-override sub-map ('audio' or 'video').
+
+    `raw` is the corresponding sub-object of alignmentOverrides (or None). Returns
+    ``{ source_id: {'offsetSeconds': float, 'driftFactor': float | None} }``.
+
+    driftFactor ABSENT (None) and driftFactor EXPLICITLY 1.0 mean different things and
+    must stay distinguishable: absent = "no drift opinion, keep the auto drift path";
+    explicit 1.0 = "user VERIFIED there is no drift — identity, bypass auto drift".
+    Collapsing them would let the auto device-drift stretch silently un-align a track
+    the user just confirmed at both ends.
+
+    FAIL LOUD on any malformed entry — a bad override must never be silently ignored
+    (project doctrine: unparseable override => fail naming what's wrong).
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"alignmentOverrides.{kind} must be an object, got {type(raw).__name__}")
+    parsed = {}
+    for src, spec in raw.items():
+        if not isinstance(spec, dict):
+            raise ValueError(
+                f"alignmentOverrides.{kind}.{src} must be an object with 'offsetSeconds'")
+        if 'offsetSeconds' not in spec:
+            raise ValueError(
+                f"alignmentOverrides.{kind}.{src} is missing required 'offsetSeconds'")
+        try:
+            offset = float(spec['offsetSeconds'])
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"alignmentOverrides.{kind}.{src}.offsetSeconds is not a number: "
+                f"{spec['offsetSeconds']!r}")
+        drift = None
+        if 'driftFactor' in spec:
+            try:
+                drift = float(spec['driftFactor'])
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"alignmentOverrides.{kind}.{src}.driftFactor is not a number: "
+                    f"{spec['driftFactor']!r}")
+        parsed[src] = {'offsetSeconds': offset, 'driftFactor': drift}
+    return parsed
+
+
+def _run_measure_only(master_video, audio_sources_input, video_sources):
+    """MEASURE-ONLY MODE: locate the same sources a normal run would, measure each
+    source's signed offset against the master via GCC-PHAT, emit a single
+    machine-readable JSON result to stdout, and return WITHOUT generating anything.
+
+    The manual-alignment UI uses this to pre-seed its per-source offsets. The emitted
+    payload is:
+
+        {'type': 'measure_result',
+         'sources': {'audio': { <normalized_type>: {offsetSeconds, confidence, trusted}, ... },
+                     'video': { <screen|game|cam1|cam2>: {offsetSeconds, confidence, trusted}, ... }}}
+
+    FAIL LOUD if the sync stack is unavailable or a source is missing — never emit a
+    fabricated / zero result.
+    """
+    if not AUDIO_SYNC_AVAILABLE:
+        emit_error("Measure-only requested but the advanced sync stack (numpy/scipy) "
+                   "is unavailable")
+        raise RuntimeError("measure-only requires the advanced sync dependencies")
+    if not master_video or not Path(master_video).exists():
+        emit_error(f"Measure-only: master video not found: {master_video}")
+        raise FileNotFoundError(f"master video not found: {master_video}")
+
+    from core.gcc_phat_align import measure_offset, CONFIDENCE_THRESHOLD, FRAME_SECONDS
+
+    def _measure(path):
+        # Trust gating mirrors core/audio_sync.py analyze_sync exactly.
+        result = measure_offset(path, master_video)
+        tau = result['tau_seconds']
+        conf = result['confidence']
+        spread = result['spread_seconds']
+        windows_ok = [w for w in result['per_window']
+                      if w['confidence'] >= CONFIDENCE_THRESHOLD]
+        trusted = (conf >= CONFIDENCE_THRESHOLD
+                   or (len(windows_ok) >= 2 and spread <= FRAME_SECONDS))
+        return {'offsetSeconds': tau, 'confidence': conf, 'trusted': bool(trusted)}
+
+    print("\n▶ Measure-only mode: measuring per-source alignment offsets", file=sys.stderr)
+
+    audio_results = {}
+    for audio_type, audio_path in audio_sources_input.items():
+        if not audio_path:
+            continue
+        # First source of a given normalized type wins — mirrors the sync loop's keying.
+        normalized_type = audio_type.replace('Sb', '')
+        if normalized_type in audio_results:
+            continue
+        if not Path(audio_path).exists():
+            emit_error(f"Measure-only: audio source {audio_type} not found: {audio_path}")
+            raise FileNotFoundError(f"audio source {audio_type} not found: {audio_path}")
+        print(f"  measuring audio {normalized_type} ({Path(audio_path).name})", file=sys.stderr)
+        audio_results[normalized_type] = _measure(audio_path)
+
+    video_results = {}
+    for v_type in ['screen', 'game', 'cam1', 'cam2']:
+        v_path = (video_sources or {}).get(v_type)
+        if not v_path:
+            continue
+        if not Path(v_path).exists():
+            emit_error(f"Measure-only: video source {v_type} not found: {v_path}")
+            raise FileNotFoundError(f"video source {v_type} not found: {v_path}")
+        print(f"  measuring video {v_type} ({Path(v_path).name})", file=sys.stderr)
+        video_results[v_type] = _measure(v_path)
+
+    print(json.dumps({
+        'type': 'measure_result',
+        'sources': {'audio': audio_results, 'video': video_results},
+    }), flush=True)
+
+
 def main():
     """Main workflow execution."""
     try:
@@ -362,6 +478,41 @@ def main():
         # injected by the Electron IPC handler.
         denoise_mics = data.get('denoiseMics', False)
         voice_sep_env = data.get('voiceSeparatorEnv')
+
+        # Manual alignment overrides (Phase 1). Optional per-source structure that, when
+        # present for a source, SKIPS GCC-PHAT measurement and uses offsetSeconds verbatim
+        # (negative/leftward allowed — the auto-only "unusual leftward" guard is bypassed).
+        # Split into 'audio' / 'video' sub-maps mirroring the existing audioSources /
+        # videoSources payload split, because the raw 'screen' key is otherwise ambiguous
+        # (it names both a desktop-audio source and a screen-recording video). Keys are the
+        # exact identifiers the sync/measurement decisions already use: audio keys are the
+        # normalized audio types (mic1/mic2/screen/game/soundEffects/bluetooth), video keys
+        # are screen/game/cam1/cam2. Absent => zero behavior change.
+        alignment_overrides = data.get('alignmentOverrides') or {}
+        audio_overrides = _parse_overrides(alignment_overrides.get('audio'), 'audio')
+        video_overrides = _parse_overrides(alignment_overrides.get('video'), 'video')
+
+        # MEASURE-ONLY MODE: measure each source's offset and emit one JSON result, then
+        # exit without generating anything (used to pre-seed the manual-alignment UI).
+        if bool(data.get('measureOnly', False)):
+            _run_measure_only(master_video, audio_sources_input, video_sources)
+            return
+
+        # Validate audio overrides name sources actually present in this session (fail
+        # loud, never a warning). Presence is checked against the normalized source types
+        # (mic1Sb -> mic1) exactly as the sync loop keys them. Video overrides are
+        # validated later, once the final (post-skip) video sources are known.
+        if audio_overrides:
+            present_audio_types = {
+                atype.replace('Sb', '')
+                for atype, apath in audio_sources_input.items()
+                if apath and Path(apath).exists()
+            }
+            for src in audio_overrides:
+                if src not in present_audio_types:
+                    raise ValueError(
+                        f"alignmentOverrides.audio names '{src}' but no such audio source is "
+                        f"present in this session (present: {sorted(present_audio_types)})")
 
         # Stage tracking: ffmpeg tick callbacks report sub-progress against
         # whatever main-flow stage is currently active. set_stage records the
@@ -609,6 +760,17 @@ def main():
                     current_is_sb = audio_type.endswith('Sb')
 
                     if existing_is_sb:
+                        # A manual override cannot be honored here: this type was already
+                        # synced by the unified soundboard path (a different code path that
+                        # measures all SB tracks together). Fail loud rather than silently
+                        # ignore the user's offset.
+                        if normalized_type in audio_overrides:
+                            emit_error(
+                                f"alignment override given for {normalized_type}, but it was "
+                                f"synced via the unified soundboard path — manual override is "
+                                f"not supported for soundboard sources in Phase 1")
+                            raise RuntimeError(
+                                f"alignment override unsupported for soundboard source {normalized_type}")
                         # Already have soundboard version - skip this (don't overwrite with VMix)
                         print(f"⊷ Skipping {audio_type} - already have soundboard version for {normalized_type}", file=sys.stderr)
                         continue
@@ -657,6 +819,15 @@ def main():
                                   and not is_raw_source)
 
                 if is_output_file:
+                    # An override cannot apply here: output files are used verbatim with
+                    # NO sync step to inject an offset into. Fail loud rather than ignore it.
+                    if normalized_type in audio_overrides:
+                        emit_error(
+                            f"alignment override given for {normalized_type}, but it is treated "
+                            f"as a pre-synced output file (no sync applied) — override not "
+                            f"supported on this path")
+                        raise RuntimeError(
+                            f"alignment override unsupported for output-file source {normalized_type}")
                     # Output file - use as-is without any sync processing
                     print(f"\n{'='*60}", file=sys.stderr)
                     print(f"Processing {audio_type}: {Path(audio_path).name}", file=sys.stderr)
@@ -704,11 +875,29 @@ def main():
                         print(f"\n{'='*60}", file=sys.stderr)
                         print(f"Processing {audio_type}: {Path(audio_path).name}", file=sys.stderr)
 
+                        # Manual alignment override: skip GCC-PHAT and use offsetSeconds
+                        # verbatim. Audio drift correction is not yet implemented, so a
+                        # non-1.0 driftFactor must abort loudly (never silently ignored).
+                        # An EXPLICIT 1.0 is fine: it means "verified no drift", and the
+                        # override path already applies no stretch (speed_factor=1.0).
+                        override = audio_overrides.get(normalized_type)
+                        offset_override = None
+                        if override is not None:
+                            if override['driftFactor'] is not None and override['driftFactor'] != 1.0:
+                                msg = (f"audio drift correction not yet implemented — got "
+                                       f"driftFactor {override['driftFactor']} for {normalized_type}")
+                                emit_error(msg)
+                                raise RuntimeError(msg)
+                            offset_override = override['offsetSeconds']
+                            print(f"  ↳ Using manual alignment override: "
+                                  f"offset={offset_override:.3f}s (GCC-PHAT skipped)", file=sys.stderr)
+
                         try:
                             synced_path, sync_info = sync_processor.sync_file(
                                 master_path=master_video,
                                 source_path=audio_path,
-                                search_window=30
+                                search_window=30,
+                                offset_override=offset_override
                             )
                         except InterruptedError:
                             skip_was_requested = True
@@ -739,6 +928,14 @@ def main():
                         print(f"{'='*60}\n", file=sys.stderr)
 
                     else:
+                        # Basic (framerate-only) processing has no offset-injection step,
+                        # so a manual offset override cannot be honored here. Fail loud.
+                        if normalized_type in audio_overrides:
+                            msg = (f"alignment override given for {normalized_type}, but the "
+                                   f"advanced sync stack is unavailable — basic framerate sync "
+                                   f"cannot apply a manual offset")
+                            emit_error(msg)
+                            raise RuntimeError(msg)
                         # Basic processing - just extract/sync if requested
                         apply_sync = audio_sync_settings.get(audio_type, False)
                         try:
@@ -888,6 +1085,41 @@ def main():
         # it. The generators ADD tau to the clip's timeline offset (never to start), so a
         # missing / zero entry is an exact no-op (existing outputs unchanged).
         video_offsets = {}
+        # Per-source manual retime factors (r) for video, threaded into the generators'
+        # calculate_retime_map. Only EXPLICIT driftFactors land here (including an
+        # explicit 1.0 = identity, which overrides the auto device-drift stretch); a
+        # missing key leaves that source on its existing auto drift/retime path.
+        video_drift_factors = {}
+
+        # Apply manual VIDEO overrides first — independent of the sync stack, since they
+        # skip measurement. Validate presence against the FINAL (post-skip) video sources,
+        # use offsetSeconds verbatim (negative allowed, no leftward guard), and collect
+        # EXPLICIT driftFactors: absent (None) = keep the auto drift path; explicit 1.0 =
+        # user verified NO drift — identity retime, bypassing the auto device-drift
+        # stretch (which would otherwise silently un-align a user-confirmed end point).
+        # A non-1.0 driftFactor on cam1 is refused loudly: cam1 is recorded with the
+        # master and is never retimed, so a stretch has nowhere to apply (explicit 1.0
+        # on cam1 is allowed — "no drift" is already cam1's permanent state).
+        for src, spec in video_overrides.items():
+            if not video_sources.get(src):
+                present = sorted(k for k, v in video_sources.items() if v)
+                raise ValueError(
+                    f"alignmentOverrides.video names '{src}' but no such video source is "
+                    f"present in this session (present: {present})")
+            video_offsets[src] = spec['offsetSeconds']
+            print(f"  ✓ {src} video offset (manual override): "
+                  f"{spec['offsetSeconds']:.3f}s — GCC-PHAT skipped", file=sys.stderr)
+            if spec['driftFactor'] is not None:
+                if src == 'cam1':
+                    if spec['driftFactor'] != 1.0:
+                        raise ValueError(
+                            f"driftFactor {spec['driftFactor']} given for cam1, but cam1 is "
+                            f"recorded with the master and is never retimed — cannot apply a "
+                            f"drift stretch to it")
+                    # explicit 1.0 on cam1: nothing to record, cam1 is never retimed anyway
+                else:
+                    video_drift_factors[src] = spec['driftFactor']
+
         if AUDIO_SYNC_AVAILABLE:
             measure_offset = None
             try:
@@ -903,6 +1135,10 @@ def main():
                 for v_type in ['screen', 'game', 'cam1', 'cam2']:
                     v_path = video_sources.get(v_type)
                     if not v_path:
+                        continue
+                    # A manual override already set this source's offset above — never
+                    # measure over it.
+                    if v_type in video_overrides:
                         continue
                     try:
                         # video's embedded audio vs master mix
@@ -1093,7 +1329,8 @@ def main():
             cam_dual_path = dc_cam_generator.generate_dc_cam_compound(
                 compound_xml, cam_audio_sources, None, False, video_sources,
                 use_downloaded_stream=use_downloaded_stream,
-                video_offsets=video_offsets
+                video_offsets=video_offsets,
+                video_drift_factors=video_drift_factors
             )
             all_xml_files.append(cam_dual_path)
             generated_clips.append({
@@ -1146,7 +1383,8 @@ def main():
             gs_dual_path = dc_gs_generator.generate_dc_gs_compound(
                 compound_xml, gs_audio_sources, None, False, video_sources, auto_duck,
                 use_downloaded_stream=use_downloaded_stream,
-                video_offsets=video_offsets
+                video_offsets=video_offsets,
+                video_drift_factors=video_drift_factors
             )
             all_xml_files.append(gs_dual_path)
             generated_clips.append({
@@ -1188,7 +1426,8 @@ def main():
             ssb_dual_path = dc_ssb_generator.generate_dc_ssb_compound(
                 compound_xml, ssb_audio_sources, None, False, video_sources,
                 use_downloaded_stream=use_downloaded_stream,
-                video_offsets=video_offsets
+                video_offsets=video_offsets,
+                video_drift_factors=video_drift_factors
             )
             all_xml_files.append(ssb_dual_path)
             generated_clips.append({

@@ -412,6 +412,106 @@ export class PythonService {
   }
 
   /**
+   * Run electron_workflow.py in MEASURE-ONLY mode: spawn Python, send the run options
+   * (with measureOnly:true) on stdin, and resolve with the single parsed measurement
+   * result ({ audio: {...}, video: {...} }, per source { offsetSeconds, confidence,
+   * trusted }). Reuses the same spawn / env / line-buffered stdout parsing as
+   * executeWorkflow. Rejects — never fabricates a result — on a Python-side error, a
+   * non-zero / signalled exit, or a spawn failure.
+   */
+  measureAlignment(jobId: string, inputData: any): Promise<any> {
+    log.info(`Measuring alignment [${jobId}]`);
+
+    const pythonPath = this.getPythonPath();
+    const scriptPath = path.join(AppConfig.cliPath, 'electron_workflow.py');
+    const env = this.getPythonEnv();
+    const workingDir = AppConfig.resourcesPath;
+
+    return new Promise((resolve, reject) => {
+      const pythonProcess = spawn(pythonPath, [scriptPath], { env, cwd: workingDir });
+      this.runningProcesses.set(jobId, pythonProcess);
+
+      let measureResult: any = null;
+      let errorMessage: string | null = null;
+      let stdoutBuffer = '';
+
+      pythonProcess.stdin.on('error', (err) => {
+        log.error(`[${jobId}] stdin error:`, err);
+      });
+      pythonProcess.stdin.write(JSON.stringify({ ...inputData, measureOnly: true }) + '\n', (err) => {
+        if (err) {
+          log.error(`[${jobId}] Failed to write measure input to stdin:`, err);
+        }
+      });
+
+      // Only two message types matter here: the single measure_result, and any error.
+      const processLine = (line: string) => {
+        let message: any;
+        try {
+          message = JSON.parse(line);
+        } catch (e) {
+          log.info(`[${jobId}] Non-JSON output:`, line);
+          return;
+        }
+        if (message.type === 'measure_result') {
+          measureResult = message.sources;
+        } else if (message.type === 'error') {
+          errorMessage = message.error;
+        }
+      };
+
+      pythonProcess.stdout.on('data', (data) => {
+        stdoutBuffer += data.toString();
+        const lines = stdoutBuffer.split('\n');
+        stdoutBuffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed) {
+            processLine(trimmed);
+          }
+        }
+      });
+
+      pythonProcess.stderr.on('data', (data) => {
+        log.info(`[${jobId}] stderr:`, data.toString());
+      });
+
+      // Guarantee exactly one settle, from EITHER 'close' or 'error'.
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        this.runningProcesses.delete(jobId);
+        pythonProcess.stdout.removeAllListeners();
+        pythonProcess.stderr.removeAllListeners();
+        pythonProcess.stdin.removeAllListeners();
+        pythonProcess.removeAllListeners();
+        fn();
+      };
+
+      pythonProcess.on('close', (code, signal) => {
+        if (stdoutBuffer.trim()) {
+          processLine(stdoutBuffer.trim());
+        }
+        if (code === 0 && measureResult) {
+          finish(() => resolve(measureResult));
+        } else {
+          const reason = errorMessage
+            || (code === null ? `terminated by signal ${signal}` : `exited with code ${code}`)
+            || 'no measurement result produced';
+          log.error(`[${jobId}] Measure-only failed: ${reason}`);
+          finish(() => reject(new Error(reason)));
+        }
+      });
+
+      pythonProcess.on('error', (error) => {
+        log.error(`[${jobId}] Measure process error:`, error);
+        finish(() => reject(error));
+      });
+    });
+  }
+
+  /**
    * Send skip signal to the current running workflow process
    */
   sendSkipSignal(): boolean {

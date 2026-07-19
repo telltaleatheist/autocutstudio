@@ -22,7 +22,8 @@ class DCCamGenerator:
                                 output_path: Optional[str] = None,
                                 apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None,
                                 use_downloaded_stream: bool = False,
-                                video_offsets: Optional[Dict[str, float]] = None) -> str:
+                                video_offsets: Optional[Dict[str, float]] = None,
+                                video_drift_factors: Optional[Dict[str, float]] = None) -> str:
         """Generate dc cam compound clip from existing compound clip XML.
 
         Args:
@@ -36,9 +37,13 @@ class DCCamGenerator:
                 for signature consistency but INTENTIONALLY UNUSED here: cam1 (lane 2) and
                 cam2 (lane 4) clips are REBUILT by the hybrid generator, so their delays
                 are injected in _generate_hybrid_cam. Injecting here would be discarded.
+            video_drift_factors: Optional per-source manual retime factors r keyed by
+                source type ('cam2'). When present, r is used verbatim for cam2's timeMap
+                (bypassing the auto drift methods); missing key => existing auto path.
         """
         video_sources = video_sources or {}
         video_offsets = video_offsets or {}  # noqa: F841 - see docstring; injected in hybrid
+        video_drift_factors = video_drift_factors or {}
         
         # Load the original compound clip XML
         tree = self.xml_utils.parse_fcpxml(compound_xml_path)
@@ -205,15 +210,19 @@ class DCCamGenerator:
             # Only retime if this is a capture source (has "capture" in filename)
             # Output sources are already synced with master
             is_capture = 'capture' in Path(cam2_path).name.lower()
+            cam2_drift = video_drift_factors.get('cam2')
 
-            if is_capture:
-                # Detect framerate and calculate retime map for capture sources
+            if is_capture or cam2_drift is not None:
+                # Detect framerate and calculate retime map. A manual driftFactor override
+                # forces a retime even for an output source (user is taking manual control);
+                # otherwise only capture sources are retimed.
                 cam2_fps = self.audio_processor.get_video_framerate(cam2_path)
-                cam2_retime_map = self.xml_utils.calculate_retime_map(original_duration, cam2_fps, 29.97)
+                cam2_retime_map = self.xml_utils.calculate_retime_map(
+                    original_duration, cam2_fps, 29.97, speed_factor=cam2_drift)
                 if cam2_retime_map:
-                    print(f"  cam2 video: {cam2_fps:.2f}fps → 29.97fps (capture source, will apply timeMap)")
+                    print(f"  cam2 video: {cam2_fps:.2f}fps → 29.97fps (will apply timeMap)")
                 else:
-                    print(f"  cam2 video: {cam2_fps:.2f}fps (capture source, no retiming needed)")
+                    print(f"  cam2 video: {cam2_fps:.2f}fps (no retiming needed)")
             else:
                 # Output source - no retiming needed
                 print(f"  cam2 video: output source, using native timing (no retiming)")

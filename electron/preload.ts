@@ -21,6 +21,7 @@ export interface ElectronAPI {
 
   // Python execution
   executeWorkflow: (options: any) => Promise<any>;
+  measureAlignment: (options: any) => Promise<{ success: boolean; sources?: { audio: any; video: any }; error?: string }>;
   cancelJob: (jobId: string) => Promise<any>;
   sendSkipSignal: () => Promise<void>;
 
@@ -76,6 +77,7 @@ const electronAPI: ElectronAPI = {
 
   // Python execution
   executeWorkflow: (options) => ipcRenderer.invoke('execute-workflow', options),
+  measureAlignment: (options) => ipcRenderer.invoke('alignment:measure', options),
   cancelJob: (jobId) => ipcRenderer.invoke('cancel-job', jobId),
   sendSkipSignal: () => ipcRenderer.invoke('send-skip-signal'),
 

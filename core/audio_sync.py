@@ -276,13 +276,20 @@ class AudioSyncAnalyzer:
     # empirically measured device factors in drift_corrections.json instead.
 
     def analyze_sync(self, master_path: str, source_path: str,
-                    search_window: float = 30) -> Dict:
+                    search_window: float = 30,
+                    offset_override: Optional[float] = None) -> Dict:
         """Complete sync analysis for a source file against master.
 
         Args:
             master_path: Path to master audio/video file
             source_path: Path to source file to sync
             search_window: Seconds to search for alignment
+            offset_override: Manual alignment offset (seconds). When provided, GCC-PHAT
+                measurement is skipped entirely and this value is used VERBATIM (negative
+                / leftward offsets are allowed — the "unusual leftward" guard applies only
+                to auto-measured values). speed_factor stays 1.0: audio drift correction is
+                not yet implemented, and the caller aborts loudly on a non-1.0 driftFactor
+                before we get here, so a manual override never carries a speed change.
 
         Returns:
             Dict with keys:
@@ -293,7 +300,33 @@ class AudioSyncAnalyzer:
                 - is_soundboard: Whether this is a soundboard file
         """
         from .naming import is_soundboard_filename
+        from .gcc_phat_align import FRAME_SECONDS
         is_soundboard = is_soundboard_filename(source_path)
+
+        # Manual alignment override: skip measurement, trust the supplied offset
+        # verbatim. This deliberately bypasses the auto trust-gating and the
+        # unusual-leftward guard (both only meaningful for measured values) without
+        # touching the auto path below.
+        if offset_override is not None:
+            offset_seconds = float(offset_override)
+            offset_frames = offset_seconds / FRAME_SECONDS
+            print(f"  ✓ Manual alignment override for {Path(source_path).name}: "
+                  f"{offset_seconds:.3f}s ({offset_frames:+.1f} fr) — GCC-PHAT skipped",
+                  file=sys.stderr)
+            return {
+                'offset_seconds': offset_seconds,
+                'speed_factor': 1.0,
+                'correlation_score': 1.0,
+                'drift_frames': 0.0,
+                'is_soundboard': is_soundboard,
+                'source_file': str(source_path),
+                'master_file': str(master_path),
+                'alignment_trusted': True,
+                'alignment_message': None,
+                'spread_seconds': 0.0,
+                'drift_seconds_est': 0.0,
+                'is_manual_override': True,
+            }
 
         # Find offset using GCC-PHAT (phase-transform cross-correlation).
         # This robustly locates the source inside the MERGED master even though
@@ -734,7 +767,8 @@ class MediaSyncProcessor:
 
     def sync_file(self, master_path: str, source_path: str,
                  output_path: Optional[str] = None,
-                 search_window: float = 30) -> Tuple[str, Dict]:
+                 search_window: float = 30,
+                 offset_override: Optional[float] = None) -> Tuple[str, Dict]:
         """Complete sync workflow: analyze and apply corrections.
 
         Args:
@@ -742,6 +776,9 @@ class MediaSyncProcessor:
             source_path: Path to source file to sync
             output_path: Optional output path
             search_window: Seconds to search for alignment
+            offset_override: Manual alignment offset (seconds). When provided, GCC-PHAT
+                measurement is skipped and this value is applied verbatim (see
+                AudioSyncAnalyzer.analyze_sync).
 
         Returns:
             Tuple of (synced_file_path, sync_info_dict)
@@ -772,7 +809,8 @@ class MediaSyncProcessor:
 
         # Analyze sync
         analyzer = AudioSyncAnalyzer(self.config)
-        sync_info = analyzer.analyze_sync(master_path, source_path, search_window)
+        sync_info = analyzer.analyze_sync(master_path, source_path, search_window,
+                                          offset_override=offset_override)
 
         # Determine if source is video or audio
         source_path_obj = Path(source_path)
