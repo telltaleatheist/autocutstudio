@@ -40,6 +40,19 @@ export interface ElectronAPI {
   removeWorkflowListeners: () => void;
   onDependencyStatus: (callback: (status: any) => void) => void;
 
+  // Manual-alignment wizard
+  openAlignment: (payload: any) => Promise<{ success: boolean; error?: string }>;
+  getAlignmentPayload: () => Promise<{ success: boolean; payload?: any }>;
+  completeAlignment: (overrides: any) => Promise<{ success: boolean }>;
+  cancelAlignment: () => Promise<{ success: boolean }>;
+  alignmentScanActivity: (filePath: string) => Promise<{ success: boolean; durationSec?: number; firstSustainedSec?: number; lastSustainedSec?: number; error?: string }>;
+  alignmentExtractPeaks: (opts: { filePath: string; startSec: number; durationSec: number; buckets: number }) => Promise<{ success: boolean; min?: number[]; max?: number[]; buckets?: number; error?: string }>;
+  alignmentExtractSamples: (opts: { filePath: string; startSec: number; durationSec: number; sampleRate: number }) => Promise<{ success: boolean; sampleRate?: number; samples?: Float32Array; error?: string }>;
+  onAlignmentPayload: (callback: (payload: any) => void) => void;
+  onAlignmentComplete: (callback: (data: any) => void) => void;
+  onAlignmentCancelled: (callback: (data: any) => void) => void;
+  removeAlignmentListeners: () => void;
+
   // Utility
   getAppVersion: () => Promise<string>;
   log: (level: string, ...args: any[]) => Promise<void>;
@@ -98,6 +111,29 @@ const electronAPI: ElectronAPI = {
   },
   onDependencyStatus: (callback) => {
     ipcRenderer.on('dependency-status', (event, status) => callback(status));
+  },
+
+  // Manual-alignment wizard
+  openAlignment: (payload) => ipcRenderer.invoke('alignment:open', payload),
+  getAlignmentPayload: () => ipcRenderer.invoke('alignment:get-payload'),
+  completeAlignment: (overrides) => ipcRenderer.invoke('alignment:complete', overrides),
+  cancelAlignment: () => ipcRenderer.invoke('alignment:cancel'),
+  alignmentScanActivity: (filePath) => ipcRenderer.invoke('alignment:scan-activity', filePath),
+  alignmentExtractPeaks: (opts) => ipcRenderer.invoke('alignment:extract-peaks', opts),
+  alignmentExtractSamples: (opts) => ipcRenderer.invoke('alignment:extract-samples', opts),
+  onAlignmentPayload: (callback) => {
+    ipcRenderer.on('alignment-payload', (_event, payload) => callback(payload));
+  },
+  onAlignmentComplete: (callback) => {
+    ipcRenderer.on('alignment-complete', (_event, data) => callback(data));
+  },
+  onAlignmentCancelled: (callback) => {
+    ipcRenderer.on('alignment-cancelled', (_event, data) => callback(data));
+  },
+  removeAlignmentListeners: () => {
+    ipcRenderer.removeAllListeners('alignment-payload');
+    ipcRenderer.removeAllListeners('alignment-complete');
+    ipcRenderer.removeAllListeners('alignment-cancelled');
   },
 
   // Utility

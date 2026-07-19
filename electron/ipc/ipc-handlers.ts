@@ -7,6 +7,7 @@ import { PythonService } from '../services/python-service';
 import { DependencyService } from '../services/dependency-service';
 import { DuganAutomixer, DuganTrack } from '../services/dugan-automixer';
 import { BinaryResolver } from '../services/binary-resolver';
+import { AlignmentAudioService } from '../services/alignment-audio-service';
 import { AppConfig } from '../config/app-config';
 import * as assetManager from '../services/asset-manager';
 import * as fs from 'fs';
@@ -29,6 +30,125 @@ export function setupIpcHandlers(windowService: WindowService, pythonSvc: Python
   setupUtilityHandlers();
   setupConfigHandlers();
   setupAssetHandlers(windowService);
+  setupAlignmentHandlers(windowService);
+}
+
+/**
+ * Manual-alignment wizard handlers.
+ *
+ * Cross-window flow (the app's first): the main window invokes 'alignment:open'
+ * with the seed payload; the main process opens the wizard window and holds the
+ * payload until the wizard pulls it via 'alignment:get-payload' (race-free) — it
+ * is ALSO pushed on did-finish-load. The wizard finishes with 'alignment:complete'
+ * (relayed to the main window as 'alignment-complete') or 'alignment:cancel'
+ * (relayed as 'alignment-cancelled'); manually closing the window counts as cancel.
+ * A single `settled` guard makes the main window's wait resolve exactly once.
+ *
+ * The peaks/samples channels stream through AlignmentAudioService (ffmpeg) and
+ * FAIL LOUD — a rejected promise surfaces as { success:false, error } to the UI,
+ * which blocks progression rather than fabricating a waveform.
+ */
+function setupAlignmentHandlers(windowService: WindowService): void {
+  const audioService = new AlignmentAudioService();
+
+  // Seed payload + one-shot settle guard for the current wizard session.
+  let pendingPayload: any = null;
+  let settled = true;
+
+  const sendToMain = (channel: string, data: any) => {
+    const main = windowService.getMainWindow();
+    if (main && !main.isDestroyed() && main.webContents) {
+      main.webContents.send(channel, data);
+    }
+  };
+
+  ipcMain.handle('alignment:open', async (_event, payload: any) => {
+    try {
+      pendingPayload = payload || null;
+      settled = false;
+
+      const win = windowService.createAlignmentWindow();
+
+      // Push the payload once the page has loaded (belt-and-suspenders; the wizard
+      // also pulls it via 'alignment:get-payload' so there is no delivery race).
+      win.webContents.once('did-finish-load', () => {
+        if (!win.isDestroyed()) {
+          win.webContents.send('alignment-payload', pendingPayload);
+        }
+      });
+
+      // A manual window close (user hits the OS close button) is a cancellation —
+      // but only if the wizard did not already complete/cancel explicitly.
+      win.on('closed', () => {
+        if (!settled) {
+          settled = true;
+          sendToMain('alignment-cancelled', { reason: 'window-closed' });
+        }
+      });
+
+      return { success: true };
+    } catch (error: any) {
+      log.error('alignment:open failed:', error);
+      return { success: false, error: error?.message || String(error) };
+    }
+  });
+
+  // Race-free pull of the seed payload by the wizard renderer on mount.
+  ipcMain.handle('alignment:get-payload', async () => {
+    return { success: true, payload: pendingPayload };
+  });
+
+  ipcMain.handle('alignment:complete', async (_event, overrides: any) => {
+    if (!settled) {
+      settled = true;
+      sendToMain('alignment-complete', { overrides });
+    }
+    windowService.closeAlignmentWindow();
+    return { success: true };
+  });
+
+  ipcMain.handle('alignment:cancel', async () => {
+    if (!settled) {
+      settled = true;
+      sendToMain('alignment-cancelled', { reason: 'user-cancel' });
+    }
+    windowService.closeAlignmentWindow();
+    return { success: true };
+  });
+
+  ipcMain.handle('alignment:scan-activity', async (_event, filePath: string) => {
+    try {
+      const scan = await audioService.scanActivity(filePath);
+      return { success: true, ...scan };
+    } catch (error: any) {
+      log.error('alignment:scan-activity failed:', error);
+      return { success: false, error: error?.message || String(error) };
+    }
+  });
+
+  ipcMain.handle('alignment:extract-peaks', async (_event, opts: {
+    filePath: string; startSec: number; durationSec: number; buckets: number;
+  }) => {
+    try {
+      const peaks = await audioService.extractPeaks(opts.filePath, opts.startSec, opts.durationSec, opts.buckets);
+      return { success: true, ...peaks };
+    } catch (error: any) {
+      log.error('alignment:extract-peaks failed:', error);
+      return { success: false, error: error?.message || String(error) };
+    }
+  });
+
+  ipcMain.handle('alignment:extract-samples', async (_event, opts: {
+    filePath: string; startSec: number; durationSec: number; sampleRate: number;
+  }) => {
+    try {
+      const seg = await audioService.extractSamples(opts.filePath, opts.startSec, opts.durationSec, opts.sampleRate);
+      return { success: true, sampleRate: seg.sampleRate, samples: seg.samples };
+    } catch (error: any) {
+      log.error('alignment:extract-samples failed:', error);
+      return { success: false, error: error?.message || String(error) };
+    }
+  });
 }
 
 /**

@@ -1,0 +1,79 @@
+<div class="align-wrap">
+  <header class="align-header">
+    <div class="align-title">
+      <span class="align-icon">🎚️</span>
+      <div>
+        <h1>Manual Alignment</h1>
+        <p class="align-sub" *ngIf="!errorMessage && !loading && currentSource">
+          Step {{ stepIndex + 1 }} of {{ steps.length }} — {{ stepLabel }}
+        </p>
+        <p class="align-sub" *ngIf="loading">{{ loadingMessage }}</p>
+      </div>
+    </div>
+    <button class="btn-cancel" (click)="onCancel()">Cancel</button>
+  </header>
+
+  <!-- Error state: blocks progression, only Cancel available -->
+  <div class="align-error" *ngIf="errorMessage">
+    <div class="err-icon">⚠️</div>
+    <div class="err-text">{{ errorMessage }}</div>
+  </div>
+
+  <!-- Busy -->
+  <div class="align-loading" *ngIf="loading && !errorMessage">
+    <div class="spinner"></div>
+    <div>{{ loadingMessage }}</div>
+  </div>
+
+  <!-- Wizard body -->
+  <div class="align-body" *ngIf="!loading && !errorMessage && currentSource as src">
+    <div class="readout-row">
+      <div class="readout">
+        <span class="readout-label">Offset</span>
+        <span class="readout-value">{{ formatSeconds(currentOffsetSeconds) }}</span>
+        <span class="readout-sub">{{ formatFrames(currentOffsetFrames) }}</span>
+      </div>
+      <div class="readout">
+        <span class="readout-label">GCC-PHAT confidence</span>
+        <span class="readout-value">{{ (src.confidence * 100).toFixed(0) }}%</span>
+        <span class="readout-sub" [class.trusted]="src.trusted" [class.untrusted]="!src.trusted">
+          {{ src.trusted ? 'trusted' : 'not trusted' }}
+        </span>
+      </div>
+      <div class="readout" *ngIf="isEndPhase">
+        <span class="readout-label">End nudge / drift</span>
+        <span class="readout-value">{{ formatFrames(endNudgeSeconds / FRAME_SECONDS) }}</span>
+        <span class="readout-sub">r = {{ driftFactor.toFixed(8) }}</span>
+      </div>
+    </div>
+
+    <canvas #waveCanvas class="wave-canvas"></canvas>
+
+    <div class="hint-row">
+      <span class="hint">← / → nudge 1 frame</span>
+      <span class="hint">Shift + ← / → nudge 10 frames</span>
+      <span class="hint">Space {{ isPlaying ? 'stop' : 'play master + source mixed' }}</span>
+    </div>
+
+    <!-- Drift block on END steps -->
+    <div class="drift-block" *ngIf="hasDrift">
+      <div class="drift-icon">⛔</div>
+      <div class="drift-text">
+        <strong>Audio drift correction isn't supported yet.</strong>
+        Your end nudge ({{ formatFrames(endNudgeSeconds / FRAME_SECONDS) }}, r = {{ driftFactor.toFixed(8) }})
+        implies the source clock drifts against the master. Re-check the start alignment, or finish
+        with offset-only by resetting the end nudge.
+      </div>
+      <button class="btn-secondary-outline" (click)="resetEndNudge()">Reset end nudge</button>
+    </div>
+  </div>
+
+  <!-- Footer nav -->
+  <footer class="align-footer" *ngIf="!errorMessage">
+    <button class="btn-secondary-outline" (click)="onBack()" [disabled]="isFirstStep || loading">Back</button>
+    <div class="spacer"></div>
+    <button class="btn-primary" (click)="onNext()" [disabled]="loading || hasDrift">
+      {{ isLastStep ? 'Finish' : 'Next' }}
+    </button>
+  </footer>
+</div>

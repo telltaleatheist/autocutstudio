@@ -8,6 +8,9 @@ import { Observable, Subject } from 'rxjs';
 export class ElectronService {
   private workflowOutput$ = new Subject<{ jobId: string; type: string; data: string }>();
   private workflowComplete$ = new Subject<{ jobId: string; exitCode: number; result?: any }>();
+  // Manual-alignment wizard results relayed from the second window (main-window side).
+  private alignmentComplete$ = new Subject<{ overrides: any }>();
+  private alignmentCancelled$ = new Subject<{ reason?: string }>();
 
   constructor(private ngZone: NgZone) {
     // Set up event listeners
@@ -27,6 +30,67 @@ export class ElectronService {
           this.workflowComplete$.next(data);
         });
       });
+
+      window.electron.onAlignmentComplete((data) => {
+        this.ngZone.run(() => this.alignmentComplete$.next(data));
+      });
+      window.electron.onAlignmentCancelled((data) => {
+        this.ngZone.run(() => this.alignmentCancelled$.next(data));
+      });
+    }
+  }
+
+  getAlignmentComplete(): Observable<{ overrides: any }> {
+    return this.alignmentComplete$.asObservable();
+  }
+
+  getAlignmentCancelled(): Observable<{ reason?: string }> {
+    return this.alignmentCancelled$.asObservable();
+  }
+
+  // Measure per-source alignment offsets without generating (pre-seeds the wizard).
+  async measureAlignment(options: any): Promise<{ success: boolean; sources?: { audio: any; video: any }; error?: string }> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return window.electron.measureAlignment(options);
+  }
+
+  // Open the manual-alignment wizard window with a seed payload.
+  async openAlignment(payload: any): Promise<{ success: boolean; error?: string }> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return window.electron.openAlignment(payload);
+  }
+
+  // --- Alignment wizard renderer-side helpers (used inside the wizard window) ---
+  async getAlignmentPayload(): Promise<{ success: boolean; payload?: any }> {
+    return window.electron.getAlignmentPayload();
+  }
+  async completeAlignment(overrides: any): Promise<{ success: boolean }> {
+    return window.electron.completeAlignment(overrides);
+  }
+  async cancelAlignment(): Promise<{ success: boolean }> {
+    return window.electron.cancelAlignment();
+  }
+  async alignmentScanActivity(filePath: string) {
+    return window.electron.alignmentScanActivity(filePath);
+  }
+  async alignmentExtractPeaks(opts: { filePath: string; startSec: number; durationSec: number; buckets: number }) {
+    return window.electron.alignmentExtractPeaks(opts);
+  }
+  async alignmentExtractSamples(opts: { filePath: string; startSec: number; durationSec: number; sampleRate: number }) {
+    return window.electron.alignmentExtractSamples(opts);
+  }
+  onAlignmentPayload(callback: (payload: any) => void): void {
+    if (this.isElectron()) {
+      window.electron.onAlignmentPayload((p) => this.ngZone.run(() => callback(p)));
+    }
+  }
+  removeAlignmentListeners(): void {
+    if (this.isElectron()) {
+      window.electron.removeAlignmentListeners();
     }
   }
 

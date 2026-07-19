@@ -1,5 +1,5 @@
 import { Component, OnInit, OnDestroy, ChangeDetectorRef } from '@angular/core';
-import { Subject } from 'rxjs';
+import { Subject, Subscription } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
 import { ElectronService } from '../../services/electron.service';
 import { ProcessingService } from '../../services/processing.service';
@@ -54,6 +54,15 @@ export class WorkflowComponent implements OnInit, OnDestroy {
 
   // Stream recovery mode - use downloaded stream as master
   useDownloadedStream = false;
+
+  // Manual alignment: when checked, clicking Process first measures per-source offsets,
+  // then opens the alignment wizard (a second window) PAUSING the run until the user
+  // finishes (their nudged values become alignmentOverrides) or cancels (aborts the run).
+  // The wizard covers these normalized audio types; everything else stays automatic.
+  private static readonly WIZARD_AUDIO_TYPES = ['mic1', 'mic2', 'screen'];
+  alignManually = false;
+  measuringAlignment = false;   // busy: GCC-PHAT measurement in flight
+  awaitingAlignment = false;    // busy: wizard window open, waiting for the user
 
   // Manual alignment overrides (Phase 1 plumbing). Optional per-source structure the
   // future manual-alignment UI populates; when set, it flows unchanged through the IPC
@@ -462,6 +471,17 @@ export class WorkflowComponent implements OnInit, OnDestroy {
         alignmentOverrides: this.alignmentOverrides
       };
 
+      // Manual alignment: measure → open wizard → wait. Cancel/failure aborts the
+      // whole run (loud, no partial run); finishing feeds nudged values as overrides.
+      if (this.alignManually) {
+        const overrides = await this.runManualAlignment(options);
+        if (!overrides) {
+          return; // measurement failed, window failed to open, or user cancelled
+        }
+        this.alignmentOverrides = overrides;
+        options.alignmentOverrides = overrides;
+      }
+
       // Start workflow
       await this.processingService.startWorkflow(options);
     } catch (error) {
@@ -473,6 +493,110 @@ export class WorkflowComponent implements OnInit, OnDestroy {
       // return or failure this re-enables the action.
       this.isStartingWorkflow = false;
     }
+  }
+
+  /**
+   * Measure per-source offsets, open the alignment wizard, and wait for the result.
+   * Returns the alignmentOverrides ({ audio: {...} }) on Finish, or null when the
+   * measurement fails / the window can't open / the user cancels (run must abort).
+   */
+  private async runManualAlignment(options: any): Promise<{ audio?: any; video?: any } | null> {
+    // 0. Scope check BEFORE any slow measurement. The wizard covers the raw sources
+    // the user manually shifts (mic1/mic2/screen audio); other audio types stay on
+    // the automatic path. Soundboard (Sb) variants are synced by the UNIFIED
+    // soundboard path, which cannot take per-source overrides — the pipeline would
+    // abort loudly AFTER the user finished the whole wizard, so refuse up front.
+    const sbBlocked = this.audioSources.find(
+      s => !s.isVideo && !!s.type && (s.type as string).endsWith('Sb')
+        && WorkflowComponent.WIZARD_AUDIO_TYPES.includes((s.type as string).replace('Sb', ''))
+    );
+    if (sbBlocked) {
+      alert(`Manual alignment doesn't support soundboard sources yet (${sbBlocked.type}). ` +
+            `Remove the soundboard source or uncheck "Align manually".`);
+      return null;
+    }
+
+    // 1. Measure (GCC-PHAT over every source — slow; show a clear busy state).
+    this.measuringAlignment = true;
+    this.cdr.detectChanges();
+    let measure: { success: boolean; sources?: { audio: any; video: any }; error?: string };
+    try {
+      measure = await this.electronService.measureAlignment(options);
+    } catch (error: any) {
+      alert('Alignment measurement failed: ' + (error?.message || error));
+      return null;
+    } finally {
+      this.measuringAlignment = false;
+      this.cdr.detectChanges();
+    }
+    if (!measure?.success || !measure.sources) {
+      alert('Alignment measurement failed: ' + (measure?.error || 'unknown error'));
+      return null;
+    }
+
+    // 2. Build the wizard seed payload (measured offsets + resolved file paths).
+    // Only wizard-scoped types are included; the rest keep the automatic path
+    // (documented behavior: sources without overrides are auto-aligned as today).
+    const audioMeasures = measure.sources.audio || {};
+    const audio: { [k: string]: any } = {};
+    for (const normType of Object.keys(audioMeasures)) {
+      if (!WorkflowComponent.WIZARD_AUDIO_TYPES.includes(normType)) continue;
+      const filePath = this.pathForNormalizedAudio(normType);
+      if (!filePath) continue;
+      const m = audioMeasures[normType];
+      audio[normType] = {
+        path: filePath,
+        offsetSeconds: m.offsetSeconds,
+        confidence: m.confidence,
+        trusted: m.trusted
+      };
+    }
+    if (Object.keys(audio).length === 0) {
+      alert('No audio sources available to align.');
+      return null;
+    }
+
+    // 3. Wire the result wait BEFORE opening so no event is missed, then open.
+    const waitPromise = this.waitForAlignment();
+    this.awaitingAlignment = true;
+    this.cdr.detectChanges();
+    const open = await this.electronService.openAlignment({ masterVideo: this.masterVideoPath, audio });
+    if (!open?.success) {
+      this.awaitingAlignment = false;
+      this.cdr.detectChanges();
+      alert('Could not open the alignment window: ' + (open?.error || 'unknown error'));
+      return null;
+    }
+
+    const result = await waitPromise;
+    this.awaitingAlignment = false;
+    this.cdr.detectChanges();
+    if (!result) {
+      // Cancelled (or window closed) — abort the run, no partial processing.
+      return null;
+    }
+    return result.overrides || {};
+  }
+
+  /** First non-video source whose normalized type (Sb stripped) matches. */
+  private pathForNormalizedAudio(normType: string): string | null {
+    const match = this.audioSources.find(
+      s => !s.isVideo && !!s.type && (s.type as string).replace('Sb', '') === normType
+    );
+    return match ? match.path : null;
+  }
+
+  /** Resolve exactly once on wizard complete (overrides) or cancel (null). */
+  private waitForAlignment(): Promise<{ overrides: any } | null> {
+    return new Promise((resolve) => {
+      const subs: Subscription[] = [];
+      const settle = (val: { overrides: any } | null) => {
+        subs.forEach(s => s.unsubscribe());
+        resolve(val);
+      };
+      subs.push(this.electronService.getAlignmentComplete().subscribe(d => settle({ overrides: d.overrides })));
+      subs.push(this.electronService.getAlignmentCancelled().subscribe(() => settle(null)));
+    });
   }
 
   // Cancel job

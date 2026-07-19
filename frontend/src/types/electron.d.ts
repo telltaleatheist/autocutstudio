@@ -13,8 +13,22 @@ export interface ElectronAPI {
   installPythonPackages: (packages: string[]) => Promise<{ success: boolean; results?: any; error?: string }>;
   onDependencyStatus: (callback: (status: any) => void) => void;
   executeWorkflow: (options: any) => Promise<any>;
+  measureAlignment: (options: any) => Promise<{ success: boolean; sources?: { audio: any; video: any }; error?: string }>;
   cancelJob: (jobId: string) => Promise<any>;
   sendSkipSignal: () => Promise<void>;
+
+  // Manual-alignment wizard
+  openAlignment: (payload: any) => Promise<{ success: boolean; error?: string }>;
+  getAlignmentPayload: () => Promise<{ success: boolean; payload?: any }>;
+  completeAlignment: (overrides: any) => Promise<{ success: boolean }>;
+  cancelAlignment: () => Promise<{ success: boolean }>;
+  alignmentScanActivity: (filePath: string) => Promise<{ success: boolean; durationSec?: number; firstSustainedSec?: number; lastSustainedSec?: number; error?: string }>;
+  alignmentExtractPeaks: (opts: { filePath: string; startSec: number; durationSec: number; buckets: number }) => Promise<{ success: boolean; min?: number[]; max?: number[]; buckets?: number; error?: string }>;
+  alignmentExtractSamples: (opts: { filePath: string; startSec: number; durationSec: number; sampleRate: number }) => Promise<{ success: boolean; sampleRate?: number; samples?: Float32Array; error?: string }>;
+  onAlignmentPayload: (callback: (payload: any) => void) => void;
+  onAlignmentComplete: (callback: (data: any) => void) => void;
+  onAlignmentCancelled: (callback: (data: any) => void) => void;
+  removeAlignmentListeners: () => void;
   applyAudioDrift: (options: {
     inputPath: string;
     driftFrames: number;

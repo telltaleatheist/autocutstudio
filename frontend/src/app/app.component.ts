@@ -1,4 +1,6 @@
 import { Component, OnInit } from '@angular/core';
+import { Router, NavigationEnd } from '@angular/router';
+import { filter } from 'rxjs/operators';
 import { ElectronService } from './services/electron.service';
 
 @Component({
@@ -15,6 +17,11 @@ export class AppComponent implements OnInit {
   // First-run setup gate (asset downloads). The app UI is hidden until this is true.
   setupReady = false;
 
+  // Chromeless mode: the manual-alignment wizard runs the same Angular app in a
+  // SECOND window, deep-linked to /alignment. In that window we hide the sidebar and
+  // bypass the first-run setup gate (assets were already ensured by the main window).
+  isChromeless = false;
+
   // Dependency status
   showDependencyBanner = false;
   missingSystemDeps: string[] = [];
@@ -22,7 +29,22 @@ export class AppComponent implements OnInit {
   pythonPackagesInstalling = false;
   showInstallDialog = false;
 
-  constructor(private electronService: ElectronService) {}
+  constructor(private electronService: ElectronService, private router: Router) {
+    // Detect the alignment route synchronously so the setup overlay/sidebar never
+    // flash in the wizard window. window.location.hash is reliable at construction
+    // under HashLocationStrategy; router events keep it in sync thereafter.
+    const detect = (url: string) => url.includes('/alignment');
+    if (detect(window.location.hash) || detect(window.location.pathname)) {
+      this.isChromeless = true;
+      this.setupReady = true; // bypass the first-run gate in the wizard window
+    }
+    this.router.events
+      .pipe(filter((e): e is NavigationEnd => e instanceof NavigationEnd))
+      .subscribe((e) => {
+        this.isChromeless = detect(e.urlAfterRedirects);
+        if (this.isChromeless) this.setupReady = true;
+      });
+  }
 
   async ngOnInit() {
     // Load saved theme

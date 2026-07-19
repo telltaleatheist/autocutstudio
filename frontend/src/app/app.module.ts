@@ -14,11 +14,13 @@ import { RelinkingComponent } from './components/relinking/relinking.component';
 import { AudioDuckingComponent } from './components/audio-ducking/audio-ducking.component';
 import { SettingsComponent } from './components/settings/settings.component';
 import { SetupComponent } from './components/setup/setup.component';
+import { AlignmentComponent } from './components/alignment/alignment.component';
 
 @NgModule({
   declarations: [
     AppComponent,
     SetupComponent,
+    AlignmentComponent,
     WorkflowComponent,
     FileBrowserComponent,
     AudioSourcesComponent,

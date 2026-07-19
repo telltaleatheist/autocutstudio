@@ -184,6 +184,30 @@
         </div>
       </div>
 
+      <!-- Manual Alignment Option -->
+      <div class="form-section auto-duck-section">
+        <div class="auto-duck-card" [class.enabled]="alignManually">
+          <div class="auto-duck-toggle">
+            <label class="toggle-switch">
+              <input type="checkbox" [(ngModel)]="alignManually" name="alignManually" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="auto-duck-content">
+            <div class="auto-duck-header">
+              <div class="auto-duck-icon">🎚️</div>
+              <h3 class="auto-duck-title">Align manually</h3>
+              <span class="auto-duck-badge" *ngIf="alignManually">Enabled</span>
+            </div>
+            <p class="auto-duck-description">
+              Before processing, measure each companion source against the master and open a
+              wizard to fine-tune the alignment by ear. Processing pauses until you finish;
+              cancelling the wizard aborts the run.
+            </p>
+          </div>
+        </div>
+      </div>
+
       <!-- Progress Section -->
       <div class="progress-section" [class.active]="isProcessing">
         <!-- Overall Progress -->
@@ -231,11 +255,15 @@
         <button
           class="btn-primary-lg"
           (click)="processWorkflow()"
-          [disabled]="isProcessing || !masterVideoPath"
-          [class.processing]="isProcessing"
+          [disabled]="isProcessing || !masterVideoPath || measuringAlignment || awaitingAlignment"
+          [class.processing]="isProcessing || measuringAlignment || awaitingAlignment"
         >
-          <span class="btn-icon">{{ isProcessing ? '⚙️' : '🎬' }}</span>
-          <span class="btn-text">{{ isProcessing ? 'Processing...' : 'Process Workflow' }}</span>
+          <span class="btn-icon">{{ isProcessing || measuringAlignment || awaitingAlignment ? '⚙️' : '🎬' }}</span>
+          <span class="btn-text">{{
+            measuringAlignment ? 'Measuring alignment...' :
+            awaitingAlignment ? 'Waiting for alignment...' :
+            isProcessing ? 'Processing...' : 'Process Workflow'
+          }}</span>
         </button>
         <button *ngIf="isProcessing" class="btn-cancel" (click)="cancelJob()">
           <span class="btn-icon">⏹</span>

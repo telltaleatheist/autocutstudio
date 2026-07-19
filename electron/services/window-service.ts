@@ -9,6 +9,7 @@ import * as path from 'path';
  */
 export class WindowService {
   private mainWindow: BrowserWindow | null = null;
+  private alignmentWindow: BrowserWindow | null = null;
 
   /**
    * Create the main application window
@@ -44,6 +45,59 @@ export class WindowService {
     });
 
     return this.mainWindow;
+  }
+
+  /**
+   * Create the manual-alignment wizard window (a SECOND BrowserWindow).
+   *
+   * Uses the SAME webPreferences/preload as the main window and loads the same
+   * built Angular index, deep-linked to the /alignment route via a hash fragment
+   * (HashLocationStrategy — see app-routing.module.ts). Sized for a timeline UI.
+   * Only one may exist at a time; an existing one is focused instead of duplicated.
+   */
+  createAlignmentWindow(): BrowserWindow {
+    if (this.alignmentWindow && !this.alignmentWindow.isDestroyed()) {
+      this.alignmentWindow.focus();
+      return this.alignmentWindow;
+    }
+
+    this.alignmentWindow = new BrowserWindow({
+      width: 1200,
+      height: 700,
+      minWidth: 900,
+      minHeight: 560,
+      parent: this.mainWindow || undefined,
+      title: 'Manual Alignment',
+      autoHideMenuBar: true,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        webSecurity: true,
+        preload: AppConfig.preloadPath
+      }
+    });
+
+    // Deep-link to the /alignment route. Hash routing makes this work over file://.
+    const alignmentUrl = `file://${AppConfig.frontendPath}#/alignment`;
+    log.info(`Loading alignment window from: ${alignmentUrl}`);
+    this.alignmentWindow.loadURL(alignmentUrl);
+
+    this.alignmentWindow.on('closed', () => {
+      this.alignmentWindow = null;
+    });
+
+    return this.alignmentWindow;
+  }
+
+  getAlignmentWindow(): BrowserWindow | null {
+    return this.alignmentWindow;
+  }
+
+  closeAlignmentWindow(): void {
+    if (this.alignmentWindow && !this.alignmentWindow.isDestroyed()) {
+      this.alignmentWindow.close();
+    }
+    this.alignmentWindow = null;
   }
 
   /**

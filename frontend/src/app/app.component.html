@@ -1,8 +1,14 @@
+<!-- Chromeless layout: the manual-alignment wizard window renders only the router
+     outlet — no sidebar, no setup gate. -->
+<div class="chromeless-layout" *ngIf="isChromeless">
+  <router-outlet></router-outlet>
+</div>
+
 <!-- First-run setup overlay (asset downloads). Gates the app until ready. -->
-<app-setup *ngIf="!setupReady" (complete)="onSetupComplete()"></app-setup>
+<app-setup *ngIf="!setupReady && !isChromeless" (complete)="onSetupComplete()"></app-setup>
 
 <!-- App Layout with Top Header -->
-<div class="app-layout" *ngIf="setupReady">
+<div class="app-layout" *ngIf="setupReady && !isChromeless">
   <!-- Content Area with Sidebar -->
   <div class="content-wrapper">
     <!-- Left Sidebar Navigation -->

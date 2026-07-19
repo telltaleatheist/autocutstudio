@@ -5,6 +5,7 @@ import { AudioEditorComponent } from './components/audio-editor/audio-editor.com
 import { RelinkingComponent } from './components/relinking/relinking.component';
 import { AudioDuckingComponent } from './components/audio-ducking/audio-ducking.component';
 import { SettingsComponent } from './components/settings/settings.component';
+import { AlignmentComponent } from './components/alignment/alignment.component';
 
 const routes: Routes = [
   { path: '', redirectTo: '/workflow', pathMatch: 'full' },
@@ -13,11 +14,16 @@ const routes: Routes = [
   { path: 'audio-ducking', component: AudioDuckingComponent },
   { path: 'relinking', component: RelinkingComponent },
   { path: 'settings', component: SettingsComponent },
+  // Manual-alignment wizard — opened in its OWN window, deep-linked via a hash
+  // fragment (#/alignment). Hash routing is required for reliable deep-linking over
+  // file://; the main window still boots '' → /workflow via the redirect above.
+  { path: 'alignment', component: AlignmentComponent },
   { path: '**', redirectTo: '/workflow' }
 ];
 
 @NgModule({
-  imports: [RouterModule.forRoot(routes, { useHash: false })],
+  // useHash: true so the alignment window can deep-link to #/alignment over file://.
+  imports: [RouterModule.forRoot(routes, { useHash: true })],
   exports: [RouterModule]
 })
 export class AppRoutingModule { }
