@@ -59,30 +59,26 @@
       <span class="hint">Space {{ isPlaying ? 'stop' : 'play master + source mixed' }}</span>
     </div>
 
-    <!-- Drift block on END steps where the pipeline refuses drift (audio, or cam1). -->
+    <!-- Drift block on END steps where the pipeline refuses drift (cam1 only: audio
+         and screen/cam2 video drift are supported and handled below). -->
     <div class="drift-block" *ngIf="driftBlocked">
       <div class="drift-icon">⛔</div>
-      <div class="drift-text" *ngIf="isCam1Block">
+      <div class="drift-text">
         <strong>Camera 1 records with the master and should not drift.</strong>
         Your end nudge ({{ formatFrames(endNudgeSeconds / FRAME_SECONDS) }}, r = {{ driftFactor.toFixed(8) }})
         implies its clock drifts against the master, but cam1 is captured on the master clock and is
         never retimed. Re-check the start alignment, or reset the end nudge.
       </div>
-      <div class="drift-text" *ngIf="!isCam1Block">
-        <strong>Audio drift correction isn't supported yet.</strong>
-        Your end nudge ({{ formatFrames(endNudgeSeconds / FRAME_SECONDS) }}, r = {{ driftFactor.toFixed(8) }})
-        implies the source clock drifts against the master. Re-check the start alignment, or finish
-        with offset-only by resetting the end nudge.
-      </div>
       <button class="btn-secondary-outline" (click)="resetEndNudge()">Reset end nudge</button>
     </div>
 
-    <!-- Accepted drift on screen/cam2 video END steps: manual retime, r sent verbatim. -->
+    <!-- Accepted drift (audio, or screen/cam2 video): correction applied, r sent verbatim. -->
     <div class="drift-accepted" *ngIf="driftAccepted">
       <div class="drift-icon">⏱️</div>
       <div class="drift-text">
         <strong>Clock drift accepted.</strong>
-        This source will be retimed by r = {{ driftFactor.toFixed(8) }}
+        This source will be {{ isVideoStep ? 'retimed' : 'stretched (clock-drift resample)' }}
+        by r = {{ driftFactor.toFixed(8) }}
         (end nudge {{ formatFrames(endNudgeSeconds / FRAME_SECONDS) }}). Reset the end nudge for
         offset-only alignment.
       </div>

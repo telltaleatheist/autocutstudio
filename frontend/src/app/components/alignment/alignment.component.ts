@@ -7,10 +7,10 @@ import { ElectronService } from '../../services/electron.service';
  * Sources: AUDIO (mic1 / mic2 / screen) then VIDEO (cam1 / cam2 / screen). Video sources
  * carry embedded scratch audio, so the SAME waveform mechanics align them; a video step
  * additionally shows a muted <video> preview for a lip-check. The step list is built from
- * a generic { kind, type, phase } model. Drift (a nonzero END nudge) is gated: refused for
- * audio and for cam1 (records with the master, never retimed), allowed for the screen/cam2
- * video sources (manual retime, supported by the pipeline). The game video gets NO step —
- * it follows wherever the screen video lands (GAME RULE).
+ * a generic { kind, type, phase } model. Drift (a nonzero END nudge) is gated: allowed for
+ * audio (clock-drift resample in the pipeline) and for the screen/cam2 video sources
+ * (manual retime); refused only for cam1 (records with the master, never retimed). The
+ * game video gets NO step — it follows wherever the screen video lands (GAME RULE).
  *
  * Each source is aligned against the MASTER waveform in two steps:
  *   - START: ~10 s window at the source's first sustained audio, source pre-shifted by
@@ -259,11 +259,13 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
   get isVideoStep(): boolean { return this.currentSource?.kind === 'video'; }
   /**
    * Whether a nonzero END nudge (clock drift) is allowed for a source. The pipeline
-   * SUPPORTS manual retime for the screen and cam2 VIDEO sources; it REFUSES cam1
-   * drift (cam1 records with the master and is never retimed) and audio drift.
+   * SUPPORTS drift for AUDIO sources (clock-drift resample in apply_sync_to_audio)
+   * and for the screen/cam2 VIDEO sources (manual retime via calculate_retime_map).
+   * It REFUSES cam1 drift — cam1 records with the master and is never retimed.
    */
   private driftAllowedFor(src: WizardSource): boolean {
-    return src.kind === 'video' && (src.type === 'screen' || src.type === 'cam2');
+    if (src.kind === 'audio') return true;
+    return src.type === 'screen' || src.type === 'cam2';
   }
   get isFirstStep(): boolean { return this.stepIndex === 0; }
   get isLastStep(): boolean { return this.stepIndex === this.steps.length - 1; }
@@ -332,9 +334,9 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
   async onNext(): Promise<void> {
     if (this.loading) return;
     const src = this.currentSource!;
-    // END step gates on drift. A nonzero end nudge is ALLOWED for the screen/cam2 video
-    // sources (manual retime, supported by the pipeline). It is blocked for audio (drift
-    // unsupported) and for cam1 (records with the master, never retimed).
+    // END step gates on drift. A nonzero end nudge is ALLOWED for audio (clock-drift
+    // resample) and the screen/cam2 video sources (manual retime). It is blocked only
+    // for cam1 (records with the master, never retimed).
     if (this.isEndPhase && src.endFrames !== 0 && !this.driftAllowedFor(src)) {
       // Blocked — do not advance, do not drop the nudge. Message shown in template.
       return;
@@ -427,7 +429,7 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
     const src = this.currentSource;
     return !!src && this.hasDrift && !this.driftAllowedFor(src);
   }
-  /** Drift the pipeline accepts (screen/cam2 video retime) — allowed, r shown as a note. */
+  /** Drift the pipeline accepts (audio resample, or screen/cam2 video retime) — r shown as a note. */
   get driftAccepted(): boolean {
     const src = this.currentSource;
     return !!src && this.hasDrift && this.driftAllowedFor(src);
@@ -747,10 +749,10 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
   // ── Finish / fail ────────────────────────────────────────────────────────────
   private async finish(): Promise<void> {
     // Contract: every present source must be completed through both phases, and any
-    // residual END nudge is only permissible where the pipeline accepts drift (the
-    // screen/cam2 VIDEO sources). The linear Next-gating already guarantees this, but
-    // verify defensively — we must never send an override the pipeline would reject
-    // (audio drift, or cam1 drift).
+    // residual END nudge is only permissible where the pipeline accepts drift (audio
+    // and the screen/cam2 video sources). The linear Next-gating already guarantees
+    // this, but verify defensively — we must never send an override the pipeline
+    // would reject (cam1 drift).
     const incomplete = this.sources.find(s =>
       !s.startVisited || !s.endVisited || (s.endFrames !== 0 && !this.driftAllowedFor(s)));
     if (incomplete) {
@@ -759,19 +761,17 @@ export class AlignmentComponent implements OnInit, AfterViewInit, OnDestroy {
       return;
     }
 
+    // Zero end nudge => user-verified no drift (explicit driftFactor 1.0, which also
+    // bypasses the auto device-drift stretch); a nonzero, accepted nudge => clock-drift
+    // factor r sent VERBATIM (audio: resample stretch; screen/cam2 video: manual retime).
+    // offsetSeconds is always the START offset (measured seed + start-nudge frames).
     const audioOverrides: { [k: string]: { offsetSeconds: number; driftFactor: number } } = {};
     const videoOverrides: { [k: string]: { offsetSeconds: number; driftFactor: number } } = {};
     for (const src of this.sources) {
-      if (src.kind === 'audio') {
-        // Each audio END confirmed no drift (endFrames == 0): offset + explicit 1.0.
-        audioOverrides[src.type] = { offsetSeconds: this.offsetStart(src), driftFactor: 1.0 };
-      } else {
-        // Video: zero end nudge => user-verified no drift (driftFactor 1.0); a nonzero,
-        // accepted nudge (screen/cam2 only) => manual retime with r sent VERBATIM. The
-        // offsetSeconds is always the START offset (measured seed + start-nudge frames).
-        const driftFactor = src.endFrames === 0 ? 1.0 : this.driftFactorFor(src);
-        videoOverrides[src.type] = { offsetSeconds: this.offsetStart(src), driftFactor };
-      }
+      const driftFactor = src.endFrames === 0 ? 1.0 : this.driftFactorFor(src);
+      const override = { offsetSeconds: this.offsetStart(src), driftFactor };
+      if (src.kind === 'audio') audioOverrides[src.type] = override;
+      else videoOverrides[src.type] = override;
     }
 
     // GAME RULE: the game video has no wizard step. If a game video exists AND the screen

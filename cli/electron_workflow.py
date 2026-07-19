@@ -192,6 +192,82 @@ def create_xml_zip(xml_files, output_dir, session_name):
 
     return str(zip_path)
 
+def _write_alignment_sidecar(output_dir, clean_name, master_video, processed_audio,
+                             audio_overrides, video_offsets, video_drift_factors,
+                             video_overrides, video_offset_meta):
+    """Persist the RESOLVED alignment (offset + drift + provenance) as a JSON sidecar
+    next to the generated outputs, named <clean_name>_alignment.json (matching the
+    zip's clean_name convention).
+
+    This is data, not a log: a future transcript-editor feature will read it to place
+    per-track word timestamps on the master timeline, and it doubles as run forensics.
+    One entry per source that actually received an offset. FAIL LOUD on any write
+    problem — a missing/partial sidecar must never pass as success.
+    """
+    sources = []
+
+    # AUDIO — only sources that went through a real sync step (offset applied).
+    # Output files (used verbatim, no offset) carry no 'offset_seconds' and are skipped.
+    for atype, info in processed_audio.items():
+        sync_info = info.get('sync_info') or {}
+        if 'offset_seconds' not in sync_info:
+            continue
+        override = audio_overrides.get(atype)
+        if override is not None:
+            method = 'manual-override'
+            drift = override['driftFactor']
+        elif sync_info.get('is_soundboard'):
+            method = 'unified-soundboard'
+            drift = None
+        else:
+            method = 'gcc-phat'
+            drift = None
+        entry = {
+            'kind': 'audio',
+            'type': atype,
+            'offsetSeconds': sync_info['offset_seconds'],
+            'driftFactor': drift,
+            'method': method,
+        }
+        if 'correlation_score' in sync_info:
+            entry['confidence'] = sync_info['correlation_score']
+        if 'alignment_trusted' in sync_info:
+            entry['trusted'] = bool(sync_info['alignment_trusted'])
+        sources.append(entry)
+
+    # VIDEO — every source with a resolved timeline offset.
+    for vtype, offset in video_offsets.items():
+        method = 'manual-override' if vtype in video_overrides else 'gcc-phat'
+        entry = {
+            'kind': 'video',
+            'type': vtype,
+            'offsetSeconds': offset,
+            'driftFactor': video_drift_factors.get(vtype),
+            'method': method,
+        }
+        meta = video_offset_meta.get(vtype)
+        if meta is not None:
+            entry['confidence'] = meta['confidence']
+            entry['trusted'] = meta['trusted']
+        sources.append(entry)
+
+    payload = {
+        'schemaVersion': 1,
+        'masterVideo': str(master_video),
+        'sources': sources,
+    }
+
+    sidecar_path = Path(output_dir) / f"{clean_name}_alignment.json"
+    try:
+        with open(sidecar_path, 'w') as f:
+            json.dump(payload, f, indent=2)
+    except OSError as e:
+        raise RuntimeError(f"Failed to write alignment sidecar {sidecar_path}: {e}") from e
+
+    print(f"✓ Wrote alignment sidecar: {sidecar_path} ({len(sources)} sources)", file=sys.stderr)
+    return str(sidecar_path)
+
+
 def _resolve_media_tool(name, audio_processor):
     """Resolve ffmpeg/ffprobe the same way the rest of the pipeline does.
 
@@ -407,6 +483,10 @@ def _run_measure_only(master_video, audio_sources_input, video_sources):
         print(f"  measuring audio {normalized_type} ({Path(audio_path).name})", file=sys.stderr)
         audio_results[normalized_type] = _measure(audio_path)
 
+    # Reused solely for its ffprobe-based audio-stream probe (no numpy/scipy needed).
+    from core.audio_sync import MediaSyncProcessor
+    _stream_probe = MediaSyncProcessor()
+
     video_results = {}
     for v_type in ['screen', 'game', 'cam1', 'cam2']:
         v_path = (video_sources or {}).get(v_type)
@@ -415,6 +495,14 @@ def _run_measure_only(master_video, audio_sources_input, video_sources):
         if not Path(v_path).exists():
             emit_error(f"Measure-only: video source {v_type} not found: {v_path}")
             raise FileNotFoundError(f"video source {v_type} not found: {v_path}")
+        # A video with NO audio stream (e.g. many game captures) is structurally
+        # impossible to align by GCC-PHAT — there is no signal to correlate. That is
+        # not a silent fallback: omit it from the emitted map with a note so the
+        # frontend treats it as not-measurable (a probe FAILURE still raises loudly).
+        if not _stream_probe._has_audio_stream(v_path):
+            print(f"  ⤷ skipping video {v_type} ({Path(v_path).name}): no audio stream — "
+                  f"not measurable, omitted from results", file=sys.stderr)
+            continue
         print(f"  measuring video {v_type} ({Path(v_path).name})", file=sys.stderr)
         video_results[v_type] = _measure(v_path)
 
@@ -876,28 +964,36 @@ def main():
                         print(f"Processing {audio_type}: {Path(audio_path).name}", file=sys.stderr)
 
                         # Manual alignment override: skip GCC-PHAT and use offsetSeconds
-                        # verbatim. Audio drift correction is not yet implemented, so a
-                        # non-1.0 driftFactor must abort loudly (never silently ignored).
-                        # An EXPLICIT 1.0 is fine: it means "verified no drift", and the
-                        # override path already applies no stretch (speed_factor=1.0).
+                        # verbatim. A non-1.0 driftFactor is a clock-drift retime factor r
+                        # applied as a plain resample stretch (asetrate/aresample) inside
+                        # apply_sync_to_audio — the audio is put back on the master clock,
+                        # then the offset is applied as usual. An EXPLICIT 1.0 means
+                        # "verified no drift" — no stretch (r left None so no resample runs).
+                        # The stretch pivots at source t=0 while offset_override was aligned
+                        # at the first-sustained-audio anchor, so the anchor keeps a residual
+                        # of firstSustained*|r-1| (~24 ms / 0.7 fr worst case at |r-1|=2e-4,
+                        # typically far less); accepted for now — we do NOT re-derive offset.
                         override = audio_overrides.get(normalized_type)
                         offset_override = None
+                        drift_factor = None
                         if override is not None:
-                            if override['driftFactor'] is not None and override['driftFactor'] != 1.0:
-                                msg = (f"audio drift correction not yet implemented — got "
-                                       f"driftFactor {override['driftFactor']} for {normalized_type}")
-                                emit_error(msg)
-                                raise RuntimeError(msg)
                             offset_override = override['offsetSeconds']
-                            print(f"  ↳ Using manual alignment override: "
-                                  f"offset={offset_override:.3f}s (GCC-PHAT skipped)", file=sys.stderr)
+                            if override['driftFactor'] is not None and override['driftFactor'] != 1.0:
+                                drift_factor = override['driftFactor']
+                                print(f"  ↳ Manual alignment override: offset={offset_override:.3f}s, "
+                                      f"driftFactor r={drift_factor!r} (clock-drift resample; "
+                                      f"GCC-PHAT skipped)", file=sys.stderr)
+                            else:
+                                print(f"  ↳ Using manual alignment override: "
+                                      f"offset={offset_override:.3f}s (GCC-PHAT skipped)", file=sys.stderr)
 
                         try:
                             synced_path, sync_info = sync_processor.sync_file(
                                 master_path=master_video,
                                 source_path=audio_path,
                                 search_window=30,
-                                offset_override=offset_override
+                                offset_override=offset_override,
+                                drift_factor=drift_factor
                             )
                         except InterruptedError:
                             skip_was_requested = True
@@ -1090,6 +1186,9 @@ def main():
         # explicit 1.0 = identity, which overrides the auto device-drift stretch); a
         # missing key leaves that source on its existing auto drift/retime path.
         video_drift_factors = {}
+        # Per-source measurement diagnostics (confidence/trusted), kept only for the
+        # alignment sidecar. Manual overrides skip measurement and get no entry.
+        video_offset_meta = {}
 
         # Apply manual VIDEO overrides first — independent of the sync stack, since they
         # skip measurement. Validate presence against the FINAL (post-skip) video sources,
@@ -1175,6 +1274,7 @@ def main():
                                 file=sys.stderr
                             )
                         video_offsets[v_type] = tau
+                        video_offset_meta[v_type] = {'confidence': conf, 'trusted': bool(trusted)}
                         print(
                             f"  ✓ {v_type} video offset: {tau:.3f}s "
                             f"({tau / FRAME_SECONDS:+.1f} fr, conf {conf:.2f})",
@@ -1698,6 +1798,14 @@ def main():
         session_name = Path(master_video).stem.replace(' master', '')
         output_dir = Path(master_video).parent
 
+        # Persist the resolved alignment as a data sidecar next to the outputs (before
+        # zipping, so it exists even on a partial run). Loud failure on any write error.
+        alignment_sidecar_path = _write_alignment_sidecar(
+            output_dir, session_name.replace(' ', '_'), master_video, processed_audio,
+            audio_overrides, video_offsets, video_drift_factors, video_overrides,
+            video_offset_meta
+        )
+
         # create_xml_zip zips these XMLs then DELETES them, so the on-disk paths in
         # generated_clips would point at files that no longer exist. Rewrite each clip
         # path to its zip-internal entry name (matching create_xml_zip's arcname
@@ -1731,7 +1839,8 @@ def main():
         emit_success({
             'zipPath': zip_path,
             'clips': generated_clips,
-            'session': session_name
+            'session': session_name,
+            'alignmentSidecar': alignment_sidecar_path
         })
 
     except Exception as e:

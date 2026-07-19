@@ -287,9 +287,10 @@ class AudioSyncAnalyzer:
             offset_override: Manual alignment offset (seconds). When provided, GCC-PHAT
                 measurement is skipped entirely and this value is used VERBATIM (negative
                 / leftward offsets are allowed — the "unusual leftward" guard applies only
-                to auto-measured values). speed_factor stays 1.0: audio drift correction is
-                not yet implemented, and the caller aborts loudly on a non-1.0 driftFactor
-                before we get here, so a manual override never carries a speed change.
+                to auto-measured values). speed_factor stays 1.0 here: a manual clock-drift
+                factor is NOT an atempo speed change — it is applied as a plain resample in
+                MediaSyncProcessor.apply_sync_to_audio (see sync_file's drift_factor), so
+                this analyze path never carries one.
 
         Returns:
             Dict with keys:
@@ -467,6 +468,32 @@ class MediaSyncProcessor:
                 f"Could not determine whether {video_path} has an audio stream: {e}"
             ) from e
 
+    def _get_audio_sample_rate(self, media_path: str) -> int:
+        """Probe the audio sample rate (Hz) of a media file.
+
+        Raises loudly on failure — a wrong or assumed sample rate would make the
+        clock-drift resample stretch by the wrong factor and silently un-align
+        the very track we are correcting.
+        """
+        try:
+            cmd = [
+                'ffprobe', '-v', 'error',
+                '-select_streams', 'a:0',
+                '-show_entries', 'stream=sample_rate',
+                '-of', 'json',
+                str(media_path)
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            data = json.loads(result.stdout)
+            streams = data.get('streams') or []
+            if not streams or not streams[0].get('sample_rate'):
+                raise RuntimeError(f"no audio sample_rate reported for {media_path}")
+            return int(streams[0]['sample_rate'])
+        except Exception as e:
+            raise RuntimeError(
+                f"Could not determine audio sample rate of {media_path}: {e}"
+            ) from e
+
     def _apply_framerate_sync_only(self, video_path: str, output_path: Optional[str] = None) -> str:
         """Apply framerate sync only (no audio analysis).
 
@@ -573,7 +600,8 @@ class MediaSyncProcessor:
             raise RuntimeError(f"Could not detect framerate of {video_path}: {e}") from e
 
     def apply_sync_to_audio(self, input_path: str, offset_seconds: float,
-                           speed_factor: float, output_path: Optional[str] = None) -> str:
+                           speed_factor: float, output_path: Optional[str] = None,
+                           resample_drift_factor: Optional[float] = None) -> str:
         """Apply offset and speed correction to audio file.
 
         Args:
@@ -581,6 +609,11 @@ class MediaSyncProcessor:
             offset_seconds: Time offset in seconds (will pad with silence if positive)
             speed_factor: Speed adjustment factor
             output_path: Optional output path
+            resample_drift_factor: Clock-drift retime factor r (manual audio override).
+                When set to a value != 1.0, the audio is resampled (NOT pitch-preserved
+                atempo) so its clock matches the master, then the offset is applied as
+                usual. See the derivation in the filter-building block below. None or
+                1.0 = no stretch.
 
         Returns:
             Path to synced audio file
@@ -597,6 +630,43 @@ class MediaSyncProcessor:
 
         # Build ffmpeg filter
         filters = []
+
+        # CLOCK-DRIFT STRETCH (manual audio override, FIRST — pivots at source t=0).
+        # r is the retime factor defined EXACTLY as calculate_retime_map Method A:
+        # over T master-timeline seconds a source is read for T*r source-seconds,
+        # i.e. the source file accumulates r file-seconds per real second, so
+        #   r < 1  => source clock ran SLOW (fewer file-seconds per real second =>
+        #             the file is too SHORT and must be stretched LONGER)
+        #   r > 1  => source clock ran FAST (file too LONG => shortened).
+        # To put the source back on the master clock we map file-time t -> real-time
+        # t/r, so corrected_duration = old_duration / r. Clock drift IS a sample-rate
+        # error, so we resample: asetrate reinterprets the SAME N samples at SR*r
+        # (duration N/(SR*r) = old/r), then aresample restores the working SR. The
+        # asetrate multiplier is r VERBATIM (asetrate = SR*r), NOT 1/r — get this sign
+        # right or the correction doubles the drift. Plain resample, never atempo:
+        # at |r-1| ~ 1e-5..1e-3 the pitch shift is inaudible, and pitch-preservation
+        # would fight the exact clock error we are correcting.
+        # Example: r=0.9998 on a 3600.000 s source -> 3600/0.9998 = 3600.720 s
+        #          (stretched 0.72 s LONGER); r=1.0002 on 3600 s -> 3599.280 s.
+        #
+        # PRECISION: asetrate only takes an INTEGER rate, so a naive asetrate=SR*r
+        # quantizes r to the nearest 1/SR — a relative error up to 0.5/SR ~= 1e-5,
+        # which over a 4 h file is ~144 ms (4+ frames): the correction would fail at
+        # exactly the scale it exists for (measured: 22.5 ms/4 h on a mild case).
+        # Fix: genuinely upsample 16x first, relabel at round(16*SR*r), then resample
+        # back down. The quantization drops to 0.5/(16*SR) ~= 6.5e-7 — under 10 ms
+        # (~0.3 fr) over 4 h worst case, measured 3.5 ms/4 h. That residual plus the
+        # t=0 anchoring residual (offset was aligned at the first-sustained-audio
+        # anchor: firstSustained*|r-1|, e.g. 120 s * 2e-4 = 24 ms) are the accepted
+        # error bounds — we deliberately do NOT re-derive the offset. r itself is
+        # applied unclamped; only the integer-rate representation quantizes it.
+        if resample_drift_factor is not None and resample_drift_factor != 1.0:
+            src_sr = self._get_audio_sample_rate(str(input_path))
+            oversample_sr = src_sr * 16
+            relabel_sr = round(oversample_sr * resample_drift_factor)
+            filters.append(f'aresample={oversample_sr}')
+            filters.append(f'asetrate={relabel_sr}')
+            filters.append(f'aresample={src_sr}')
 
         # Apply speed adjustment if needed (allow 0.0001% tolerance)
         # Even tiny drifts matter over long recordings (e.g., 12 frames over 4 hours = 0.003%)
@@ -768,7 +838,8 @@ class MediaSyncProcessor:
     def sync_file(self, master_path: str, source_path: str,
                  output_path: Optional[str] = None,
                  search_window: float = 30,
-                 offset_override: Optional[float] = None) -> Tuple[str, Dict]:
+                 offset_override: Optional[float] = None,
+                 drift_factor: Optional[float] = None) -> Tuple[str, Dict]:
         """Complete sync workflow: analyze and apply corrections.
 
         Args:
@@ -779,6 +850,10 @@ class MediaSyncProcessor:
             offset_override: Manual alignment offset (seconds). When provided, GCC-PHAT
                 measurement is skipped and this value is applied verbatim (see
                 AudioSyncAnalyzer.analyze_sync).
+            drift_factor: Manual clock-drift retime factor r (audio override only).
+                When != 1.0, the audio is resampled to match the master clock before
+                the offset is applied (see apply_sync_to_audio). Only meaningful for
+                audio sources; ignored on the video branch.
 
         Returns:
             Tuple of (synced_file_path, sync_info_dict)
@@ -830,7 +905,8 @@ class MediaSyncProcessor:
                 source_path,
                 sync_info['offset_seconds'],
                 sync_info['speed_factor'],
-                output_path
+                output_path,
+                resample_drift_factor=drift_factor
             )
 
         return synced_path, sync_info
