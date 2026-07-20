@@ -1,0 +1,259 @@
+/* Final Cut Pro visual language — near-black charcoal chrome, pure-black viewer,
+   deliberately NOT Premiere. This window is chromeless (no app sidebar/theme). */
+
+:host {
+  display: block;
+  position: fixed;
+  inset: 0;
+  background: #1e1e1e;
+  color: #e8e8ea;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  user-select: none;
+  overflow: hidden;
+}
+
+/* ── Loading ─────────────────────────────────────────────────────────────── */
+.editor-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  background: #1e1e1e;
+
+  .spinner {
+    width: 34px;
+    height: 34px;
+    border: 3px solid #3a3a3f;
+    border-top-color: #d8d8dc;
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+  .loading-msg {
+    font-size: 14px;
+    color: #b0b0b6;
+    letter-spacing: 0.02em;
+  }
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Fatal error ─────────────────────────────────────────────────────────── */
+.editor-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1a1a1c;
+  padding: 40px;
+
+  .error-card {
+    max-width: 640px;
+    text-align: center;
+
+    .error-mark { font-size: 40px; margin-bottom: 14px; }
+    .error-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: #f0f0f2;
+      margin-bottom: 12px;
+    }
+    .error-body {
+      font-size: 14px;
+      line-height: 1.5;
+      color: #c86a5a;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: rgba(200, 106, 90, 0.10);
+      border: 1px solid rgba(200, 106, 90, 0.30);
+      border-radius: 6px;
+      padding: 14px 16px;
+    }
+  }
+}
+
+/* ── Layout ──────────────────────────────────────────────────────────────── */
+.editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.topbar {
+  flex: 0 0 auto;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  background: #28282a;
+  border-bottom: 1px solid #0d0d0e;
+
+  .session-name {
+    font-size: 12px;
+    font-weight: 500;
+    color: #b8b8be;
+    letter-spacing: 0.02em;
+  }
+}
+
+/* Viewer region: pure black, video centered + letterboxed, timecode beneath. */
+.viewer-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  padding: 12px 12px 8px;
+  gap: 8px;
+}
+
+.viewer-box {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.viewer-video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.timecode {
+  flex: 0 0 auto;
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-weight: 300;
+  font-size: 20px;
+  letter-spacing: 0.08em;
+  color: #e6e6ea;
+}
+
+.transport-error {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: #e08a7a;
+  max-width: 90%;
+  text-align: center;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Timeline pane. */
+.timeline-pane {
+  flex: 0 0 40%;
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  background: #232326;
+  border-top: 1px solid #0d0d0e;
+}
+
+.timeline-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.track-gutter {
+  flex: 0 0 auto;
+  background: #28282a;
+  border-right: 1px solid #0d0d0e;
+  display: flex;
+  flex-direction: column;
+
+  .gutter-ruler-spacer {
+    height: 26px; /* == RULER_H */
+    flex: 0 0 auto;
+    background: #2a2a2d;
+    border-bottom: 1px solid #0d0d0e;
+  }
+
+  .gutter-track {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    border-bottom: 1px solid #000;
+
+    &.video { background: #202024; }
+    &.audio { background: #1d1d20; }
+
+    .gutter-label {
+      font-size: 11px;
+      font-weight: 500;
+      color: #c8c8ce;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  }
+}
+
+.canvas-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  position: relative;
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: text; /* I-beam scrub feel */
+  }
+}
+
+/* Footer: scrollbar left, zoom right. */
+.timeline-footer {
+  flex: 0 0 auto;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  background: #202022;
+  border-top: 1px solid #0d0d0e;
+
+  .scrollbar-track {
+    position: relative;
+    flex: 1 1 auto;
+    height: 8px;
+    background: #303034;
+    border-radius: 4px;
+
+    .scrollbar-thumb {
+      position: absolute;
+      top: 0;
+      height: 8px;
+      min-width: 18px;
+      background: #55555c;
+      border-radius: 4px;
+      cursor: grab;
+
+      &:hover { background: #66666e; }
+      &:active { cursor: grabbing; }
+    }
+  }
+
+  .zoom-control {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+
+    .zoom-icon { font-size: 11px; opacity: 0.7; }
+
+    .zoom-slider {
+      width: 140px;
+      accent-color: #7f8db0;
+      cursor: pointer;
+    }
+  }
+}

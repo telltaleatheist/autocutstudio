@@ -30,10 +30,14 @@ export class AppComponent implements OnInit {
   showInstallDialog = false;
 
   constructor(private electronService: ElectronService, private router: Router) {
-    // Detect the alignment route synchronously so the setup overlay/sidebar never
-    // flash in the wizard window. window.location.hash is reliable at construction
-    // under HashLocationStrategy; router events keep it in sync thereafter.
-    const detect = (url: string) => url.includes('/alignment');
+    // Detect the chromeless routes synchronously so the setup overlay/sidebar never
+    // flash in a second window. window.location.hash is reliable at construction
+    // under HashLocationStrategy; router events keep it in sync thereafter. Both the
+    // manual-alignment wizard (/alignment) and the timeline editor (/editor) run the
+    // same Angular app in their own chromeless windows.
+    // NB: /editor must NOT match the main-window launcher route /editor-launcher, hence
+    // the negative lookahead (no trailing word char / hyphen after "editor").
+    const detect = (url: string) => url.includes('/alignment') || /\/editor(?![-\w])/.test(url);
     if (detect(window.location.hash) || detect(window.location.pathname)) {
       this.isChromeless = true;
       this.setupReady = true; // bypass the first-run gate in the wizard window

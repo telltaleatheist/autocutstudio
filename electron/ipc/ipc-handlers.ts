@@ -31,6 +31,88 @@ export function setupIpcHandlers(windowService: WindowService, pythonSvc: Python
   setupConfigHandlers();
   setupAssetHandlers(windowService);
   setupAlignmentHandlers(windowService);
+  setupEditorHandlers(windowService);
+}
+
+/**
+ * View-only timeline editor handlers.
+ *
+ * Same cross-window seed-payload pattern as the alignment wizard, but DELIBERATELY
+ * simpler and with its OWN state: the main window invokes 'editor:open' with a
+ * { zipPath } payload; the main process opens/focuses the single editor window on
+ * the '/editor' route and holds the payload until the editor pulls it via
+ * 'editor:get-payload' (race-free) — it is ALSO pushed on did-finish-load. There is
+ * NO completion relay and NO settle guard: the editor is view-only, so closing its
+ * window is not a decision the main window is waiting on. This state never touches
+ * the alignment wizard's pendingPayload/settled/relay logic.
+ *
+ * 'editor:manifest' runs PythonService.editorManifest and returns the flattened
+ * timeline manifest; a Python failure rejects with the Python message VERBATIM —
+ * a manifest is never fabricated.
+ */
+function setupEditorHandlers(windowService: WindowService): void {
+  // Editor-scoped seed payload, independent of the alignment wizard's state.
+  let pendingEditorPayload: { zipPath: string } | null = null;
+
+  ipcMain.handle('editor:open', async (_event, payload: { zipPath: string }) => {
+    try {
+      const zipPath = payload?.zipPath;
+      if (typeof zipPath !== 'string' || zipPath.trim() === '') {
+        throw new Error('editor:open requires a non-empty zipPath string');
+      }
+      if (!fs.existsSync(zipPath)) {
+        throw new Error(`editor:open zip file does not exist: ${zipPath}`);
+      }
+
+      // The single secondary window may currently host the alignment wizard; a
+      // mid-flight wizard must not be silently hijacked (the workflow page is
+      // awaiting its completion relay, which would never fire). Refuse loudly.
+      const existing = windowService.getEditorWindow();
+      const existingUrl = existing && !existing.isDestroyed() ? existing.webContents.getURL() : '';
+      if (existingUrl.endsWith('#/alignment')) {
+        throw new Error('The manual-alignment wizard is open. Finish or cancel it before opening the editor.');
+      }
+      const alreadyOnEditor = existingUrl.endsWith('#/editor');
+
+      pendingEditorPayload = { zipPath };
+
+      const win = windowService.createEditorWindow('/editor');
+
+      if (alreadyOnEditor) {
+        // Already mounted on /editor — no navigation, so no did-finish-load will
+        // fire. Push the new payload now; the mounted component re-initializes.
+        win.webContents.send('editor-payload', pendingEditorPayload);
+      } else {
+        // Fresh window: push once loaded (belt-and-suspenders; the editor also
+        // pulls via 'editor:get-payload' so there is no delivery race).
+        win.webContents.once('did-finish-load', () => {
+          if (!win.isDestroyed()) {
+            win.webContents.send('editor-payload', pendingEditorPayload);
+          }
+        });
+      }
+
+      return { success: true };
+    } catch (error: any) {
+      log.error('editor:open failed:', error);
+      return { success: false, error: error?.message || String(error) };
+    }
+  });
+
+  // Race-free pull of the seed payload by the editor renderer on mount.
+  ipcMain.handle('editor:get-payload', async () => {
+    return pendingEditorPayload;
+  });
+
+  // Build the view-only timeline manifest from the session zip. Rejections
+  // propagate the Python error message verbatim; the manifest is never faked.
+  ipcMain.handle('editor:manifest', async (_event, payload: { zipPath: string }) => {
+    const zipPath = payload?.zipPath;
+    if (typeof zipPath !== 'string' || zipPath.trim() === '') {
+      throw new Error('editor:manifest requires a non-empty zipPath string');
+    }
+    return await pythonService.editorManifest(zipPath);
+  });
 }
 
 /**

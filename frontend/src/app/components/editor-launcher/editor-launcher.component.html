@@ -1,0 +1,44 @@
+<div class="editor-launcher">
+  <header class="launcher-header">
+    <h1>Timeline Editor</h1>
+    <p class="subtitle">Open a processed session to review its final cut.</p>
+  </header>
+
+  <section class="open-card">
+    <div class="open-card-body">
+      <div class="open-icon">🎞️</div>
+      <div class="open-copy">
+        <h2>Open a session</h2>
+        <p>Choose the session’s <code>&lt;name&gt;_compounds.zip</code> to load its timeline.</p>
+      </div>
+      <button class="btn-primary" (click)="pickSession()" [disabled]="opening">
+        {{ opening ? 'Opening…' : 'Choose _compounds.zip' }}
+      </button>
+    </div>
+    <div class="error-banner" *ngIf="errorMessage">
+      <span class="error-icon">⚠️</span>
+      <span class="error-text">{{ errorMessage }}</span>
+    </div>
+  </section>
+
+  <section class="recents">
+    <h3>Recent sessions</h3>
+
+    <div class="recents-empty" *ngIf="recents.length === 0">
+      No recent sessions yet. Open a <code>_compounds.zip</code> to get started.
+    </div>
+
+    <ul class="recents-list" *ngIf="recents.length > 0">
+      <li class="recent-item" *ngFor="let r of recents" (click)="openRecent(r)"
+          [class.disabled]="opening">
+        <div class="recent-icon">🎬</div>
+        <div class="recent-info">
+          <div class="recent-name">{{ r.name }}</div>
+          <div class="recent-path" [title]="r.zipPath">{{ r.zipPath }}</div>
+        </div>
+        <div class="recent-date">{{ r.lastOpened | date:'medium' }}</div>
+        <button class="recent-remove" (click)="removeRecent(r, $event)" title="Remove from recents">×</button>
+      </li>
+    </ul>
+  </section>
+</div>

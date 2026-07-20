@@ -53,6 +53,13 @@ export interface ElectronAPI {
   onAlignmentCancelled: (callback: (data: any) => void) => void;
   removeAlignmentListeners: () => void;
 
+  // View-only timeline editor
+  openEditor: (payload: { zipPath: string }) => Promise<{ success: boolean; error?: string }>;
+  getEditorPayload: () => Promise<{ zipPath: string }>;
+  getEditorManifest: (zipPath: string) => Promise<any>;
+  onEditorPayload: (callback: (payload: any) => void) => void;
+  removeEditorListeners: () => void;
+
   // Utility
   getAppVersion: () => Promise<string>;
   log: (level: string, ...args: any[]) => Promise<void>;
@@ -134,6 +141,17 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.removeAllListeners('alignment-payload');
     ipcRenderer.removeAllListeners('alignment-complete');
     ipcRenderer.removeAllListeners('alignment-cancelled');
+  },
+
+  // View-only timeline editor
+  openEditor: (payload) => ipcRenderer.invoke('editor:open', payload),
+  getEditorPayload: () => ipcRenderer.invoke('editor:get-payload'),
+  getEditorManifest: (zipPath) => ipcRenderer.invoke('editor:manifest', { zipPath }),
+  onEditorPayload: (callback) => {
+    ipcRenderer.on('editor-payload', (_event, payload) => callback(payload));
+  },
+  removeEditorListeners: () => {
+    ipcRenderer.removeAllListeners('editor-payload');
   },
 
   // Utility

@@ -1,6 +1,7 @@
 // src/app/services/electron.service.ts
 import { Injectable, NgZone } from '@angular/core';
 import { Observable, Subject } from 'rxjs';
+import { EditorManifest } from '../models/editor-manifest';
 
 @Injectable({
   providedIn: 'root'
@@ -91,6 +92,54 @@ export class ElectronService {
   removeAlignmentListeners(): void {
     if (this.isElectron()) {
       window.electron.removeAlignmentListeners();
+    }
+  }
+
+  // --- Timeline editor bridge -----------------------------------------------
+  // These methods are exposed by preload.ts at runtime (openEditor / getEditorPayload /
+  // getEditorManifest / onEditorPayload / removeEditorListeners). The frontend's
+  // ElectronAPI type declaration (src/types/electron.d.ts) is owned elsewhere and does
+  // not yet list them, so the bridge is reached through a loose cast — the same runtime
+  // object, typed here where the wrappers live. No silent fallback: outside Electron we
+  // throw rather than pretend the editor opened.
+  private get bridge(): any {
+    return (window as any).electron;
+  }
+
+  /** Open (or focus) the editor window on a session's compounds zip. */
+  async openEditor(payload: { zipPath: string }): Promise<{ success: boolean; error?: string }> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return this.bridge.openEditor(payload);
+  }
+
+  /** (Editor window) Pull the zip path this window was opened with. */
+  async getEditorPayload(): Promise<{ zipPath: string }> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return this.bridge.getEditorPayload();
+  }
+
+  /** (Editor window) Ask Python to parse the master hybrid timeline into a manifest. */
+  async getEditorManifest(zipPath: string): Promise<EditorManifest> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return this.bridge.getEditorManifest(zipPath);
+  }
+
+  /** (Editor window) Push half of the race-free payload pull. */
+  onEditorPayload(callback: (payload: { zipPath: string }) => void): void {
+    if (this.isElectron()) {
+      this.bridge.onEditorPayload((p: { zipPath: string }) => this.ngZone.run(() => callback(p)));
+    }
+  }
+
+  removeEditorListeners(): void {
+    if (this.isElectron()) {
+      this.bridge.removeEditorListeners();
     }
   }
 

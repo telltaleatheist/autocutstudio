@@ -50,26 +50,50 @@ export class WindowService {
   /**
    * Create the secondary editor window (a SECOND BrowserWindow).
    *
-   * Currently hosts the manual-alignment wizard; it will later host more editor
-   * tools, hence the generic name. Uses the SAME webPreferences/preload as the main
-   * window and loads the same built Angular index, deep-linked to the /alignment
-   * route via a hash fragment (HashLocationStrategy — see app-routing.module.ts).
-   * Sized for a timeline UI. Only one may exist at a time; an existing one is
-   * focused instead of duplicated.
+   * Hosts the manual-alignment wizard ('/alignment', the default so existing
+   * callers stay unchanged) AND the view-only timeline editor ('/editor'). Uses
+   * the SAME webPreferences/preload as the main window and loads the same built
+   * Angular index, deep-linked to the requested route via a hash fragment
+   * (HashLocationStrategy — see app-routing.module.ts). Sizing depends on the
+   * route: the editor opens larger (a timeline needs the room).
+   *
+   * Only ONE such window may exist at a time. If one already exists on the SAME
+   * route it is focused and returned; if it exists on a DIFFERENT route it is
+   * re-pointed at the new route (loadURL) and focused — never duplicated.
    */
-  createEditorWindow(): BrowserWindow {
+  createEditorWindow(route: '/alignment' | '/editor' = '/alignment'): BrowserWindow {
+    // Per-route window geometry and title. '/alignment' keeps the historical
+    // sizing exactly; '/editor' opens larger for the timeline UI.
+    const isEditor = route === '/editor';
+    const width = isEditor ? 1600 : 1200;
+    const height = isEditor ? 900 : 700;
+    const minWidth = isEditor ? 1200 : 900;
+    const minHeight = isEditor ? 700 : 560;
+    const title = isEditor ? 'Timeline Editor' : 'Manual Alignment';
+
+    // Hash routing makes the deep-link work over file://.
+    const routeUrl = `file://${AppConfig.frontendPath}#${route}`;
+
     if (this.editorWindow && !this.editorWindow.isDestroyed()) {
+      // Reuse the single editor window. If it is on a different route, re-point
+      // it; either way, focus and return it (never open a second one).
+      const currentUrl = this.editorWindow.webContents.getURL();
+      if (!currentUrl.endsWith(`#${route}`)) {
+        log.info(`Re-pointing editor window to: ${routeUrl}`);
+        this.editorWindow.setTitle(title);
+        this.editorWindow.loadURL(routeUrl);
+      }
       this.editorWindow.focus();
       return this.editorWindow;
     }
 
     this.editorWindow = new BrowserWindow({
-      width: 1200,
-      height: 700,
-      minWidth: 900,
-      minHeight: 560,
+      width,
+      height,
+      minWidth,
+      minHeight,
       parent: this.mainWindow || undefined,
-      title: 'Manual Alignment',
+      title,
       autoHideMenuBar: true,
       webPreferences: {
         nodeIntegration: false,
@@ -79,10 +103,8 @@ export class WindowService {
       }
     });
 
-    // Deep-link to the /alignment route. Hash routing makes this work over file://.
-    const alignmentUrl = `file://${AppConfig.frontendPath}#/alignment`;
-    log.info(`Loading editor window from: ${alignmentUrl}`);
-    this.editorWindow.loadURL(alignmentUrl);
+    log.info(`Loading editor window from: ${routeUrl}`);
+    this.editorWindow.loadURL(routeUrl);
 
     this.editorWindow.on('closed', () => {
       this.editorWindow = null;

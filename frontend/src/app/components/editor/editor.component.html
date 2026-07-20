@@ -1,0 +1,71 @@
+<!-- Fatal error: nothing else interactive. -->
+<div class="editor-error" *ngIf="errorMessage">
+  <div class="error-card">
+    <div class="error-mark">⚠️</div>
+    <div class="error-title">Could not open this session</div>
+    <div class="error-body">{{ errorMessage }}</div>
+  </div>
+</div>
+
+<!-- Loading: name what we're doing while Python parses. -->
+<div class="editor-loading" *ngIf="!errorMessage && loading">
+  <div class="spinner"></div>
+  <div class="loading-msg">{{ loadingMessage }}</div>
+</div>
+
+<!-- The editor. -->
+<div class="editor" *ngIf="!errorMessage && !loading">
+  <!-- Top bar. -->
+  <header class="topbar">
+    <span class="session-name">{{ sessionName }}</span>
+  </header>
+
+  <!-- Viewer on pure black, letterboxed, timecode centered beneath. -->
+  <section class="viewer-wrap">
+    <div class="viewer-box">
+      <video #viewerVideo class="viewer-video" muted playsinline></video>
+    </div>
+    <div class="timecode">{{ timecode }}</div>
+    <div class="transport-error" *ngIf="transportError">{{ transportError }}</div>
+  </section>
+
+  <!-- Timeline pane. -->
+  <section class="timeline-pane">
+    <div class="timeline-body">
+      <!-- Track-header gutter. -->
+      <div class="track-gutter" [style.width.px]="GUTTER_W">
+        <div class="gutter-ruler-spacer"></div>
+        <div class="gutter-track" *ngFor="let row of trackRows"
+             [style.height.px]="row.height"
+             [class.video]="row.track.kind === 'video'"
+             [class.audio]="row.track.kind === 'audio'">
+          <span class="gutter-label">{{ row.track.label }}</span>
+        </div>
+      </div>
+
+      <!-- Canvas: ruler + tracks + playhead. -->
+      <div class="canvas-wrap">
+        <canvas #timelineCanvas
+                (mousedown)="onCanvasMouseDown($event)"
+                (wheel)="onWheel($event)"></canvas>
+      </div>
+    </div>
+
+    <!-- Footer: scrollbar (left) + zoom (right). -->
+    <div class="timeline-footer">
+      <div class="scrollbar-track">
+        <div class="scrollbar-thumb"
+             [style.left.%]="scrollbarThumb.left"
+             [style.width.%]="scrollbarThumb.width"
+             (mousedown)="onScrollbarThumbMouseDown($event)"></div>
+      </div>
+      <div class="zoom-control">
+        <span class="zoom-icon">🔍</span>
+        <input type="range" class="zoom-slider"
+               min="1" max="600" step="1"
+               [value]="pxPerSec"
+               (input)="onZoomSlider($any($event.target).value)" />
+      </div>
+    </div>
+  </section>
+</div>
