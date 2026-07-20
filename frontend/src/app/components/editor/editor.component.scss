@@ -170,12 +170,100 @@
   }
 }
 
-/* Top region: transcript pane | vertical splitter | viewer. */
+/* Top region: project picker | transcript pane | viewer, with two vertical splitters. */
 .top-region {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: row;
+}
+
+/* Project picker — far-left FCPX-libraries column. Width bound via [style.width.px]. */
+.project-pane {
+  flex: 0 0 auto;
+  min-width: 0;
+  background: #202023;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+
+  .pp-header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    background: #26262a;
+    border-bottom: 1px solid #0d0d0e;
+
+    .pp-title {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #9a9aa2;
+    }
+    .pp-open {
+      font-size: 11px;
+      color: #d8d8dc;
+      background: transparent;
+      border: 1px solid #3d3d44;
+      border-radius: 4px;
+      padding: 2px 8px;
+      cursor: pointer;
+
+      &:hover { background: #2f2f34; border-color: #55555c; }
+    }
+  }
+
+  .pp-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 4px 0;
+
+    .pp-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: none;
+      border-left: 2px solid transparent;
+      padding: 7px 10px;
+      cursor: pointer;
+      color: #c4c4ca;
+      transition: background 0.1s ease, border-color 0.1s ease;
+
+      &:hover { background: #2a2a2f; }
+
+      &.active {
+        background: #2c2f36;
+        border-left-color: #e8a33d;
+        color: #f0f0f2;
+      }
+
+      .pp-dot {
+        flex: 0 0 auto;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #55555c;
+      }
+      &.active .pp-dot { background: #e8a33d; }
+
+      .pp-name {
+        flex: 1 1 auto;
+        font-size: 12px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+    }
+  }
 }
 
 /* Transcript pane — FCP-dark panel, a shade lighter than the viewer's pure black.
@@ -318,7 +406,7 @@
     }
   }
 
-  /* State 3 — read-only preview: fixed header + scrollable group list. */
+  /* State 3 — transcript preview: filter + search header, then a clean group list. */
   .tx-ready {
     flex: 1 1 auto;
     min-height: 0;
@@ -328,27 +416,103 @@
     .tx-header {
       flex: 0 0 auto;
       display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      padding: 7px 12px;
+      flex-direction: column;
+      gap: 7px;
+      padding: 8px 12px;
       background: #26262a;
       border-bottom: 1px solid #0d0d0e;
+    }
 
-      .tx-count {
+    /* Source filter chips (single-select). */
+    .tx-filter {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+
+      .tx-chip {
         font-size: 11px;
+        color: #b0b0b6;
+        background: #2f2f34;
+        border: 1px solid #3a3a40;
+        border-radius: 11px;
+        padding: 3px 10px;
+        cursor: pointer;
+        white-space: nowrap;
+        transition: background 0.1s ease, color 0.1s ease, border-color 0.1s ease;
+
+        &:hover { background: #37373d; color: #d8d8dc; }
+        &.active {
+          background: #e8a33d;
+          border-color: #e8a33d;
+          color: #201800;
+          font-weight: 600;
+        }
+      }
+    }
+
+    .tx-searchrow {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+
+      .tx-search {
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        background: #1c1c1f;
+        border: 1px solid #3a3a40;
+        border-radius: 5px;
+        padding: 3px 8px;
+
+        &:focus-within { border-color: #55555c; }
+
+        .tx-search-icon { font-size: 10px; opacity: 0.55; flex: 0 0 auto; }
+        .tx-search-input {
+          flex: 1 1 auto;
+          min-width: 0;
+          background: transparent;
+          border: none;
+          outline: none;
+          color: #e2e2e6;
+          font-size: 12px;
+          font-family: inherit;
+
+          &::placeholder { color: #6c6c72; }
+        }
+        .tx-search-clear {
+          flex: 0 0 auto;
+          font-size: 14px;
+          line-height: 1;
+          color: #8a8a90;
+          background: transparent;
+          border: none;
+          cursor: pointer;
+          padding: 0 2px;
+
+          &:hover { color: #d8d8dc; }
+        }
+      }
+
+      .tx-results {
+        flex: 0 0 auto;
+        font-size: 10.5px;
         color: #8a8a90;
-        letter-spacing: 0.02em;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
       }
       .tx-retranscribe {
+        flex: 0 0 auto;
         font-size: 11px;
         color: #9a9aa2;
         background: transparent;
         border: none;
-        padding: 2px 4px;
+        padding: 2px 2px;
         cursor: pointer;
         text-decoration: underline;
         text-underline-offset: 2px;
+        white-space: nowrap;
 
         &:hover { color: #d8d8dc; }
       }
@@ -359,24 +523,35 @@
       min-height: 0;
       overflow-y: auto;
       overflow-x: hidden;
-      padding: 4px 0;
+      padding: 6px 8px;
 
       .tx-group {
-        padding: 6px 12px;
+        padding: 9px 12px;
+        margin: 0;
         cursor: pointer;
-        border-left: 2px solid transparent;
+        border-radius: 6px;
+        border: 1px solid transparent;
         transition: background 0.1s ease, border-color 0.1s ease;
 
-        &:hover {
-          background: #2a2a2f;
-          border-left-color: #55555c;
+        & + .tx-group { margin-top: 2px; }
+
+        /* Hairline separators between cards (skipped for the selected/hover state). */
+        &:not(.selected):not(:hover) + .tx-group:not(.selected):not(:hover) {
+          border-top-color: #2a2a2e;
+        }
+
+        &:hover { background: #2a2a2f; }
+
+        &.selected {
+          background: rgba(245, 197, 24, 0.10);
+          border-color: rgba(245, 197, 24, 0.55);
         }
 
         .tx-group-head {
           display: flex;
           align-items: center;
-          gap: 6px;
-          margin-bottom: 2px;
+          gap: 7px;
+          margin-bottom: 4px;
 
           .tx-dot {
             flex: 0 0 auto;
@@ -384,7 +559,14 @@
             height: 8px;
             border-radius: 50%;
           }
+          .tx-speaker {
+            font-size: 11px;
+            font-weight: 600;
+            color: #b8b8be;
+            letter-spacing: 0.01em;
+          }
           .tx-tc {
+            margin-left: auto;
             font-size: 10px;
             font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
             color: #7a7a80;
@@ -392,11 +574,20 @@
           }
         }
         .tx-group-text {
-          font-size: 12.5px;
-          line-height: 1.45;
-          color: #d4d4d8;
+          font-size: 13.5px;
+          line-height: 1.5;
+          color: #dcdce0;
+          max-width: 62ch;
           word-break: break-word;
+          white-space: normal;
         }
+      }
+
+      .tx-empty-results {
+        padding: 18px 12px;
+        text-align: center;
+        font-size: 12px;
+        color: #6c6c72;
       }
     }
   }
@@ -495,6 +686,12 @@
     border-bottom: 1px solid #0d0d0e;
   }
 
+  /* Vertical-center offset: mirrors the canvas track-stack offset so labels line up. */
+  .gutter-offset {
+    flex: 0 0 auto;
+    background: #28282a;
+  }
+
   .gutter-track {
     flex: 0 0 auto;
     display: flex;
@@ -539,6 +736,39 @@
   padding: 0 12px;
   background: #202022;
   border-top: 1px solid #0d0d0e;
+
+  /* Cursor / Blade tool toggle (A / B). */
+  .tool-toggle {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 2px;
+
+    .tool-btn {
+      width: 24px;
+      height: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #2c2c30;
+      border: 1px solid #3a3a40;
+      color: #b0b0b6;
+      cursor: pointer;
+      padding: 0;
+      transition: background 0.1s ease, color 0.1s ease, border-color 0.1s ease;
+
+      &:first-child { border-radius: 4px 0 0 4px; }
+      &:last-child { border-radius: 0 4px 4px 0; border-left: none; }
+
+      &:hover { background: #37373d; color: #d8d8dc; }
+      &.active {
+        background: #3fd6e0;
+        border-color: #3fd6e0;
+        color: #04252a;
+      }
+
+      .tool-ico { font-size: 11px; line-height: 1; }
+    }
+  }
 
   .scrollbar-track {
     position: relative;

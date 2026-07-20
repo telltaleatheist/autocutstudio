@@ -39,10 +39,31 @@
     <span class="export-msg" *ngIf="exportError">{{ exportError }}</span>
   </div>
 
-  <!-- Top region: transcript (left) | vertical splitter | viewer (right). -->
+  <!-- Top region: project picker | transcript | viewer, with two vertical splitters. -->
   <section class="top-region" #topRegion>
-    <!-- Transcript pane: Transcribe button / running progress / read-only preview / error.
-         Click-a-group-to-seek is the ONLY interaction this phase (chips land later). -->
+    <!-- Project picker (far-left FCPX-libraries column). Shares 'editor.recentSessions'
+         with the launcher; a click loads INTO THIS WINDOW via bootstrap. -->
+    <aside class="project-pane" [style.width.px]="projectWidth">
+      <div class="pp-header">
+        <span class="pp-title">Projects</span>
+        <button class="pp-open" (click)="pickProject()" title="Open a _compounds.zip">+ Open…</button>
+      </div>
+      <div class="pp-list">
+        <button class="pp-item" *ngFor="let r of recents"
+                [class.active]="isCurrentSession(r)"
+                (click)="openProject(r)"
+                [title]="r.zipPath">
+          <span class="pp-dot"></span>
+          <span class="pp-name">{{ r.name }}</span>
+        </button>
+      </div>
+    </aside>
+
+    <div class="splitter splitter-v splitter-p"
+         [class.dragging]="draggingSplitP"
+         (mousedown)="onSplitPMouseDown($event)"></div>
+
+    <!-- Transcript pane: Transcribe button / running progress / read-only preview / error. -->
     <div class="transcript-pane" [style.flexBasis.%]="splitV * 100">
       <!-- State 1 — no sidecar yet. -->
       <div class="tx-empty" *ngIf="transcriptState === 'none'">
@@ -72,20 +93,41 @@
         <button class="tx-retry-btn" (click)="startTranscription()">Try again</button>
       </div>
 
-      <!-- State 3 — read-only preview. -->
+      <!-- State 3 — transcript preview: source filter + search, then a clean group list. -->
       <div class="tx-ready" *ngIf="transcriptState === 'ready'">
         <div class="tx-header">
-          <span class="tx-count">{{ transcriptWordCount }} {{ transcriptWordCount === 1 ? 'word' : 'words' }}</span>
-          <button class="tx-retranscribe" (click)="startTranscription()">re-transcribe</button>
+          <div class="tx-filter">
+            <button *ngFor="let tr of transcriptTracks" class="tx-chip"
+                    [class.active]="sourceFilter === tr.id"
+                    (click)="setSourceFilter(tr.id)">{{ tr.label }}</button>
+            <button class="tx-chip"
+                    [class.active]="sourceFilter === 'merged'"
+                    (click)="setSourceFilter('merged')">Merged</button>
+          </div>
+          <div class="tx-searchrow">
+            <div class="tx-search">
+              <span class="tx-search-icon">🔍</span>
+              <input class="tx-search-input" type="text" placeholder="Search transcript…"
+                     [value]="searchQuery"
+                     (input)="onSearchInput($any($event.target).value)" />
+              <button class="tx-search-clear" *ngIf="searchQuery" (click)="clearSearch()" title="Clear">×</button>
+            </div>
+            <span class="tx-results" *ngIf="searchQuery">{{ searchResultCount }} {{ searchResultCount === 1 ? 'result' : 'results' }}</span>
+            <button class="tx-retranscribe" (click)="startTranscription()">re-transcribe</button>
+          </div>
         </div>
         <div class="tx-groups">
-          <div class="tx-group" *ngFor="let g of visibleGroups" (click)="seekToGroup(g)" title="Seek here">
+          <div class="tx-group" *ngFor="let g of visibleGroups"
+               [class.selected]="isGroupSelected(g)"
+               (click)="selectGroup(g)" title="Select on timeline">
             <div class="tx-group-head">
               <span class="tx-dot" [style.background]="g.color"></span>
+              <span class="tx-speaker">{{ g.label }}</span>
               <span class="tx-tc">{{ g.timecode }}</span>
             </div>
             <div class="tx-group-text">{{ g.text }}</div>
           </div>
+          <div class="tx-empty-results" *ngIf="visibleGroups.length === 0">No matching lines.</div>
         </div>
       </div>
     </div>
@@ -114,6 +156,8 @@
       <!-- Track-header gutter. -->
       <div class="track-gutter" [style.width.px]="GUTTER_W">
         <div class="gutter-ruler-spacer"></div>
+        <!-- Matches the canvas vertical-center offset so gutter labels align with lanes. -->
+        <div class="gutter-offset" [style.height.px]="trackTopOffset"></div>
         <div class="gutter-track" *ngFor="let row of trackRows"
              [style.height.px]="row.height"
              [class.video]="row.track.kind === 'video'"
@@ -130,8 +174,18 @@
       </div>
     </div>
 
-    <!-- Footer: scrollbar (left) + zoom (right). -->
+    <!-- Footer: tool toggle (left) + scrollbar + zoom (right). -->
     <div class="timeline-footer">
+      <div class="tool-toggle">
+        <button class="tool-btn" [class.active]="toolMode === 'select'"
+                (click)="setTool('select')" title="Select (A)" aria-label="Select tool">
+          <span class="tool-ico">⌖</span>
+        </button>
+        <button class="tool-btn" [class.active]="toolMode === 'blade'"
+                (click)="setTool('blade')" title="Blade (B)" aria-label="Blade tool">
+          <span class="tool-ico">▮</span>
+        </button>
+      </div>
       <div class="scrollbar-track">
         <div class="scrollbar-thumb"
              [style.left.%]="scrollbarThumb.left"

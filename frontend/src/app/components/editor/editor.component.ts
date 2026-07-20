@@ -63,11 +63,25 @@ interface TranscriptGroupView {
   label: string;
   color: string;
   text: string;
-  originalStart: number;   // seek target (mapped through originalToEdited on click)
+  originalStart: number;   // min word timelineStart (ORIGINAL seconds) — selection lo + seek target
+  originalEnd: number;     // max word timelineEnd (ORIGINAL seconds) — selection hi
   timecode: string;
 }
 /** Transcript pane lifecycle: button / progress+cancel / preview / verbatim error. */
 type TranscriptState = 'none' | 'running' | 'ready' | 'error';
+
+/**
+ * A recent session row, shared byte-for-byte with the launcher via the
+ * 'editor.recentSessions' localStorage key. name = filename minus _compounds.zip.
+ */
+interface RecentSession {
+  zipPath: string;
+  name: string;
+  lastOpened: string; // ISO date
+}
+
+/** Timeline pointer tool: Arrow (scrub/select) or Blade (drop section boundaries). */
+type ToolMode = 'select' | 'blade';
 
 /**
  * A cut is a half-open FRAME range in ORIGINAL timeline coordinates (the manifest's time
@@ -142,10 +156,19 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private readonly SPLIT_H_MIN = 0.2;
   private readonly SPLIT_H_MAX = 0.6;
   private readonly SPLIT_H_DEFAULT = 0.4;
+  // splitP: the project-picker column WIDTH in px (fixed, not a fraction — the far-left
+  // FCPX-libraries column). Clamped; corrupt/missing falls back to the default.
+  private readonly SPLIT_P_KEY = 'editor.splitP';
+  private readonly SPLIT_P_MIN = 140;
+  private readonly SPLIT_P_MAX = 360;
+  private readonly SPLIT_P_DEFAULT = 200;
+  private readonly SPLITTER_PX = 6;        // matches .splitter flex-basis in the SCSS
   splitV = this.SPLIT_V_DEFAULT;
   splitH = this.SPLIT_H_DEFAULT;
+  projectWidth = this.SPLIT_P_DEFAULT;
   draggingSplitV = false;  // public: template highlights the splitter while dragging
   draggingSplitH = false;
+  draggingSplitP = false;
 
   // ── Load / error state ──────────────────────────────────────────────────────
   loading = true;
@@ -199,6 +222,21 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   selEnd: number | null = null;          // 'o' mark / drag end
   private draggingSelection = false;
 
+  // ── Tools + blade (FCPX Arrow / Blade) ──────────────────────────────────────
+  // The active pointer tool. Blade drops boundaries that subdivide the timeline into
+  // sections; clicking a section (either tool) selects it for a ripple delete.
+  toolMode: ToolMode = 'select';
+  // Blade boundaries in ORIGINAL timeline seconds, so they survive cuts via
+  // originalToEdited() (a boundary swallowed by a cut collapses to its seam and is pruned).
+  // Sorted ascending, de-duplicated. Cleared on session re-init.
+  private bladeBoundaries: number[] = [];
+
+  // The transcript group (identified by its ORIGINAL span) currently reflected in the
+  // timeline selection — drives the pane's SELECTED highlight. Cleared whenever the
+  // selection is set by any non-group action or is cleared.
+  private selectedGroupStart: number | null = null;
+  private selectedGroupEnd: number | null = null;
+
   // ── Export ──────────────────────────────────────────────────────────────────
   exporting = false;
   exportResultPath: string | null = null; // set on a successful FCPXML export
@@ -220,6 +258,18 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   transcribeProgress = 0;                     // 0-100 int
   transcribeMessage = '';
   transcribeEtaSeconds: number | null = null; // measured time-remaining; null = still estimating
+  // Source filter + free-text search over the transcript. sourceFilter is a track id or
+  // 'merged'; default (set on ingest) is the FIRST track (the mic). Both reset on re-init
+  // and are pure recomputes over recomputeVisibleGroups.
+  transcriptTracks: { id: string; label: string }[] = [];
+  sourceFilter = 'merged';
+  searchQuery = '';
+
+  // ── Project picker (far-left FCPX-libraries column) ─────────────────────────
+  // Shares 'editor.recentSessions' with the launcher (same shape, prune, sort).
+  private readonly RECENTS_KEY = 'editor.recentSessions';
+  private readonly COMPOUNDS_SUFFIX = '_compounds.zip';
+  recents: RecentSession[] = [];
 
   // ── Rendering ───────────────────────────────────────────────────────────────
   private renderScheduled = false;
@@ -252,6 +302,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // Restore pane-split preferences (validated + clamped; fall back on anything odd).
     this.splitV = this.readSplit(this.SPLIT_V_KEY, this.SPLIT_V_MIN, this.SPLIT_V_MAX, this.SPLIT_V_DEFAULT);
     this.splitH = this.readSplit(this.SPLIT_H_KEY, this.SPLIT_H_MIN, this.SPLIT_H_MAX, this.SPLIT_H_DEFAULT);
+    this.projectWidth = this.readSplit(this.SPLIT_P_KEY, this.SPLIT_P_MIN, this.SPLIT_P_MAX, this.SPLIT_P_DEFAULT);
+    // Recents (pruned against disk) drive the project picker; shared with the launcher.
+    void this.loadAndPruneRecents();
     // Race-free pull + push, like the alignment wizard — but the push listener is
     // PERMANENT: when this window is already open on a session and the launcher opens a
     // DIFFERENT one, the main process pushes the new payload over the same channel
@@ -328,6 +381,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       return;
     }
     this.loading = false;
+    // Remember this session in the shared recents (updates lastOpened + re-sorts), so the
+    // project picker always shows the currently-loaded one highlighted at the top.
+    this.recordRecent(zipPath);
     this.cdr.detectChanges();
     // Fit the whole timeline into the visible width on first render.
     this.initialZoomToFit();
@@ -375,6 +431,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.selStart = null;
     this.selEnd = null;
     this.draggingSelection = false;
+    // Blade boundaries + transcript-derived selection are per-session; drop them so a
+    // re-init cannot leak a previous session's carve marks.
+    this.bladeBoundaries = [];
+    this.selectedGroupStart = null;
+    this.selectedGroupEnd = null;
     this.exporting = false;
     this.exportResultPath = null;
     this.exportError = null;
@@ -390,6 +451,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.transcript = null;
     this.transcriptGroups = [];
     this.visibleGroups = [];
+    this.transcriptTracks = [];
+    this.sourceFilter = 'merged';
+    this.searchQuery = '';
     this.transcriptWordCount = 0;
     this.transcriptState = 'none';
     this.transcriptError = '';
@@ -556,13 +620,41 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const videoTracks = this.manifest.tracks.filter(t => t.kind === 'video');
     const audioTracks = this.manifest.tracks.filter(t => t.kind === 'audio');
     const ordered = [...videoTracks].reverse().concat(audioTracks);
-    let y = this.RULER_H;
+    // FCPX-style: center the whole track stack in the area below the ruler, so short
+    // stacks float in the middle instead of hugging the top. The offset is baked into
+    // every row's `top`, so canvas draw + gutter (which both read trackRows / the same
+    // offset getter) stay pixel-aligned.
+    let y = this.RULER_H + this.trackTopOffset;
     for (const track of ordered) {
       const height = track.kind === 'video' ? this.VIDEO_TRACK_H : this.AUDIO_TRACK_H;
       rows.push({ track, top: y, height });
       y += height;
     }
     return rows;
+  }
+
+  /** Total height (CSS px) of the stacked track lanes, ruler excluded. */
+  private trackStackHeight(): number {
+    if (!this.manifest) return 0;
+    let h = 0;
+    for (const t of this.manifest.tracks) {
+      h += t.kind === 'video' ? this.VIDEO_TRACK_H : this.AUDIO_TRACK_H;
+    }
+    return h;
+  }
+
+  /**
+   * Vertical offset (CSS px) that centers the track stack below the ruler: half the empty
+   * space when the stack is shorter than the available area, else 0 (it scrolls/clips from
+   * the top as before). Read by canvas draw (via trackRows), hit-testing (rowAtY, via
+   * trackRows) and the DOM gutter (an offset spacer of this height) — one source of truth.
+   */
+  get trackTopOffset(): number {
+    const c = this.canvasRef?.nativeElement;
+    const H = c ? (c.clientHeight || 0) : 0;
+    const avail = H - this.RULER_H;
+    const stack = this.trackStackHeight();
+    return avail > stack ? Math.floor((avail - stack) / 2) : 0;
   }
 
   // ── Coordinate mapping ──────────────────────────────────────────────────────
@@ -579,9 +671,19 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private xToTime(x: number): number {
     return this.scrollOffset + x / this.pxPerSec;
   }
+  /**
+   * Over-scroll breathing room so the first/last clips aren't jammed against the edges:
+   * allow a small pad before 0 and past (editedDuration - viewport). The pad is small
+   * (<= 2s, and <= 15% of the visible span). initialZoomToFit still fits [0, editedDuration]
+   * exactly — the margin is a clamp relaxation only, never baked into the fit.
+   */
+  private overscrollMargin(): number {
+    return Math.min(2, 0.15 * this.viewportSec);
+  }
   private clampScroll(v: number): number {
-    const max = Math.max(0, this.editedDuration - this.viewportSec);
-    return Math.min(max, Math.max(0, v));
+    const margin = this.overscrollMargin();
+    const max = Math.max(0, this.editedDuration - this.viewportSec) + margin;
+    return Math.min(max, Math.max(-margin, v));
   }
 
   private initialZoomToFit(): void {
@@ -672,6 +774,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       }
     }
 
+    // Blade boundaries (cyan) across the track area, beneath the ruler + selection.
+    this.drawBladeBoundaries(ctx, W, H, rows);
+
     // Ruler last-but-one so clips never bleed over it.
     this.drawRuler(ctx, W);
 
@@ -720,6 +825,28 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     ctx.lineTo(x, 8);
     ctx.closePath();
     ctx.fill();
+    ctx.restore();
+  }
+
+  /**
+   * Blade boundaries as thin cyan marks spanning the track area (below the ruler). Stored in
+   * ORIGINAL seconds; mapped to edited x via originalToEdited so they ride along with cuts.
+   */
+  private drawBladeBoundaries(ctx: CanvasRenderingContext2D, W: number, H: number, rows: TrackRow[]): void {
+    if (this.bladeBoundaries.length === 0) return;
+    const top = rows.length ? rows[0].top : this.RULER_H;
+    ctx.save();
+    ctx.strokeStyle = '#3fd6e0';
+    ctx.globalAlpha = 0.85;
+    ctx.lineWidth = 1;
+    for (const b of this.bladeBoundaries) {
+      const x = this.timeToX(this.originalToEdited(b));
+      if (x < -1 || x > W + 1) continue;
+      ctx.beginPath();
+      ctx.moveTo(x + 0.5, top);
+      ctx.lineTo(x + 0.5, H);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
@@ -1010,20 +1137,139 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (this.errorMessage || !this.manifest) return;
     ev.preventDefault();
     if (ev.shiftKey) {
-      // Shift+drag paints a selection (edited seconds) instead of scrubbing the playhead.
+      // Shift+drag paints a free selection (edited seconds) instead of scrubbing — a manual
+      // range, so any transcript-group highlight no longer applies.
       const t = this.canvasEventTime(ev);
       this.selStart = t;
       this.selEnd = t;
+      this.selectedGroupStart = null;
+      this.selectedGroupEnd = null;
       this.draggingSelection = true;
       window.addEventListener('mousemove', this.onWindowMouseMove);
       window.addEventListener('mouseup', this.onWindowMouseUp);
       this.requestRender();
       return;
     }
+    const t = this.canvasEventTime(ev);
+    const inRuler = this.canvasEventY(ev) <= this.RULER_H;
+    // Blade tool: a track-area click also drops a boundary at the click time (ORIGINAL
+    // seconds) before scrubbing/selecting. Ruler clicks stay pure scrubs in either tool.
+    if (this.toolMode === 'blade' && !inRuler) {
+      this.addBladeBoundary(this.editedToOriginal(t));
+    }
+    // Move the playhead (and keep drag-scrub alive for the rest of this gesture).
     this.draggingPlayhead = true;
-    this.setPlayheadFromEvent(ev);
+    this.setPlayhead(t);
+    // Track-area click on a clip → select the enclosing section (clip edges ∪ blades).
+    // Ruler clicks, and clicks in a lane gap, just scrub (selection cleared).
+    if (!inRuler && this.rowAt(this.canvasEventY(ev)) && this.segmentAtY(ev, t)) {
+      this.selectSectionAround(t);
+    } else if (!inRuler) {
+      this.selStart = null;
+      this.selEnd = null;
+      this.selectedGroupStart = null;
+      this.selectedGroupEnd = null;
+    }
     window.addEventListener('mousemove', this.onWindowMouseMove);
     window.addEventListener('mouseup', this.onWindowMouseUp);
+    this.requestRender();
+  }
+
+  /** CSS-px Y of a mouse event within the canvas (canvas-local, top = 0). */
+  private canvasEventY(ev: MouseEvent): number {
+    const canvas = this.canvasRef?.nativeElement;
+    if (!canvas) return 0;
+    const rect = canvas.getBoundingClientRect();
+    return ev.clientY - rect.top - (canvas.clientTop || 0);
+  }
+
+  /** The track row under a canvas-local Y (offset-aware via trackRows), or null. */
+  private rowAt(cssY: number): TrackRow | null {
+    for (const row of this.trackRows) {
+      if (cssY >= row.top && cssY < row.top + row.height) return row;
+    }
+    return null;
+  }
+
+  /** The clip under the event's lane at edited time t, or null (a gap / no lane). */
+  private segmentAtY(ev: MouseEvent, t: number): EditorSegment | null {
+    const row = this.rowAt(this.canvasEventY(ev));
+    if (!row) return null;
+    return this.segmentAt(row.track.id, t);
+  }
+
+  /**
+   * Select the section around edited time `t`. The boundary set is the PRIMARY video
+   * track's clip edges ∪ the blade boundaries (mapped to edited seconds) ∪ the timeline
+   * ends. The two boundaries bracketing `t` become the selection; a degenerate bracket
+   * clears it. Blades carve a clip into sub-sections; with none, the section is the clip.
+   */
+  private selectSectionAround(t: number): void {
+    const bounds = this.sectionBoundaries();
+    let lo: number | null = null, hi: number | null = null;
+    for (const b of bounds) {
+      if (b <= t + this.EPS) { if (lo === null || b > lo) lo = b; }
+      if (b > t + this.EPS) { if (hi === null || b < hi) hi = b; }
+    }
+    if (lo === null || hi === null || hi - lo <= this.EPS) {
+      this.selStart = null;
+      this.selEnd = null;
+    } else {
+      this.selStart = lo;
+      this.selEnd = hi;
+    }
+    // A section click is not a transcript-group selection.
+    this.selectedGroupStart = null;
+    this.selectedGroupEnd = null;
+  }
+
+  /** Sorted, de-duplicated section boundaries in EDITED seconds. */
+  private sectionBoundaries(): number[] {
+    const out: number[] = [0, this.editedDuration];
+    const primary = this.primaryVideoTrackId;
+    if (primary) {
+      for (const seg of this.segsByTrack.get(primary) || []) {
+        out.push(seg.timelineStart, seg.timelineStart + seg.duration);
+      }
+    }
+    for (const b of this.bladeBoundaries) {
+      const e = this.originalToEdited(b);
+      if (e > this.EPS && e < this.editedDuration - this.EPS) out.push(e);
+    }
+    out.sort((a, b) => a - b);
+    const dedup: number[] = [];
+    for (const v of out) {
+      if (dedup.length === 0 || v - dedup[dedup.length - 1] > this.EPS) dedup.push(v);
+    }
+    return dedup;
+  }
+
+  /** Add a blade boundary (ORIGINAL seconds), sorted + de-duplicated. */
+  private addBladeBoundary(originalSec: number): void {
+    const t = Math.min(this.manifest?.timelineDuration || 0, Math.max(0, originalSec));
+    for (const b of this.bladeBoundaries) {
+      if (Math.abs(b - t) <= this.EPS) return; // already present
+    }
+    this.bladeBoundaries.push(t);
+    this.bladeBoundaries.sort((a, b) => a - b);
+  }
+
+  /** Drop blade boundaries that a cut has swallowed (their original time now inside a cut). */
+  private pruneBladeBoundaries(): void {
+    if (this.bladeBoundaries.length === 0) return;
+    const fs = this.manifest?.frameSeconds;
+    if (!fs) return;
+    this.bladeBoundaries = this.bladeBoundaries.filter(b => {
+      for (const c of this.cuts) {
+        if (b > c.startFrame * fs + this.EPS && b < c.endFrame * fs - this.EPS) return false;
+      }
+      return true;
+    });
+  }
+
+  /** Switch the active pointer tool (Arrow / Blade). */
+  setTool(mode: ToolMode): void {
+    this.toolMode = mode;
   }
 
   private onWindowMouseMove = (ev: MouseEvent): void => {
@@ -1032,18 +1278,21 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     else if (this.draggingScrollbar) this.setScrollFromScrollbar(ev);
     else if (this.draggingSplitV) this.setSplitVFromEvent(ev);
     else if (this.draggingSplitH) this.setSplitHFromEvent(ev);
+    else if (this.draggingSplitP) this.setSplitPFromEvent(ev);
   };
 
   private onWindowMouseUp = (): void => {
     if (!this.draggingPlayhead && !this.draggingScrollbar && !this.draggingSplitV
-        && !this.draggingSplitH && !this.draggingSelection) return;
+        && !this.draggingSplitH && !this.draggingSplitP && !this.draggingSelection) return;
     // Persist split preferences once per drag (not per move frame).
     if (this.draggingSplitV) localStorage.setItem(this.SPLIT_V_KEY, String(this.splitV));
     if (this.draggingSplitH) localStorage.setItem(this.SPLIT_H_KEY, String(this.splitH));
+    if (this.draggingSplitP) localStorage.setItem(this.SPLIT_P_KEY, String(Math.round(this.projectWidth)));
     this.draggingPlayhead = false;
     this.draggingScrollbar = false;
     this.draggingSplitV = false;
     this.draggingSplitH = false;
+    this.draggingSplitP = false;
     this.draggingSelection = false;
     document.body.style.userSelect = '';
     window.removeEventListener('mousemove', this.onWindowMouseMove);
@@ -1076,12 +1325,34 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     window.addEventListener('mouseup', this.onWindowMouseUp);
   }
 
+  onSplitPMouseDown(ev: MouseEvent): void {
+    ev.preventDefault();
+    this.draggingSplitP = true;
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', this.onWindowMouseMove);
+    window.addEventListener('mouseup', this.onWindowMouseUp);
+  }
+
+  private setSplitPFromEvent(ev: MouseEvent): void {
+    const el = this.topRegionRef?.nativeElement;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const px = ev.clientX - rect.left;
+    this.projectWidth = Math.min(this.SPLIT_P_MAX, Math.max(this.SPLIT_P_MIN, px));
+    // Same live-resize path as the other splitters (viewer/canvas re-layout + redraw).
+    this.onResize();
+  }
+
   private setSplitVFromEvent(ev: MouseEvent): void {
     const el = this.topRegionRef?.nativeElement;
     if (!el) return;
     const rect = el.getBoundingClientRect();
     if (rect.width <= 0) return;
-    const frac = (ev.clientX - rect.left) / rect.width;
+    // splitV is the transcript's flex-basis as a fraction of the WHOLE top region, but the
+    // transcript now starts after the fixed project column (+ its splitter), so subtract
+    // that lead-in to keep the V splitter under the cursor.
+    const lead = this.projectWidth + this.SPLITTER_PX;
+    const frac = (ev.clientX - rect.left - lead) / rect.width;
     this.splitV = Math.min(this.SPLIT_V_MAX, Math.max(this.SPLIT_V_MIN, frac));
     // Same path as the window-resize handler so any layout knock-on re-renders live.
     this.onResize();
@@ -1205,6 +1476,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   @HostListener('window:keydown', ['$event'])
   onKeyDown(ev: KeyboardEvent): void {
     if (this.errorMessage || !this.manifest) return;
+    // Ignore every editor shortcut while the user is typing (e.g. the transcript search
+    // box) — space, A/B, I/O, Delete, Cmd+X must reach the input, not the timeline.
+    if (this.isTypingTarget(ev.target)) return;
     if (ev.key === ' ' || ev.code === 'Space') {
       ev.preventDefault();
       this.togglePlayback();
@@ -1231,22 +1505,48 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       if (this.loading) return;
       ev.preventDefault();
       this.selStart = this.playheadTime;   // FCP in-mark at the playhead
+      this.selectedGroupStart = null;
+      this.selectedGroupEnd = null;
       this.requestRender();
     } else if (ev.key === 'o' || ev.key === 'O') {
       if (this.loading) return;
       ev.preventDefault();
       this.selEnd = this.playheadTime;     // FCP out-mark at the playhead
+      this.selectedGroupStart = null;
+      this.selectedGroupEnd = null;
       this.requestRender();
+    } else if (ev.key === 'a' || ev.key === 'A') {
+      ev.preventDefault();
+      this.setTool('select');              // FCP Arrow tool
+    } else if (ev.key === 'b' || ev.key === 'B') {
+      ev.preventDefault();
+      this.setTool('blade');               // FCP Blade tool
+    } else if ((ev.metaKey || ev.ctrlKey) && (ev.key === 'x' || ev.key === 'X')) {
+      // Cmd/Ctrl+X == ripple-delete the current selection (FCP alias for Delete).
+      if (this.loading) return;
+      ev.preventDefault();
+      this.deleteSelection();
     } else if (ev.key === 'Delete' || ev.key === 'Backspace') {
       if (this.loading) return;
       ev.preventDefault();
       this.deleteSelection();
     } else if (ev.key === 'Escape') {
       if (this.loading) return;
+      // Clear both the timeline selection and the transcript-group highlight.
       this.selStart = null;
       this.selEnd = null;
+      this.selectedGroupStart = null;
+      this.selectedGroupEnd = null;
       this.requestRender();
     }
+  }
+
+  /** True when a keydown target is an editable field (input / textarea / contentEditable). */
+  private isTypingTarget(target: EventTarget | null): boolean {
+    const el = target as HTMLElement | null;
+    if (!el) return false;
+    const tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable === true;
   }
 
   // ── Selection + cut editing ─────────────────────────────────────────────────
@@ -1304,8 +1604,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.redoStack = [];
     this.cuts = this.mergeCuts([...this.cuts, { startFrame, endFrame }]);
     this.rebuildEditedModel();
+    this.pruneBladeBoundaries();   // drop any boundary the new cut swallowed
     this.selStart = null;
     this.selEnd = null;
+    this.selectedGroupStart = null;
+    this.selectedGroupEnd = null;
     // Seam = where the removed content used to begin, in the NEW edited timeline.
     const seam = this.originalToEdited(startFrame * fs);
     this.landPlayheadAfterEdit(seam, true);
@@ -1319,6 +1622,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.rebuildEditedModel();
     this.selStart = null;
     this.selEnd = null;
+    this.selectedGroupStart = null;
+    this.selectedGroupEnd = null;
     this.landPlayheadAfterEdit(this.originalToEdited(origTime), false);
   }
 
@@ -1330,6 +1635,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.rebuildEditedModel();
     this.selStart = null;
     this.selEnd = null;
+    this.selectedGroupStart = null;
+    this.selectedGroupEnd = null;
     this.landPlayheadAfterEdit(this.originalToEdited(origTime), false);
   }
 
@@ -1398,6 +1705,95 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   /** Reveal the exported file in Finder/Explorer. */
   onShowExport(): void {
     if (this.exportResultPath) void this.electron.showInFolder(this.exportResultPath);
+  }
+
+  // ── Project picker (recents shared with the launcher) ───────────────────────
+  /** Read the shared recents blob; corrupt/foreign entries are dropped (never crash). */
+  private readRecents(): RecentSession[] {
+    try {
+      const raw = localStorage.getItem(this.RECENTS_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((r: any) => r && typeof r.zipPath === 'string');
+    } catch {
+      return [];
+    }
+  }
+
+  private writeRecents(list: RecentSession[]): void {
+    localStorage.setItem(this.RECENTS_KEY, JSON.stringify(list));
+  }
+
+  /** Filename minus the _compounds.zip suffix (mirrors the launcher's deriveName). */
+  private deriveName(zipPath: string): string {
+    const base = zipPath.split(/[\\/]/).pop() || zipPath;
+    if (base.endsWith(this.COMPOUNDS_SUFFIX)) return base.slice(0, -this.COMPOUNDS_SUFFIX.length);
+    return base.replace(/\.zip$/i, '');
+  }
+
+  /**
+   * Load recents and drop any whose zip has vanished (same prune the launcher does). If the
+   * store is empty but a session is already loaded, seed the list with it so the picker
+   * always shows at least the current session (highlighted).
+   */
+  private async loadAndPruneRecents(): Promise<void> {
+    const stored = this.readRecents();
+    const kept: RecentSession[] = [];
+    for (const r of stored) {
+      try {
+        const res = await this.electron.checkFileExists(r.zipPath);
+        if (res?.exists) kept.push(r);
+      } catch {
+        // Cannot verify (not in Electron / IPC hiccup): keep rather than silently delete.
+        kept.push(r);
+      }
+    }
+    kept.sort((a, b) => (b.lastOpened || '').localeCompare(a.lastOpened || ''));
+    if (kept.length === 0 && this.currentZipPath) {
+      kept.push({ zipPath: this.currentZipPath, name: this.deriveName(this.currentZipPath), lastOpened: new Date().toISOString() });
+    }
+    this.recents = kept;
+    this.writeRecents(kept);
+    this.cdr.detectChanges();
+  }
+
+  /**
+   * Move (or add) a session to the front with a fresh lastOpened; persist + re-sort. Rebased
+   * on the freshly-read store (not in-memory this.recents, which may not have finished its
+   * async prune yet) so a bootstrap can never clobber the launcher's other recents.
+   */
+  private recordRecent(zipPath: string): void {
+    const entry: RecentSession = { zipPath, name: this.deriveName(zipPath), lastOpened: new Date().toISOString() };
+    const rest = this.readRecents().filter(r => r.zipPath !== zipPath);
+    this.recents = [entry, ...rest];
+    this.writeRecents(this.recents);
+  }
+
+  /** The row for the session currently loaded in THIS window (for the active highlight). */
+  isCurrentSession(r: RecentSession): boolean {
+    return r.zipPath === this.currentZipPath;
+  }
+
+  /** Click a recents row → load it INTO THIS WINDOW via the existing bootstrap (no new window). */
+  openProject(r: RecentSession): void {
+    if (r.zipPath === this.currentZipPath) return; // already loaded here
+    void this.bootstrap(r.zipPath);
+  }
+
+  /** "+ Open…" → pick a _compounds.zip and bootstrap it into this window. */
+  async pickProject(): Promise<void> {
+    let picked: { canceled: boolean; filePaths: string[] };
+    try {
+      picked = await this.electron.selectFile({
+        title: 'Choose a session’s _compounds.zip',
+        filters: [{ name: 'Compound Session', extensions: ['zip'] }]
+      });
+    } catch {
+      return; // dialog failure is non-fatal to the open session; user can retry
+    }
+    if (picked.canceled || !picked.filePaths?.length) return;
+    void this.bootstrap(picked.filePaths[0]);
   }
 
   // ── Transcript ──────────────────────────────────────────────────────────────
@@ -1476,6 +1872,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
     this.transcript = t;
     this.transcriptGroups = groups;
+    this.transcriptTracks = t.tracks.map(tr => ({ id: tr.id, label: tr.label }));
+    // Default source = the FIRST track (the mic): the user primarily wants to read their
+    // own words, not the merged interleave.
+    this.sourceFilter = t.tracks.length > 0 ? t.tracks[0].id : 'merged';
+    this.searchQuery = '';
     this.transcriptWordCount = t.words.length;
     this.transcriptState = 'ready';
     this.recomputeVisibleGroups();
@@ -1488,8 +1889,15 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    */
   private recomputeVisibleGroups(): void {
     if (this.transcriptGroups.length === 0) { this.visibleGroups = []; return; }
+    // Source filter: a single track id shows only that track's groups; 'merged' shows all
+    // tracks interleaved (transcriptGroups is already in timeline order). Then the free-text
+    // search (case-insensitive substring). Then the existing "fully inside a cut" drop.
+    const merged = this.sourceFilter === 'merged';
+    const q = this.searchQuery.trim().toLowerCase();
     const out: TranscriptGroupView[] = [];
     for (const g of this.transcriptGroups) {
+      if (!merged && g.trackId !== this.sourceFilter) continue;
+      if (q && !g.text.toLowerCase().includes(q)) continue;
       if (this.isGroupFullyCut(g)) continue;
       const editedStart = this.originalToEdited(g.originalStart);
       out.push({
@@ -1497,10 +1905,31 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         color: g.color,
         text: g.text,
         originalStart: g.originalStart,
+        originalEnd: g.originalEnd,
         timecode: this.formatTimecode(editedStart),
       });
     }
     this.visibleGroups = out;
+  }
+
+  /** Filter-chip select: switch the shown source track (or 'merged') and recompute. */
+  setSourceFilter(id: string): void {
+    if (this.sourceFilter === id) return;
+    this.sourceFilter = id;
+    this.recomputeVisibleGroups();
+  }
+
+  /** Live search input: recompute the visible groups against the query. */
+  onSearchInput(value: string): void {
+    this.searchQuery = value;
+    this.recomputeVisibleGroups();
+  }
+
+  /** Clear the search box (× button). */
+  clearSearch(): void {
+    if (this.searchQuery === '') return;
+    this.searchQuery = '';
+    this.recomputeVisibleGroups();
   }
 
   /**
@@ -1583,9 +2012,51 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
   }
 
-  /** Click a transcript group → seek the playhead to its edited-timeline position. */
-  seekToGroup(g: TranscriptGroupView): void {
-    this.setPlayhead(this.originalToEdited(g.originalStart));
+  /**
+   * Click a transcript group → select its span on the timeline (the group's ORIGINAL
+   * [start, end] mapped through originalToEdited into selStart/selEnd, so the yellow overlay
+   * highlights it), move the playhead to the selection start, scroll it into view, and mark
+   * the group selected. A group whose span collapses under cuts still seeks (no range).
+   */
+  selectGroup(g: TranscriptGroupView): void {
+    const lo = this.originalToEdited(g.originalStart);
+    const hi = this.originalToEdited(g.originalEnd);
+    if (hi - lo > this.EPS) {
+      this.selStart = lo;
+      this.selEnd = hi;
+    } else {
+      this.selStart = null;
+      this.selEnd = null;
+    }
+    this.selectedGroupStart = g.originalStart;
+    this.selectedGroupEnd = g.originalEnd;
+    this.setPlayhead(lo);           // also re-anchors playback + requests a render
+    this.ensureSelectionVisible();
+  }
+
+  /** True when a rendered group is the one currently reflected in the timeline selection. */
+  isGroupSelected(g: TranscriptGroupView): boolean {
+    return this.selectedGroupStart !== null
+      && Math.abs(this.selectedGroupStart - g.originalStart) <= this.EPS
+      && this.selectedGroupEnd !== null
+      && Math.abs(this.selectedGroupEnd - g.originalEnd) <= this.EPS;
+  }
+
+  /** Scroll so the current selection is on screen (reuses clampScroll). No-op if none. */
+  private ensureSelectionVisible(): void {
+    const r = this.selRange();
+    if (!r) return;
+    const left = this.scrollOffset;
+    const right = this.scrollOffset + this.viewportSec;
+    if (r.lo < left || r.hi > right) {
+      this.scrollOffset = this.clampScroll(r.lo - this.viewportSec * 0.1);
+      this.requestRender();
+    }
+  }
+
+  /** "N results" count for the search UI (visible groups when a query is active). */
+  get searchResultCount(): number {
+    return this.visibleGroups.length;
   }
 
   // ── Playback (element-based jump-cuts) ──────────────────────────────────────
