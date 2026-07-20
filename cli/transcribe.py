@@ -43,10 +43,13 @@ import subprocess
 import sys
 import tempfile
 import time
+import wave
 import zipfile
 from collections import deque
 from pathlib import Path
 import xml.etree.ElementTree as ET
+
+import numpy as np
 
 # Reuse the manifest flattener verbatim — do NOT reimplement the fcpxml traversal.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -65,6 +68,23 @@ class TranscribeError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# Silence-gated VAD constants (drive compute_activity / build_compact_wav).
+# Whisper.cpp hallucinates on silence, so each track is transcribed on a COMPACT
+# wav made of only its active speech spans. All named, all module-level.
+# ---------------------------------------------------------------------------
+BIN_SEC = 0.1                 # RMS bin width for the activity map
+ACTIVITY_RATIO = 0.06         # active if bin RMS > ratio * p95(RMS)
+ACTIVITY_PERCENTILE = 95      # percentile used as the loudness reference
+SILENCE_FLOOR = 1e-4          # p95 RMS below this (of full-scale) => silent track
+MIN_SPAN_SEC = 0.3            # drop active runs shorter than this
+MERGE_GAP_SEC = 0.6           # merge active spans separated by less than this
+PAD_SEC = 0.3                 # extend each span both sides (clamped to [0, dur])
+SEP_SEC = 0.3                 # silence separator between concatenated spans
+
+_FULL_SCALE = 32768.0         # 16-bit signed PCM full scale
+
+
+# ---------------------------------------------------------------------------
 # Process/temp tracking for cancellation (SIGTERM) and cleanup.
 # ---------------------------------------------------------------------------
 _current_proc = None      # the child (ffmpeg or whisper) currently running
@@ -77,6 +97,16 @@ def _cleanup_temp():
         import shutil
         shutil.rmtree(_temp_dir, ignore_errors=True)
     _temp_dir = None
+
+
+def _safe_remove(path):
+    """Best-effort delete of a per-track temp file (the run's temp dir is torn down
+    wholesale at the end; this just bounds peak disk use for multi-hour tracks)."""
+    try:
+        if path and os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
 
 
 def _emit(obj):
@@ -216,6 +246,8 @@ def _is_punct_noise(text):
 def parse_whisper_json(json_path):
     """Parse whisper-cli's full JSON (-ojf) into a list of raw words:
        [{text, file_start(s), file_end(s), prob(optional)}]. Offsets are MILLISECONDS.
+       NOTE: whisper now runs on the per-track COMPACT wav, so file_start/file_end here
+       are COMPACT-wav seconds; map_words shifts them back to real file/timeline time.
        With -ml 1 -sow each transcription entry is one word; per-token 'p' values (from
        -ojf) are averaged for the word probability, omitted when no tokens are present.
 
@@ -271,26 +303,185 @@ def _segment_for_midpoint(segments, mid):
     return None
 
 
-def map_words(track, raw_words):
-    """Map raw file-time words onto the timeline for one track. Drops words whose
-    midpoint lies in a cut. Returns the sidecar word dicts (unsorted)."""
+# ---------------------------------------------------------------------------
+# Voice-activity gating: build a per-track activity map, a COMPACT wav of only the
+# active speech, and a time-map that maps compact-wav time back to source-file time.
+# ---------------------------------------------------------------------------
+def _merge_spans(spans, gap):
+    """Merge (start, end) spans (seconds) whose separation is < gap. Returns sorted,
+    disjoint spans. gap=0 (or tiny) merges only overlapping/touching spans."""
+    if not spans:
+        return []
+    ordered = sorted(spans)
+    merged = [list(ordered[0])]
+    for s, e in ordered[1:]:
+        if s - merged[-1][1] < gap:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    return [(s, e) for s, e in merged]
+
+
+def compute_activity(wav_path):
+    """Stream a 16k mono s16 wav in BIN_SEC bins, compute per-bin RMS, and return the
+    active speech spans as a sorted, disjoint list of (file_start_sec, file_end_sec).
+
+    Active when a bin's RMS exceeds ACTIVITY_RATIO * p95(all bin RMS). If that p95 is
+    below SILENCE_FLOOR of full scale the whole track is silent -> []. Runs shorter
+    than MIN_SPAN_SEC are dropped, spans closer than MERGE_GAP_SEC merged, each span
+    padded PAD_SEC on both sides (clamped to [0, duration]) and re-merged on overlap.
+    Reads chunk-by-chunk so a multi-hour file never lands wholly in memory."""
+    with wave.open(wav_path, 'rb') as wf:
+        if wf.getnchannels() != 1 or wf.getsampwidth() != 2:
+            raise TranscribeError(
+                f"compute_activity expected 16k mono s16 wav, got "
+                f"{wf.getnchannels()}ch/{wf.getsampwidth() * 8}-bit: {wav_path}")
+        framerate = wf.getframerate()
+        n_frames = wf.getnframes()
+        bin_frames = max(1, int(round(BIN_SEC * framerate)))
+        bin_dur = bin_frames / framerate
+        duration = n_frames / framerate
+
+        rms_bins = []
+        while True:
+            raw = wf.readframes(bin_frames)
+            if not raw:
+                break
+            samples = np.frombuffer(raw, dtype='<i2').astype(np.float64)
+            if samples.size == 0:
+                break
+            rms_bins.append(float(np.sqrt(np.mean(samples * samples))))
+
+    if not rms_bins:
+        return []
+    rms_arr = np.asarray(rms_bins)
+    p95 = float(np.percentile(rms_arr, ACTIVITY_PERCENTILE))
+    if p95 < SILENCE_FLOOR * _FULL_SCALE:
+        return []                                   # silent track
+    threshold = ACTIVITY_RATIO * p95
+
+    # Collapse consecutive active bins into runs -> spans (seconds).
+    active = rms_arr > threshold
+    runs = []
+    start = None
+    for i, a in enumerate(active):
+        if a and start is None:
+            start = i
+        elif not a and start is not None:
+            runs.append((start * bin_dur, i * bin_dur))
+            start = None
+    if start is not None:
+        runs.append((start * bin_dur, len(active) * bin_dur))
+
+    runs = [(s, min(e, duration)) for (s, e) in runs]
+    runs = [(s, e) for (s, e) in runs if (e - s) >= MIN_SPAN_SEC]
+    runs = _merge_spans(runs, MERGE_GAP_SEC)
+    padded = [(max(0.0, s - PAD_SEC), min(duration, e + PAD_SEC)) for (s, e) in runs]
+    return _merge_spans(padded, 1e-9)               # re-merge any now-overlapping spans
+
+
+def build_compact_wav(src_16k_wav, spans, dst_wav):
+    """Write a compact 16k mono s16 wav holding only `spans` from the source (in order),
+    with SEP_SEC of silence between them. Returns a time_map: sorted list of
+    {concat_start, concat_end, file_start} (seconds), where concat_* is a span's
+    position in the compact wav and file_start its start in the source file. Copies in
+    ~1s chunks so memory stays bounded."""
+    time_map = []
+    with wave.open(src_16k_wav, 'rb') as sf:
+        framerate = sf.getframerate()
+        sampwidth = sf.getsampwidth()
+        n_channels = sf.getnchannels()
+        n_frames = sf.getnframes()
+        sep_frames = int(round(SEP_SEC * framerate))
+        silence = b'\x00' * (sep_frames * sampwidth * n_channels)
+        chunk_frames = framerate                    # 1 second per copy
+
+        with wave.open(dst_wav, 'wb') as df:
+            df.setnchannels(n_channels)
+            df.setsampwidth(sampwidth)
+            df.setframerate(framerate)
+
+            concat_frames = 0
+            for idx, (fs, fe) in enumerate(spans):
+                if idx > 0:
+                    df.writeframes(silence)
+                    concat_frames += sep_frames
+                start_frame = max(0, min(int(round(fs * framerate)), n_frames))
+                end_frame = max(start_frame, min(int(round(fe * framerate)), n_frames))
+                sf.setpos(start_frame)
+                concat_start = concat_frames / framerate
+                remaining = end_frame - start_frame
+                while remaining > 0:
+                    data = sf.readframes(min(chunk_frames, remaining))
+                    got = len(data) // (sampwidth * n_channels)
+                    if got == 0:
+                        break
+                    df.writeframes(data)
+                    concat_frames += got
+                    remaining -= got
+                time_map.append({
+                    'concat_start': concat_start,
+                    'concat_end': concat_frames / framerate,
+                    'file_start': start_frame / framerate,
+                })
+    return time_map
+
+
+def _find_span(time_map, tc):
+    """Binary search for the span whose [concat_start, concat_end) contains tc, else
+    None (tc landed in a silence separator between spans)."""
+    lo, hi = 0, len(time_map) - 1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        span = time_map[mid]
+        if tc < span['concat_start']:
+            hi = mid - 1
+        elif tc >= span['concat_end']:
+            lo = mid + 1
+        else:
+            return span
+    return None
+
+
+def map_compact_time(time_map, tc):
+    """Compact-wav time -> source-file time, or None if tc is in a separator gap."""
+    span = _find_span(time_map, tc)
+    if span is None:
+        return None
+    return span['file_start'] + (tc - span['concat_start'])
+
+
+def map_words(track, raw_words, time_map):
+    """Map gated words (times in COMPACT-wav coordinates) onto the timeline for one
+    track. Each word is first shifted compact->file through the span containing its
+    midpoint (drop if the midpoint fell in a silence separator), then file->timeline
+    via the existing leaf mapping (drop if the file midpoint fell in a cut). Sidecar
+    fileStart/fileEnd are the real source-file seconds. Returns dicts (unsorted)."""
     segments = track['segments']
     out = []
     for w in raw_words:
-        fs = w['file_start']
-        fe = w['file_end']
-        mid = (fs + fe) / 2.0
-        seg = _segment_for_midpoint(segments, mid)
+        cs = w['file_start']            # compact-wav coordinates
+        ce = w['file_end']
+        mid_c = (cs + ce) / 2.0
+        span = _find_span(time_map, mid_c)
+        if span is None:
+            continue                    # midpoint fell in a silence separator -> gated out
+        # Shift start/end/midpoint through the SAME span as the midpoint.
+        base = span['file_start'] - span['concat_start']
+        file_start_word = base + cs
+        file_end_word = base + ce
+        ft_mid = base + mid_c
+        seg = _segment_for_midpoint(segments, ft_mid)
         if seg is None:
-            continue   # cut by auto-editor
+            continue                    # cut by auto-editor
         delta = seg['timeline_start'] - seg['source_start']
         word = {
             'track': track['id'],
             'text': w['text'],
-            'timelineStart': fs + delta,
-            'timelineEnd': fe + delta,
-            'fileStart': fs,
-            'fileEnd': fe,
+            'timelineStart': file_start_word + delta,
+            'timelineEnd': file_end_word + delta,
+            'fileStart': file_start_word,
+            'fileEnd': file_end_word,
             'group': seg['group'],
         }
         if 'prob' in w:
@@ -324,7 +515,8 @@ def extract_wav(ffmpeg, src_file, dst_wav, max_seconds):
     cmd = [ffmpeg, '-y', '-nostdin', '-i', src_file]
     if max_seconds is not None:
         cmd += ['-t', str(max_seconds)]
-    cmd += ['-ac', '1', '-ar', '16000', '-f', 'wav', dst_wav]
+    # 16k MONO SIGNED-16 PCM so Python's stdlib `wave` can read the frames for VAD.
+    cmd += ['-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', '-f', 'wav', dst_wav]
     rc, tail = _run_child(cmd, 'ffmpeg')
     if rc != 0:
         raise TranscribeError(
@@ -405,25 +597,44 @@ def transcribe(zip_path, whisper_bin, whisper_model, ffmpeg, language, max_secon
             emit_progress(band_lo, f"Extracting {label} ({i + 1}/{n})...")
 
             wav = os.path.join(_temp_dir, f"track{i}.wav")
-            extract_wav(ffmpeg, track['file'], wav, max_seconds)
+            compact = os.path.join(_temp_dir, f"track{i}_compact.wav")
+            try:
+                extract_wav(ffmpeg, track['file'], wav, max_seconds)
 
-            # Extraction owns the first 10% of the band.
-            extract_end = band_lo + 0.10 * band_w
-            emit_progress(extract_end, f"Transcribing {label} ({i + 1}/{n})...")
+                # Extraction (+ VAD gating) owns the first 10% of the band.
+                extract_end = band_lo + 0.10 * band_w
+                emit_progress(extract_end, f"Transcribing {label} ({i + 1}/{n})...")
 
-            def on_progress(pct, _lo=extract_end, _w=band_w, _label=label, _i=i):
-                overall = _lo + (pct / 100.0) * (0.90 * _w)
-                emit_progress(overall, f"Transcribing {_label} ({_i + 1}/{n})...")
+                # Voice-activity gate: transcribe ONLY the active speech spans.
+                spans = compute_activity(wav)
+                if not spans:
+                    print(f"[transcribe] track {track['id']} ({label}) is silent "
+                          f"(0 active spans) -> 0 words", file=sys.stderr)
+                    continue
 
-            out_prefix = os.path.join(_temp_dir, f"track{i}")
-            json_path = run_whisper(whisper_bin, whisper_model, wav, out_prefix,
-                                    language, on_progress)
-            raw = parse_whisper_json(json_path)
-            mapped = map_words(track, raw)
-            if not mapped:
-                print(f"[transcribe] track {track['id']} ({label}) contributed 0 words",
-                      file=sys.stderr)
-            all_words.extend(mapped)
+                time_map = build_compact_wav(wav, spans, compact)
+                if not time_map or not (os.path.isfile(compact)
+                                        and os.path.getsize(compact) > 0):
+                    print(f"[transcribe] track {track['id']} ({label}) produced an "
+                          f"empty compact wav -> 0 words", file=sys.stderr)
+                    continue
+
+                def on_progress(pct, _lo=extract_end, _w=band_w, _label=label, _i=i):
+                    overall = _lo + (pct / 100.0) * (0.90 * _w)
+                    emit_progress(overall, f"Transcribing {_label} ({_i + 1}/{n})...")
+
+                out_prefix = os.path.join(_temp_dir, f"track{i}")
+                json_path = run_whisper(whisper_bin, whisper_model, compact, out_prefix,
+                                        language, on_progress)
+                raw = parse_whisper_json(json_path)
+                mapped = map_words(track, raw, time_map)
+                if not mapped:
+                    print(f"[transcribe] track {track['id']} ({label}) contributed 0 words",
+                          file=sys.stderr)
+                all_words.extend(mapped)
+            finally:
+                _safe_remove(wav)
+                _safe_remove(compact)
 
         # words sorted by (track, fileStart). Track order = discovery order (t0, t1, ...).
         track_order = {t['id']: i for i, t in enumerate(tracks)}
