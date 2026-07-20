@@ -1988,15 +1988,26 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return `${m}:${this.pad2(s)}`;
   }
 
-  /** Export the current cut list to a revised master-hybrid FCPXML via Python. */
+  /** True when Export has something to do: at least one cut OR at least one marked story. */
+  canExport(): boolean {
+    return !this.exporting && !!this.currentZipPath && (this.cuts.length > 0 || this.hasStories());
+  }
+
+  /**
+   * Export to a revised master-hybrid FCPXML via Python. With stories marked this becomes a
+   * per-story split (one <project> per story = its resolved regions minus the cuts); otherwise
+   * it applies the cuts to the whole timeline. Stories are sent as the last-writer-wins
+   * resolved regions — the exact same paint the ribbon shows.
+   */
   async onExport(): Promise<void> {
-    if (this.exporting || this.cuts.length === 0 || !this.currentZipPath) return;
+    if (!this.canExport()) return;
     this.exporting = true;
     this.exportError = null;
     this.exportResultPath = null;
     this.cdr.detectChanges();
     try {
-      const res = await this.electron.exportEditorCuts({ zipPath: this.currentZipPath, cuts: this.cuts });
+      const stories = this.hasStories() ? this.resolveStoryRegions() : undefined;
+      const res = await this.electron.exportEditorCuts({ zipPath: this.currentZipPath!, cuts: this.cuts, stories });
       const path = res?.path;
       if (!path) throw new Error(res?.message || 'Export did not return an output path.');
       this.exportResultPath = path;

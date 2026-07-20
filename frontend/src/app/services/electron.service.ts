@@ -135,7 +135,11 @@ export class ElectronService {
    * Python export_result object ({ path, cutsApplied, newDurationSeconds, … }); rejects with
    * Python's verbatim message on failure. Bridge added in preload.ts.
    */
-  async exportEditorCuts(payload: { zipPath: string; cuts: Array<{ startFrame: number; endFrame: number }> }): Promise<any> {
+  async exportEditorCuts(payload: {
+    zipPath: string;
+    cuts: Array<{ startFrame: number; endFrame: number }>;
+    stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }>;
+  }): Promise<any> {
     if (!this.isElectron()) {
       throw new Error('Not running in Electron');
     }

@@ -21,9 +21,9 @@
       <button class="menu-btn" [class.open]="menuOpen" (click)="toggleMenu()"
               title="File menu" aria-label="File menu">File ▾</button>
       <div class="menu-dropdown" *ngIf="menuOpen">
-        <button class="menu-item" [disabled]="cuts.length === 0 || exporting"
+        <button class="menu-item" [disabled]="!canExport()"
                 (click)="onExportFromMenu()">
-          <span class="menu-item-label">{{ exporting ? 'Exporting…' : 'Export FCPXML' }}</span>
+          <span class="menu-item-label">{{ exporting ? 'Exporting…' : (hasStories() ? 'Export Stories (' + stories.length + ')' : 'Export FCPXML') }}</span>
           <span class="menu-shortcut">⌘E</span>
         </button>
         <button class="menu-item" (click)="onOpenFromMenu()">

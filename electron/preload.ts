@@ -57,7 +57,7 @@ export interface ElectronAPI {
   openEditor: (payload: { zipPath: string }) => Promise<{ success: boolean; error?: string }>;
   getEditorPayload: () => Promise<{ zipPath: string }>;
   getEditorManifest: (zipPath: string) => Promise<any>;
-  exportEditorCuts: (payload: { zipPath: string; cuts: Array<{ startFrame: number; endFrame: number }> }) => Promise<any>;
+  exportEditorCuts: (payload: { zipPath: string; cuts: Array<{ startFrame: number; endFrame: number }>; stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }> }) => Promise<any>;
   onEditorPayload: (callback: (payload: any) => void) => void;
   removeEditorListeners: () => void;
 

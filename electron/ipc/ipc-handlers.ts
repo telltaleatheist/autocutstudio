@@ -119,7 +119,9 @@ function setupEditorHandlers(windowService: WindowService): void {
   // a caller bug, never a silent no-op. Rejections propagate the Python error
   // message verbatim; the export result is never fabricated.
   ipcMain.handle('editor:export', async (_event, payload: {
-    zipPath: string; cuts: Array<{ startFrame: number; endFrame: number }>;
+    zipPath: string;
+    cuts: Array<{ startFrame: number; endFrame: number }>;
+    stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }>;
   }) => {
     const zipPath = payload?.zipPath;
     if (typeof zipPath !== 'string' || zipPath.trim() === '') {
@@ -129,8 +131,37 @@ function setupEditorHandlers(windowService: WindowService): void {
       throw new Error(`editor:export zip file does not exist: ${zipPath}`);
     }
 
+    // Per-story export carries a 'stories' array; on that path cuts MAY be empty (the user
+    // can mark stories without cutting). Validate stories loudly when present. Python
+    // re-validates and owns the coordinate math — this is a fast caller-bug guard.
+    const stories = payload?.stories;
+    const isStoryExport = Array.isArray(stories) && stories.length > 0;
+    if (isStoryExport) {
+      for (let i = 0; i < stories.length; i++) {
+        const s = stories[i];
+        if (!s || typeof s !== 'object') {
+          throw new Error(`editor:export story at index ${i} is not an object`);
+        }
+        if (!Number.isInteger(s.number)) {
+          throw new Error(`editor:export story at index ${i} has non-integer number: ${s.number}`);
+        }
+        if (typeof s.title !== 'string' || s.title.trim() === '') {
+          throw new Error(`editor:export story at index ${i} (number ${s.number}) has an empty title`);
+        }
+        if (!Array.isArray(s.regions)) {
+          throw new Error(`editor:export story ${s.title} regions must be an array`);
+        }
+        for (let j = 0; j < s.regions.length; j++) {
+          const r = s.regions[j];
+          if (!r || typeof r.start !== 'number' || typeof r.end !== 'number' || !(r.start < r.end)) {
+            throw new Error(`editor:export story ${s.title} region ${j} is invalid: ${JSON.stringify(r)}`);
+          }
+        }
+      }
+    }
+
     const cuts = payload?.cuts;
-    if (!Array.isArray(cuts) || cuts.length === 0) {
+    if (!Array.isArray(cuts) || (cuts.length === 0 && !isStoryExport)) {
       throw new Error('editor:export requires a non-empty cuts array');
     }
     for (let i = 0; i < cuts.length; i++) {
@@ -153,7 +184,7 @@ function setupEditorHandlers(windowService: WindowService): void {
       }
     }
 
-    return await pythonService.editorExport(zipPath, cuts);
+    return await pythonService.editorExport(zipPath, cuts, isStoryExport ? stories : undefined);
   });
 
   // Whisper-transcribe the session's source audio tracks. Returns { jobId }
