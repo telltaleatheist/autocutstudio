@@ -23,7 +23,7 @@
       <div class="menu-dropdown" *ngIf="menuOpen">
         <button class="menu-item" [disabled]="!canExport()"
                 (click)="onExportFromMenu()">
-          <span class="menu-item-label">{{ exporting ? 'Exporting…' : (hasStories() ? 'Export Stories (' + stories.length + ')' : 'Export FCPXML') }}</span>
+          <span class="menu-item-label">{{ exporting ? 'Exporting…' : 'Export…' }}</span>
           <span class="menu-shortcut">⌘E</span>
         </button>
         <button class="menu-item" (click)="onOpenFromMenu()">
@@ -36,46 +36,41 @@
       {{ cuts.length }} {{ cuts.length === 1 ? 'cut' : 'cuts' }} · {{ removedLabel }} removed
     </span>
     <span class="topbar-spacer"></span>
-    <button class="menu-btn story-mode-btn" [class.on]="storyMode" (click)="toggleStoryMode()"
-            [title]="storyMode ? 'Exit story selection mode (S)' : 'Enter story selection mode — drag to mark stories (S)'">
-      {{ storyMode ? '● Story Mode' : '○ Story Mode' }}
+    <button class="story-mode-btn" [class.on]="storyMode" (click)="toggleStoryMode()"
+            [title]="storyMode ? 'Exit story mode (S)' : 'Enter story mode — drag to mark stories (S)'">
+      <span class="smb-dot"></span> Story Mode
     </button>
-    <button class="menu-btn" *ngIf="hasStories()" [class.open]="storiesPanelOpen"
-            (click)="storiesPanelOpen = !storiesPanelOpen"
-            title="Show / hide the stories list">Stories ({{ stories.length }}) ▾</button>
   </header>
-
-  <!-- Stories management strip (collapsible, FCP-dark). Renumber / rename / delete. Each
-       row's number + title are inline-editable; the swatch matches its ribbon color; the
-       timecode is the span mapped through the current cuts; "empty" flags a fully-overlapped
-       story (zero resolved regions). -->
-  <div class="stories-strip" *ngIf="storyMode || (storiesPanelOpen && hasStories())">
-    <div class="stories-hint" *ngIf="storyMode">
-      {{ activeStoryId
-          ? 'Adding regions to the selected story — drag to add more. Click it again to start a new one.'
-          : 'Drag on the timeline to start a new story. Click a story below to add more regions to it.' }}
-    </div>
-    <div class="stories-empty" *ngIf="storyMode && !hasStories()">No stories yet — drag on the timeline to mark one.</div>
-    <div class="story-row" *ngFor="let s of stories"
-         [class.active]="s.id === activeStoryId"
-         (click)="onStoryRowClick(s, $event)"
-         [title]="s.id === activeStoryId ? 'Active — drags add regions here' : 'Click to make active'">
-      <span class="story-swatch" [style.background]="storyColor(s.number)"></span>
-      <input class="story-num" type="number" min="1" [value]="s.number"
-             (input)="onStoryNumberInput(s, $any($event.target).value)"
-             (keydown.enter)="blurStoryInput($event)" title="Project number" />
-      <input class="story-title" id="story-title-{{ s.id }}" [value]="s.title"
-             (input)="onStoryTitleInput(s, $any($event.target).value)"
-             (keydown.enter)="blurStoryInput($event)" placeholder="Story title" />
-      <span class="story-tc">{{ storyTimecode(s) }}</span>
-      <span class="story-empty" *ngIf="isStoryEmpty(s)"
-            title="Fully overlapped by a later story — no resolved regions">empty</span>
-      <button class="story-del" (click)="deleteStory(s)" title="Delete story">×</button>
-    </div>
-  </div>
 
   <!-- Invisible backdrop: an outside click closes the File menu. -->
   <div class="menu-backdrop" *ngIf="menuOpen" (click)="menuOpen = false"></div>
+
+  <!-- Export chooser: pick what to export (File ▸ Export… / ⌘E). Escape or a backdrop
+       click closes it. -->
+  <div class="modal-backdrop" *ngIf="exportChooserOpen" (click)="exportChooserOpen = false">
+    <div class="modal export-chooser" (click)="$event.stopPropagation()">
+      <div class="modal-title">Export</div>
+      <div class="chooser-options">
+        <button class="chooser-opt" [disabled]="cuts.length === 0" (click)="onExportChoice('cuts')">
+          <span class="chooser-opt-title">Master FCPXML</span>
+          <span class="chooser-opt-desc" *ngIf="cuts.length > 0">
+            The whole timeline with your {{ cuts.length }} {{ cuts.length === 1 ? 'cut' : 'cuts' }} applied
+          </span>
+          <span class="chooser-opt-desc" *ngIf="cuts.length === 0">Place at least one cut first</span>
+        </button>
+        <button class="chooser-opt" [disabled]="!hasStories()" (click)="onExportChoice('stories')">
+          <span class="chooser-opt-title">Stories</span>
+          <span class="chooser-opt-desc" *ngIf="hasStories()">
+            One FCPX project per story ({{ stories.length }}) — cuts applied, transcripts included when available
+          </span>
+          <span class="chooser-opt-desc" *ngIf="!hasStories()">Mark at least one story first</span>
+        </button>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-btn" (click)="exportChooserOpen = false">Cancel</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Export result modal: success (path + Show in Folder) or verbatim Python error. Escape or
        a backdrop click closes it. -->
@@ -123,10 +118,44 @@
          [class.dragging]="draggingSplitP"
          (mousedown)="onSplitPMouseDown($event)"></div>
 
-    <!-- Transcript pane: Transcribe button / running progress / read-only preview / error. -->
+    <!-- Left pane: Edit (transcript) / Stories tabs. The Stories tab IS story mode — while
+         it's active, timeline drags mark story regions. -->
     <div class="transcript-pane" [style.flexBasis.%]="splitV * 100">
+      <div class="pane-tabs">
+        <button class="pane-tab" [class.active]="!storyMode" (click)="setStoryMode(false)">Edit</button>
+        <button class="pane-tab" [class.active]="storyMode" (click)="setStoryMode(true)">
+          Stories<ng-container *ngIf="hasStories()"> ({{ stories.length }})</ng-container>
+        </button>
+      </div>
+
+      <!-- Stories tab: hint + editable story list (number / title / timecode / delete);
+           clicking a row makes it the active paint target. -->
+      <div class="stories-pane" *ngIf="storyMode">
+        <div class="stories-hint">
+          {{ activeStoryId
+              ? 'Adding regions to the selected story — drag on the timeline to add more. Click it again to start a new one.'
+              : 'Drag on the timeline to start a new story. Click a story below to add more regions to it. Drag a story’s edges in the strip above the timeline to adjust it.' }}
+        </div>
+        <div class="stories-empty" *ngIf="!hasStories()">No stories yet — drag on the timeline to mark one.</div>
+        <div class="story-row" *ngFor="let s of stories"
+             [class.active]="s.id === activeStoryId"
+             (click)="onStoryRowClick(s, $event)"
+             [title]="s.id === activeStoryId ? 'Active — drags add regions here' : 'Click to make active'">
+          <span class="story-swatch" [style.background]="storyColor(s.number)"></span>
+          <input class="story-num" type="number" min="1" [value]="s.number"
+                 (input)="onStoryNumberInput(s, $any($event.target).value)"
+                 (keydown.enter)="blurStoryInput($event)" title="Project number" />
+          <input class="story-title" id="story-title-{{ s.id }}" [value]="s.title"
+                 (input)="onStoryTitleInput(s, $any($event.target).value)"
+                 (keydown.enter)="blurStoryInput($event)" placeholder="Story title" />
+          <span class="story-tc">{{ storyTimecode(s) }}</span>
+          <span class="story-empty" *ngIf="isStoryEmpty(s)" title="No regions">empty</span>
+          <button class="story-del" (click)="deleteStory(s)" title="Delete story">×</button>
+        </div>
+      </div>
+
       <!-- State 1 — no sidecar yet. -->
-      <div class="tx-empty" *ngIf="transcriptState === 'none'">
+      <div class="tx-empty" *ngIf="!storyMode && transcriptState === 'none'">
         <button class="tx-transcribe-btn" (click)="startTranscription()">Transcribe</button>
         <div class="tx-empty-note">
           Runs Whisper on each source track (mic, screen) — takes a while for long sessions.
@@ -134,7 +163,7 @@
       </div>
 
       <!-- State 2 — running (progress + cancel). -->
-      <div class="tx-running" *ngIf="transcriptState === 'running'">
+      <div class="tx-running" *ngIf="!storyMode && transcriptState === 'running'">
         <div class="tx-progress-track">
           <div class="tx-progress-fill" [style.width.%]="transcribeProgress"></div>
         </div>
@@ -147,14 +176,14 @@
       </div>
 
       <!-- Error — verbatim message + retry. -->
-      <div class="tx-error-state" *ngIf="transcriptState === 'error'">
+      <div class="tx-error-state" *ngIf="!storyMode && transcriptState === 'error'">
         <div class="tx-error-title">Transcription failed</div>
         <div class="tx-error-body">{{ transcriptError }}</div>
         <button class="tx-retry-btn" (click)="startTranscription()">Try again</button>
       </div>
 
       <!-- State 3 — transcript preview: source filter + search, then a clean group list. -->
-      <div class="tx-ready" *ngIf="transcriptState === 'ready'">
+      <div class="tx-ready" *ngIf="!storyMode && transcriptState === 'ready'">
         <div class="tx-header">
           <div class="tx-filter">
             <button *ngFor="let tr of transcriptTracks" class="tx-chip"
@@ -235,6 +264,7 @@
                 [class.tool-blade]="toolMode === 'blade'"
                 [class.tool-story]="storyMode"
                 (mousedown)="onCanvasMouseDown($event)"
+                (mousemove)="onCanvasHover($event)"
                 (wheel)="onWheel($event)"></canvas>
       </div>
     </div>
@@ -260,8 +290,8 @@
       <div class="zoom-control">
         <span class="zoom-icon">🔍</span>
         <input type="range" class="zoom-slider"
-               min="1" max="600" step="1"
-               [value]="pxPerSec"
+               min="0" max="1000" step="1"
+               [value]="zoomSliderPos"
                (input)="onZoomSlider($any($event.target).value)" />
       </div>
     </div>

@@ -130,12 +130,41 @@
     &.open { background: #2f2f34; }
   }
 
-  // Story Mode toggle: reads clearly ON (amber, matching the story palette) vs OFF.
-  .story-mode-btn.on {
-    background: #e8a33d;
-    color: #201704;
-    border-color: #b57e26;
-    &:hover:not(:disabled) { background: #eeb051; }
+  // Story Mode toggle: deliberately BIGGER than the other top-bar controls, with a status
+  // dot — it changes what every timeline drag does, so it must read at a glance.
+  .story-mode-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: #d8d8dc;
+    background: #3a3a40;
+    border: 1px solid #0d0d0e;
+    border-radius: 6px;
+    padding: 7px 16px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.12s ease, color 0.12s ease;
+
+    .smb-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #6f6f77;
+      transition: background 0.12s ease, box-shadow 0.12s ease;
+    }
+
+    &:hover { background: #47474e; }
+
+    &.on {
+      background: #e8a33d;
+      color: #201704;
+      border-color: #b57e26;
+      .smb-dot { background: #201704; box-shadow: 0 0 6px rgba(32, 23, 4, 0.5); }
+      &:hover { background: #eeb051; }
+    }
   }
 
   .menu-dropdown {
@@ -190,16 +219,14 @@
   background: transparent;
 }
 
-/* Stories management strip — collapsible FCP-dark list under the top bar. Unobtrusive:
-   in-flow (pushes the panes down a touch), capped height with its own scroll. */
-.stories-strip {
-  flex: 0 0 auto;
-  max-height: 148px;
+/* Stories pane — fills the left pane under the Edit/Stories tabs (story mode). */
+.stories-pane {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 5px 10px;
+  padding: 8px 10px;
   background: #202023;
-  border-bottom: 1px solid #0d0d0e;
 
   .stories-hint {
     font-size: 11px;
@@ -308,6 +335,35 @@
       font-weight: 600;
       color: #f0f0f2;
       margin-bottom: 12px;
+    }
+
+    /* Export chooser: two large option cards (Master FCPXML / Stories). */
+    .chooser-options {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 14px;
+
+      .chooser-opt {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+        text-align: left;
+        padding: 12px 14px;
+        background: #2d2d32;
+        border: 1px solid #3a3a40;
+        border-radius: 8px;
+        cursor: pointer;
+        font-family: inherit;
+        transition: background 0.12s ease, border-color 0.12s ease;
+
+        &:hover:not(:disabled) { background: #36363c; border-color: #e8a33d; }
+        &:disabled { opacity: 0.45; cursor: default; }
+
+        .chooser-opt-title { font-size: 13px; font-weight: 700; color: #ececef; }
+        .chooser-opt-desc { font-size: 11px; color: #9a9aa2; line-height: 1.4; }
+      }
     }
 
     .modal-path {
@@ -472,6 +528,31 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+
+  /* Edit / Stories tabs — the Stories tab IS story mode. */
+  .pane-tabs {
+    flex: 0 0 auto;
+    display: flex;
+    background: #1b1b1e;
+    border-bottom: 1px solid #0d0d0e;
+
+    .pane-tab {
+      flex: 1 1 0;
+      padding: 8px 0;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      color: #8f8f97;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      transition: color 0.12s ease;
+
+      &:hover { color: #c8c8cd; }
+      &.active { color: #e8a33d; border-bottom-color: #e8a33d; }
+    }
+  }
 
   /* Centered states (empty / running / error) fill the pane and center their content. */
   .tx-empty,

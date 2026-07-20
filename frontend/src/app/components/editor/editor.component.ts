@@ -134,7 +134,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private readonly CLIP_RADIUS = 4;
 
   // Zoom (pixels per timeline second) clamp.
-  private readonly ZOOM_MIN = 1;
   private readonly ZOOM_MAX = 600;
 
   // Playback / scrub sync tolerance (seconds) before we re-seek an element.
@@ -252,6 +251,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // True when the in-flight marquee is a Story-Mode paint (drop → a story region) rather than
   // a cut selection. Set at mousedown, consumed + cleared at mouseup.
   private marqueeForStory = false;
+  // In-flight story-region edge drag (grabbed an edge in the ribbon). The story's regions are
+  // canonicalized (merged) at grab time so regionIndex addresses story.regions directly.
+  private draggingStoryEdge: { storyId: string; regionIndex: number; edge: 'start' | 'end' } | null = null;
 
   // ── Tools + blade (FCPX Arrow / Blade) ──────────────────────────────────────
   // The active pointer tool. Blade drops boundaries that subdivide the timeline into
@@ -272,6 +274,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   exporting = false;
   exportResultPath: string | null = null; // set on a successful FCPXML export
   exportError: string | null = null;       // Python's message, verbatim, on failure
+  // File ▸ Export… chooser modal (pick Master FCPXML vs Stories).
+  exportChooserOpen = false;
   // Top-bar File menu (Export / Open) open/closed state.
   menuOpen = false;
 
@@ -281,7 +285,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // IPC, or any data contract. Reset on session re-init.
   stories: Story[] = [];
   private storyIdCounter = 0;          // monotonic id source (reset per session)
-  storiesPanelOpen = false;            // collapsible management strip under the top bar
   // Story Mode: a top-bar toggle. While ON, a canvas drag paints a region into the ACTIVE
   // story (activeStoryId), or starts a new story when none is active. Cleared on session
   // re-init; leaving the mode clears the active story.
@@ -490,14 +493,15 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.exporting = false;
     this.exportResultPath = null;
     this.exportError = null;
+    this.exportChooserOpen = false;
     this.menuOpen = false;
     // Stories are per-session and NOT persisted (v1) — a re-init starts with none.
     this.stories = [];
     this.storyIdCounter = 0;
-    this.storiesPanelOpen = false;
     this.storyMode = false;
     this.activeStoryId = null;
     this.marqueeForStory = false;
+    this.draggingStoryEdge = null;
     // Transcript: a re-init starts fresh. An in-flight job for the OLD session is
     // actively cancelled — a multi-hour whisper run must not keep burning CPU for a
     // session nobody is looking at (dropping the job id alone would only mute its
@@ -764,8 +768,18 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.pxPerSec = this.clampZoom(w / dur);
     this.scrollOffset = 0;
   }
+  /**
+   * Dynamic zoom floor: all the way out = the WHOLE edited timeline fits the viewport
+   * (viewportWidth / editedDuration px/s). Capped at 1 so short sessions keep the old floor
+   * (their fit zoom is above 1 anyway, so they can always fit too).
+   */
+  private get minZoom(): number {
+    const dur = this.editedDuration;
+    if (!(dur > 0)) return 1;
+    return Math.min(1, this.viewportWidth / dur);
+  }
   private clampZoom(v: number): number {
-    return Math.min(this.ZOOM_MAX, Math.max(this.ZOOM_MIN, v));
+    return Math.min(this.ZOOM_MAX, Math.max(this.minZoom, v));
   }
 
   // ── Segment lookup (binary search over sorted segments) ─────────────────────
@@ -1374,10 +1388,24 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const inRuler = y <= this.RULER_H;
     const inRibbon = this.hasStories() && y > this.RULER_H && y <= this.RULER_H + this.ribbonHeight;
 
-    // A click in the stories ribbon: in Story Mode it selects the clicked story as the active
-    // paint target (click again to deselect); otherwise it reflects the story's region(s) into
-    // the timeline selection and scrolls into view — lightweight, no scrub/cut/marquee.
+    // A mousedown in the stories ribbon: grabbing a region EDGE (either mode) starts an
+    // edge drag that redefines that boundary. Otherwise, in Story Mode a click selects the
+    // story as the active paint target (click again to deselect); outside it, it reflects
+    // the story's region(s) into the timeline selection and scrolls into view.
     if (inRibbon) {
+      const edgeHit = this.storyEdgeAtX(this.timeToX(t));
+      if (edgeHit) {
+        const story = this.stories.find(st => st.id === edgeHit.storyId);
+        if (story) {
+          // Canonicalize so the display-region index addresses story.regions directly.
+          story.regions = this.mergeRegions(story.regions);
+          this.draggingStoryEdge = edgeHit;
+          window.addEventListener('mousemove', this.onWindowMouseMove);
+          window.addEventListener('mouseup', this.onWindowMouseUp);
+          this.requestRender();
+          return;
+        }
+      }
       const s = this.storyAtEdited(t);
       if (this.storyMode) {
         if (s) this.toggleActiveStory(s.id);
@@ -1575,7 +1603,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private onWindowMouseMove = (ev: MouseEvent): void => {
-    if (this.draggingSelection) { this.selEnd = this.canvasEventTime(ev); this.requestRender(); }
+    if (this.draggingStoryEdge) { this.updateStoryEdgeDrag(ev); }
+    else if (this.draggingSelection) { this.selEnd = this.canvasEventTime(ev); this.requestRender(); }
     else if (this.marqueeActive) {
       this.marqueeEndTime = this.canvasEventTime(ev);
       // Promote to a real marquee only past a small pixel threshold, so a jittery click stays
@@ -1595,11 +1624,18 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private onWindowMouseUp = (): void => {
     if (!this.draggingPlayhead && !this.draggingScrollbar && !this.draggingSplitV
         && !this.draggingSplitH && !this.draggingSplitP && !this.draggingSelection
-        && !this.marqueeActive) return;
+        && !this.marqueeActive && !this.draggingStoryEdge) return;
     // Persist split preferences once per drag (not per move frame).
     if (this.draggingSplitV) localStorage.setItem(this.SPLIT_V_KEY, String(this.splitV));
     if (this.draggingSplitH) localStorage.setItem(this.SPLIT_H_KEY, String(this.splitH));
     if (this.draggingSplitP) localStorage.setItem(this.SPLIT_P_KEY, String(Math.round(this.projectWidth)));
+    // Dropping a story-edge drag re-merges the story's regions (the dragged edge may have
+    // crossed a sibling region of the same story).
+    if (this.draggingStoryEdge) {
+      const story = this.stories.find(s => s.id === this.draggingStoryEdge!.storyId);
+      if (story) story.regions = this.mergeRegions(story.regions);
+      this.draggingStoryEdge = null;
+    }
     // A marquee that actually moved commits its section selection; a bare click leaves the
     // section-select outcome from mousedown untouched.
     if (this.marqueeActive) {
@@ -1763,10 +1799,24 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   // ── Zoom ────────────────────────────────────────────────────────────────────
+  /**
+   * Zoom slider position (0..1000) mapped LOGARITHMICALLY between minZoom (whole timeline
+   * fits) and ZOOM_MAX — a linear px/s slider would waste almost the whole track on the
+   * useless far-in end for a 4-hour session.
+   */
+  get zoomSliderPos(): number {
+    const lo = this.minZoom, hi = this.ZOOM_MAX;
+    if (!(hi > lo)) return 1000;
+    const p = Math.log(this.pxPerSec / lo) / Math.log(hi / lo);
+    return Math.round(1000 * Math.min(1, Math.max(0, p)));
+  }
+
   onZoomSlider(value: number): void {
     // Slider zooms about the playhead (keeps it fixed on screen).
+    const lo = this.minZoom, hi = this.ZOOM_MAX;
+    const pps = hi > lo ? lo * Math.pow(hi / lo, Number(value) / 1000) : hi;
     const anchorX = this.timeToX(this.playheadTime);
-    this.setZoom(Number(value), this.playheadTime, anchorX);
+    this.setZoom(pps, this.playheadTime, anchorX);
   }
 
   private setZoom(newPps: number, anchorTime: number, anchorCssX: number): void {
@@ -1808,9 +1858,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (this.errorMessage || !this.manifest) return;
     // Escape first dismisses an open File menu or export modal — even from a focused field —
     // so it never falls through to a selection clear underneath.
-    if (ev.key === 'Escape' && (this.menuOpen || this.exportResultPath || this.exportError)) {
+    if (ev.key === 'Escape' && (this.menuOpen || this.exportChooserOpen || this.exportResultPath || this.exportError)) {
       ev.preventDefault();
       this.menuOpen = false;
+      this.exportChooserOpen = false;
       this.closeExportModal();
       return;
     }
@@ -1849,10 +1900,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       ev.preventDefault();
       if (ev.shiftKey) this.redo(); else this.undo();
     } else if ((ev.metaKey || ev.ctrlKey) && (ev.key === 'e' || ev.key === 'E')) {
-      // Cmd/Ctrl+E exports (no-op while loading or with zero cuts — onExport guards both).
+      // Cmd/Ctrl+E opens the Export chooser (no-op while loading or with nothing to export).
       ev.preventDefault();
       if (this.loading) return;
-      void this.onExport();
+      this.openExportChooser();
     } else if (ev.key === 'i' || ev.key === 'I') {
       if (this.loading) return;
       ev.preventDefault();
@@ -2046,20 +2097,34 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return !this.exporting && !!this.currentZipPath && (this.cuts.length > 0 || this.hasStories());
   }
 
-  /**
-   * Export to a revised master-hybrid FCPXML via Python. With stories marked this becomes a
-   * per-story split (one <project> per story = its resolved regions minus the cuts); otherwise
-   * it applies the cuts to the whole timeline. Stories are sent as the last-writer-wins
-   * resolved regions — the exact same paint the ribbon shows.
-   */
-  async onExport(): Promise<void> {
+  /** File ▸ Export… / ⌘E: open the chooser modal (Master FCPXML vs Stories). */
+  openExportChooser(): void {
     if (!this.canExport()) return;
+    this.menuOpen = false;
+    this.exportChooserOpen = true;
+  }
+
+  /** Chooser modal choice → run that export. */
+  onExportChoice(kind: 'cuts' | 'stories'): void {
+    this.exportChooserOpen = false;
+    void this.onExport(kind);
+  }
+
+  /**
+   * Export via Python. 'cuts' applies the cut list to the whole timeline (master FCPXML);
+   * 'stories' splits into one <project> per story (regions minus cuts, plus per-story
+   * transcripts when a sidecar exists).
+   */
+  async onExport(kind: 'cuts' | 'stories'): Promise<void> {
+    if (this.exporting || !this.currentZipPath) return;
+    if (kind === 'cuts' && this.cuts.length === 0) return;
+    if (kind === 'stories' && !this.hasStories()) return;
     this.exporting = true;
     this.exportError = null;
     this.exportResultPath = null;
     this.cdr.detectChanges();
     try {
-      const stories = this.hasStories() ? this.resolveStoryRegions() : undefined;
+      const stories = kind === 'stories' ? this.resolveStoryRegions() : undefined;
       const res = await this.electron.exportEditorCuts({ zipPath: this.currentZipPath!, cuts: this.cuts, stories });
       const path = res?.path;
       if (!path) throw new Error(res?.message || 'Export did not return an output path.');
@@ -2154,15 +2219,17 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
 
-  /** Toggle Story Mode. Entering opens the management strip; leaving clears the active story. */
-  toggleStoryMode(): void {
-    this.storyMode = !this.storyMode;
-    if (this.storyMode) {
-      this.storiesPanelOpen = true;
-    } else {
-      this.activeStoryId = null;
-    }
+  /** Switch Story Mode on/off (top-bar toggle, the left-pane tabs, and the S key all land
+   *  here). Leaving clears the active paint target. */
+  setStoryMode(on: boolean): void {
+    if (this.storyMode === on) return;
+    this.storyMode = on;
+    if (!on) this.activeStoryId = null;
     this.requestRender();
+  }
+
+  toggleStoryMode(): void {
+    this.setStoryMode(!this.storyMode);
   }
 
   /**
@@ -2205,7 +2272,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       };
       this.stories = [...this.stories, story];
     }
-    this.storiesPanelOpen = true;
     this.requestRender();
     this.cdr.detectChanges();
   }
@@ -2246,6 +2312,56 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const b = this.formatTimecode(this.originalToEdited(regions[regions.length - 1].end));
     const count = regions.length > 1 ? `  ·  ${regions.length} regions` : '';
     return `${a} – ${b}${count}`;
+  }
+
+  /** Ribbon edge hit-test: the story-region edge within ±5 css px of `x`, or null. Checks
+   *  display (merged) regions, whose indices match the story's canonicalized regions array. */
+  private storyEdgeAtX(x: number): { storyId: string; regionIndex: number; edge: 'start' | 'end' } | null {
+    const TOL = 5;
+    for (const s of this.storiesForDisplay()) {
+      for (let i = 0; i < s.regions.length; i++) {
+        const r = s.regions[i];
+        const x0 = this.timeToX(this.originalToEdited(r.start));
+        const x1 = this.timeToX(this.originalToEdited(r.end));
+        if (x1 - x0 <= 1) continue;                       // collapsed at this zoom — not grabbable
+        if (Math.abs(x - x1) <= TOL) return { storyId: s.id, regionIndex: i, edge: 'end' };
+        if (Math.abs(x - x0) <= TOL) return { storyId: s.id, regionIndex: i, edge: 'start' };
+      }
+    }
+    return null;
+  }
+
+  /** Live update of a grabbed story-region edge: pointer time (mapped to ORIGINAL seconds),
+   *  clamped to the timeline and to one frame of minimum region width. */
+  private updateStoryEdgeDrag(ev: MouseEvent): void {
+    const drag = this.draggingStoryEdge!;
+    const story = this.stories.find(s => s.id === drag.storyId);
+    const region = story?.regions[drag.regionIndex];
+    if (!story || !region) { this.draggingStoryEdge = null; return; }
+    const fs = this.manifest?.frameSeconds || (1001 / 30000);
+    const durOrig = this.manifest?.timelineDuration || 0;
+    const t = Math.min(durOrig, Math.max(0, this.editedToOriginal(this.canvasEventTime(ev))));
+    if (drag.edge === 'start') {
+      region.start = Math.max(0, Math.min(t, region.end - fs));
+    } else {
+      region.end = Math.min(durOrig, Math.max(t, region.start + fs));
+    }
+    this.requestRender();
+  }
+
+  /** Canvas hover feedback: ew-resize over a grabbable story-region edge in the ribbon
+   *  (inline cursor overrides the tool-class cursor; '' restores it). */
+  onCanvasHover(ev: MouseEvent): void {
+    const canvas = this.canvasRef?.nativeElement;
+    if (!canvas) return;
+    let over = false;
+    if (this.hasStories() && !this.draggingStoryEdge) {
+      const y = this.canvasEventY(ev);
+      if (y > this.RULER_H && y <= this.RULER_H + this.ribbonHeight) {
+        over = !!this.storyEdgeAtX(this.timeToX(this.canvasEventTime(ev)));
+      }
+    }
+    canvas.style.cursor = (over || this.draggingStoryEdge) ? 'ew-resize' : '';
   }
 
   /** The display story (with id) whose region contains edited time `t`, or null. Regions within
@@ -2293,10 +2409,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   /** Toggle the File menu dropdown. */
   toggleMenu(): void { this.menuOpen = !this.menuOpen; }
 
-  /** File ▸ Export: run the export (kept open so its busy state shows; onExport closes it). */
+  /** File ▸ Export…: open the chooser modal. */
   onExportFromMenu(): void {
-    if (!this.canExport()) return;
-    void this.onExport();
+    this.openExportChooser();
   }
 
   /** File ▸ Open…: close the menu and run the existing project picker. */
