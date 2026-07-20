@@ -193,6 +193,7 @@
       <!-- Canvas: ruler + tracks + playhead. -->
       <div class="canvas-wrap">
         <canvas #timelineCanvas
+                [class.tool-blade]="toolMode === 'blade'"
                 (mousedown)="onCanvasMouseDown($event)"
                 (wheel)="onWheel($event)"></canvas>
       </div>
