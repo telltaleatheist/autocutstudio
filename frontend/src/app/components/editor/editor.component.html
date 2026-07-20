@@ -36,9 +36,9 @@
       {{ cuts.length }} {{ cuts.length === 1 ? 'cut' : 'cuts' }} · {{ removedLabel }} removed
     </span>
     <span class="topbar-spacer"></span>
-    <button class="menu-btn" [disabled]="!hasSelection" (click)="markStoryFromSelection()"
-            [title]="hasSelection ? 'Mark a story from the selection (S)' : 'Select a range first'">
-      ✚ Mark Story
+    <button class="menu-btn story-mode-btn" [class.on]="storyMode" (click)="toggleStoryMode()"
+            [title]="storyMode ? 'Exit story selection mode (S)' : 'Enter story selection mode — drag to mark stories (S)'">
+      {{ storyMode ? '● Story Mode' : '○ Story Mode' }}
     </button>
     <button class="menu-btn" *ngIf="hasStories()" [class.open]="storiesPanelOpen"
             (click)="storiesPanelOpen = !storiesPanelOpen"
@@ -49,8 +49,17 @@
        row's number + title are inline-editable; the swatch matches its ribbon color; the
        timecode is the span mapped through the current cuts; "empty" flags a fully-overlapped
        story (zero resolved regions). -->
-  <div class="stories-strip" *ngIf="storiesPanelOpen && hasStories()">
-    <div class="story-row" *ngFor="let s of stories">
+  <div class="stories-strip" *ngIf="storyMode || (storiesPanelOpen && hasStories())">
+    <div class="stories-hint" *ngIf="storyMode">
+      {{ activeStoryId
+          ? 'Adding regions to the selected story — drag to add more. Click it again to start a new one.'
+          : 'Drag on the timeline to start a new story. Click a story below to add more regions to it.' }}
+    </div>
+    <div class="stories-empty" *ngIf="storyMode && !hasStories()">No stories yet — drag on the timeline to mark one.</div>
+    <div class="story-row" *ngFor="let s of stories"
+         [class.active]="s.id === activeStoryId"
+         (click)="onStoryRowClick(s, $event)"
+         [title]="s.id === activeStoryId ? 'Active — drags add regions here' : 'Click to make active'">
       <span class="story-swatch" [style.background]="storyColor(s.number)"></span>
       <input class="story-num" type="number" min="1" [value]="s.number"
              (input)="onStoryNumberInput(s, $any($event.target).value)"
@@ -224,6 +233,7 @@
       <div class="canvas-wrap">
         <canvas #timelineCanvas
                 [class.tool-blade]="toolMode === 'blade'"
+                [class.tool-story]="storyMode"
                 (mousedown)="onCanvasMouseDown($event)"
                 (wheel)="onWheel($event)"></canvas>
       </div>

@@ -91,15 +91,16 @@ type ToolMode = 'select' | 'blade';
 export interface Cut { startFrame: number; endFrame: number; }
 
 /**
- * A user-marked "story" span in ORIGINAL timeline seconds (start < end). A session covers
- * ~5 stories; on export the fcpxml is split into one project per story. Stories may be
- * NESTED/overlapping — a story created LATER paints OVER an earlier one where they overlap
- * (last-writer-wins), the earlier keeping the leftover pieces (see resolveStoryRegions).
- * `stories` is held in CREATION order (the paint order). `number` is a separate, user-facing
- * ordering (auto = max existing + 1, editable) that orders the exported projects. Not
- * persisted across sessions (v1); reset on session re-init.
+ * A user-marked "story" as one or more disjoint spans (`regions`) in ORIGINAL timeline
+ * seconds. A session covers ~5 stories; on export the fcpxml is split into one project per
+ * story (that story's regions, minus the cuts, collapsed to 0). Stories are built in Story
+ * Mode: each drag paints a region into the ACTIVE story, or — with none active — starts a
+ * brand-new story (so consecutive drags make separate stories; to accumulate regions the
+ * user clicks a story to make it active first). `number` is a user-facing ordering (auto =
+ * max existing + 1, editable) that orders the exported projects. Not persisted across
+ * sessions (v1); reset on session re-init.
  */
-export interface Story { id: string; number: number; title: string; start: number; end: number; }
+export interface Story { id: string; number: number; title: string; regions: { start: number; end: number }[]; }
 
 /**
  * One kept interval of the timeline after cuts are applied. `os`/`oe` are the interval's
@@ -248,6 +249,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private marqueeMoved = false;
   private marqueeStartTime = 0;          // EDITED seconds
   private marqueeEndTime = 0;            // EDITED seconds
+  // True when the in-flight marquee is a Story-Mode paint (drop → a story region) rather than
+  // a cut selection. Set at mousedown, consumed + cleared at mouseup.
+  private marqueeForStory = false;
 
   // ── Tools + blade (FCPX Arrow / Blade) ──────────────────────────────────────
   // The active pointer tool. Blade drops boundaries that subdivide the timeline into
@@ -272,12 +276,17 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   menuOpen = false;
 
   // ── Stories (mark/name/number spans; ORIGINAL seconds) ───────────────────────
-  // Held in CREATION order (= paint order; a later story wins overlaps). `number` is the
-  // separate user-facing project ordering. Purely additive UI state: nothing here touches
-  // the cut model, playback, export IPC, or any data contract. Reset on session re-init.
+  // Each story owns explicit disjoint `regions`. `number` is the user-facing project
+  // ordering. Purely additive UI state: nothing here touches the cut model, playback, export
+  // IPC, or any data contract. Reset on session re-init.
   stories: Story[] = [];
   private storyIdCounter = 0;          // monotonic id source (reset per session)
   storiesPanelOpen = false;            // collapsible management strip under the top bar
+  // Story Mode: a top-bar toggle. While ON, a canvas drag paints a region into the ACTIVE
+  // story (activeStoryId), or starts a new story when none is active. Cleared on session
+  // re-init; leaving the mode clears the active story.
+  storyMode = false;
+  activeStoryId: string | null = null;
   // Stable, distinct color per story NUMBER (cycled). Dark FCP-friendly hues.
   private readonly STORY_COLORS = ['#e8a33d', '#4a9eff', '#7bc98f', '#c98fd6', '#d67b7b', '#7bd6cf', '#e0c650', '#9a8ff0'];
 
@@ -486,6 +495,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.stories = [];
     this.storyIdCounter = 0;
     this.storiesPanelOpen = false;
+    this.storyMode = false;
+    this.activeStoryId = null;
+    this.marqueeForStory = false;
     // Transcript: a re-init starts fresh. An in-flight job for the OLD session is
     // actively cancelled — a multi-hour whisper run must not keep burning CPU for a
     // session nobody is looking at (dropping the job id alone would only mute its
@@ -1273,8 +1285,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
     const by = top + 1;
     const bh = h - 2;
-    for (const s of this.resolveStoryRegions()) {
+    for (const s of this.storiesForDisplay()) {
       const color = this.storyColor(s.number);
+      const isActive = s.id === this.activeStoryId;
       for (const r of s.regions) {
         const x0 = this.timeToX(this.originalToEdited(r.start));
         const x1 = this.timeToX(this.originalToEdited(r.end));
@@ -1287,9 +1300,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         ctx.save();
         this.roundRectPath(ctx, bx0, by, bw, bh, 2);
         ctx.fillStyle = color;
-        ctx.globalAlpha = 0.88;
+        ctx.globalAlpha = isActive ? 1 : 0.7;        // active story reads brighter
         ctx.fill();
         ctx.globalAlpha = 1;
+        if (isActive) {                              // white outline on the active story
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        }
         if (bw > 22 && s.title) {
           ctx.clip();
           ctx.fillStyle = '#141208';
@@ -1356,12 +1374,16 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const inRuler = y <= this.RULER_H;
     const inRibbon = this.hasStories() && y > this.RULER_H && y <= this.RULER_H + this.ribbonHeight;
 
-    // A click in the stories ribbon selects the clicked story's resolved region(s) as the
-    // timeline selection (so its extent is visible) and scrolls it into view — lightweight,
-    // no scrub/cut/marquee.
+    // A click in the stories ribbon: in Story Mode it selects the clicked story as the active
+    // paint target (click again to deselect); otherwise it reflects the story's region(s) into
+    // the timeline selection and scrolls into view — lightweight, no scrub/cut/marquee.
     if (inRibbon) {
-      const s = this.ribbonStoryAt(t);
-      if (s) this.selectResolvedStory(s);
+      const s = this.storyAtEdited(t);
+      if (this.storyMode) {
+        if (s) this.toggleActiveStory(s.id);
+      } else if (s) {
+        this.selectResolvedStory(s);
+      }
       this.requestRender();
       return;
     }
@@ -1391,9 +1413,30 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       return;
     }
 
+    // STORY MODE: a drag in a track lane paints a region (committed on release into the active
+    // story, or a new one). Reuses the marquee gesture, flagged so mouseup routes it to a story
+    // rather than a cut selection. A bare click (no move) is a no-op.
+    if (this.storyMode) {
+      this.selectedRanges = [];
+      this.selStart = null;
+      this.selEnd = null;
+      this.selectedGroupStart = null;
+      this.selectedGroupEnd = null;
+      this.marqueeActive = true;
+      this.marqueeMoved = false;
+      this.marqueeForStory = true;
+      this.marqueeStartTime = t;
+      this.marqueeEndTime = t;
+      window.addEventListener('mousemove', this.onWindowMouseMove);
+      window.addEventListener('mouseup', this.onWindowMouseUp);
+      this.requestRender();
+      return;
+    }
+
     const onClip = !!(this.rowAt(y) && this.segmentAt(this.rowAt(y)!.track.id, t));
 
     if (this.toolMode === 'select') {
+      this.marqueeForStory = false;
       // SELECT tool, track lane: a plain CLICK scrubs + selects the clicked section (or clears
       // in a gap); a DRAG turns into a marquee (committed on release). Set the click outcome
       // now; commitMarquee overrides it iff the pointer actually moves.
@@ -1560,9 +1603,19 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // A marquee that actually moved commits its section selection; a bare click leaves the
     // section-select outcome from mousedown untouched.
     if (this.marqueeActive) {
-      if (this.marqueeMoved) this.commitMarquee();
+      if (this.marqueeForStory) {
+        // A moved Story-Mode drag paints a region; a bare click is a no-op.
+        if (this.marqueeMoved) {
+          const lo = Math.min(this.marqueeStartTime, this.marqueeEndTime);
+          const hi = Math.max(this.marqueeStartTime, this.marqueeEndTime);
+          this.paintStoryRegion(this.editedToOriginal(lo), this.editedToOriginal(hi));
+        }
+      } else if (this.marqueeMoved) {
+        this.commitMarquee();
+      }
       this.marqueeActive = false;
       this.marqueeMoved = false;
+      this.marqueeForStory = false;
     }
     this.draggingPlayhead = false;
     this.draggingScrollbar = false;
@@ -1823,10 +1876,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       ev.preventDefault();
       this.setTool('blade');               // FCP Blade tool
     } else if ((ev.key === 's' || ev.key === 'S') && !ev.metaKey && !ev.ctrlKey) {
-      // S: mark a story from the current selection (no-op with no selection).
+      // S: toggle Story Mode (drag to mark stories).
       if (this.loading) return;
       ev.preventDefault();
-      this.markStoryFromSelection();
+      this.toggleStoryMode();
     } else if ((ev.metaKey || ev.ctrlKey) && (ev.key === 'x' || ev.key === 'X')) {
       // Cmd/Ctrl+X == ripple-delete the current selection (FCP alias for Delete).
       if (this.loading) return;
@@ -2050,48 +2103,47 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * PUBLIC — the export wiring will call it later.
    */
   resolveStoryRegions(): { number: number; title: string; regions: { start: number; end: number }[] }[] {
-    const resolved = this.stories.map((story, i) => {
-      let regions: { start: number; end: number }[] = [{ start: story.start, end: story.end }];
-      for (let j = i + 1; j < this.stories.length; j++) {
-        const later = this.stories[j];
-        regions = this.subtractInterval(regions, later.start, later.end);
-      }
-      regions.sort((a, b) => a.start - b.start);
-      return { i, number: story.number, title: story.title, regions };
-    });
-    // Export/project order: by number ascending, creation order breaking ties.
-    resolved.sort((a, b) => (a.number - b.number) || (a.i - b.i));
-    return resolved.map(r => ({ number: r.number, title: r.title, regions: r.regions }));
+    return this.storiesForDisplay().map(({ number, title, regions }) => ({ number, title, regions }));
   }
 
   /**
-   * Subtract the interval [cutStart, cutEnd] from every region in `regions`, returning the
-   * leftover pieces (a region straddled by the cut yields its left and/or right remainder).
-   * Sub-EPS slivers are dropped. Pure.
+   * Stories in export/project order (number ascending, creation order breaking ties), each
+   * with its regions merged (overlapping/adjacent spans a user painted in separate drags
+   * collapsed into one) and carrying its `id` so the ribbon/strip can flag the active story.
+   * Internal — resolveStoryRegions() strips the id for the export payload. PURE.
    */
-  private subtractInterval(regions: { start: number; end: number }[],
-                           cutStart: number, cutEnd: number): { start: number; end: number }[] {
+  private storiesForDisplay(): { id: string; number: number; title: string; regions: { start: number; end: number }[] }[] {
+    return this.stories
+      .map((s, i) => ({ i, id: s.id, number: s.number, title: s.title, regions: this.mergeRegions(s.regions) }))
+      .sort((a, b) => (a.number - b.number) || (a.i - b.i))
+      .map(({ id, number, title, regions }) => ({ id, number, title, regions }));
+  }
+
+  /**
+   * Merge a story's regions: sort by start and coalesce any that overlap or touch (within
+   * EPS), so repeated drags onto the same story become clean disjoint spans. Sub-EPS slivers
+   * are dropped. Pure — never mutates the input.
+   */
+  private mergeRegions(regions: { start: number; end: number }[]): { start: number; end: number }[] {
+    const sorted = regions
+      .filter(r => r.end - r.start > this.EPS)
+      .map(r => ({ start: r.start, end: r.end }))
+      .sort((a, b) => a.start - b.start);
     const out: { start: number; end: number }[] = [];
-    for (const r of regions) {
-      // No overlap → the region survives whole.
-      if (cutEnd <= r.start + this.EPS || cutStart >= r.end - this.EPS) { out.push(r); continue; }
-      // Left leftover.
-      if (cutStart > r.start + this.EPS) out.push({ start: r.start, end: Math.min(cutStart, r.end) });
-      // Right leftover.
-      if (cutEnd < r.end - this.EPS) out.push({ start: Math.max(cutEnd, r.start), end: r.end });
+    for (const r of sorted) {
+      const last = out[out.length - 1];
+      if (last && r.start <= last.end + this.EPS) {
+        if (r.end > last.end) last.end = r.end;   // extend the open span
+      } else {
+        out.push({ ...r });
+      }
     }
     return out;
   }
 
-  /** True when a story's whole range is painted over by later stories (zero resolved regions). */
+  /** True when a story has no regions (nothing to export). */
   isStoryEmpty(story: Story): boolean {
-    const i = this.stories.indexOf(story);
-    if (i < 0) return false;
-    let regions: { start: number; end: number }[] = [{ start: story.start, end: story.end }];
-    for (let j = i + 1; j < this.stories.length; j++) {
-      regions = this.subtractInterval(regions, this.stories[j].start, this.stories[j].end);
-    }
-    return regions.length === 0;
+    return this.mergeRegions(story.regions).length === 0;
   }
 
   /** Stable, distinct color for a story NUMBER (palette cycled; safe for any integer). */
@@ -2101,54 +2153,61 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return this.STORY_COLORS[i];
   }
 
-  /** True when the current selection spans a real range (enables "Mark Story"). */
-  get hasSelection(): boolean {
-    return this.currentSelectionOriginalBounds() !== null;
+
+  /** Toggle Story Mode. Entering opens the management strip; leaving clears the active story. */
+  toggleStoryMode(): void {
+    this.storyMode = !this.storyMode;
+    if (this.storyMode) {
+      this.storiesPanelOpen = true;
+    } else {
+      this.activeStoryId = null;
+    }
+    this.requestRender();
   }
 
   /**
-   * Union bounds [min,max] of the current selection (committed marquee ranges ∪ the
-   * in-progress single range), in EDITED seconds, mapped to ORIGINAL via editedToOriginal.
-   * null when nothing is selected or the span is sub-EPS.
+   * Select/deselect a story as the ACTIVE paint target. Clicking the active story again
+   * deselects it (so the next drag starts a fresh story). Only meaningful in Story Mode.
    */
-  private currentSelectionOriginalBounds(): { start: number; end: number } | null {
-    const ranges = this.allSelectionRanges();
-    if (ranges.length === 0) return null;
-    let lo = Infinity, hi = -Infinity;
-    for (const r of ranges) { if (r.lo < lo) lo = r.lo; if (r.hi > hi) hi = r.hi; }
-    if (!(hi > lo)) return null;
-    const start = this.editedToOriginal(lo);
-    const end = this.editedToOriginal(hi);
-    if (!(end > start)) return null;
-    return { start, end };
+  toggleActiveStory(id: string): void {
+    this.activeStoryId = this.activeStoryId === id ? null : id;
+    this.requestRender();
+  }
+
+  /** Strip-row click: select the row's story active, unless the click was on an input/button. */
+  onStoryRowClick(story: Story, ev: Event): void {
+    const tag = (ev.target as HTMLElement | null)?.tagName;
+    if (tag === 'INPUT' || tag === 'BUTTON') return;   // let field/delete handle their own click
+    this.toggleActiveStory(story.id);
   }
 
   /**
-   * Create a story from the current selection's union bounds (button + `S`). No-op with no
-   * selection. Auto number = max existing + 1, default title "Story N". Opens the management
-   * strip and focuses the new title input so the user can name it immediately. Story
-   * create/edit/delete is deliberately OFF the cut undo stack — a simple in-place edit.
+   * Paint one region [startOrig, endOrig] (ORIGINAL seconds) into a story. With a story active
+   * the region is appended to it (regions re-merged); with none active a brand-new story is
+   * created — deliberately NOT auto-activated, so consecutive drags make separate stories and
+   * the user accumulates regions by first selecting a story. Off the cut undo stack.
    */
-  markStoryFromSelection(): void {
-    const bounds = this.currentSelectionOriginalBounds();
-    if (!bounds) return;   // no selection — a subtle no-op (the button is also disabled)
-    const number = this.stories.reduce((mx, s) => Math.max(mx, s.number), 0) + 1;
-    const story: Story = {
-      id: `story-${++this.storyIdCounter}`,
-      number,
-      title: `Story ${number}`,
-      start: bounds.start,
-      end: bounds.end,
-    };
-    this.stories = [...this.stories, story];
+  private paintStoryRegion(startOrig: number, endOrig: number): void {
+    const lo = Math.min(startOrig, endOrig);
+    const hi = Math.max(startOrig, endOrig);
+    if (!(hi - lo > this.EPS)) return;
+
+    const active = this.activeStoryId ? this.stories.find(s => s.id === this.activeStoryId) : null;
+    if (active) {
+      active.regions = this.mergeRegions([...active.regions, { start: lo, end: hi }]);
+    } else {
+      const number = this.stories.reduce((mx, s) => Math.max(mx, s.number), 0) + 1;
+      const story: Story = {
+        id: `story-${++this.storyIdCounter}`,
+        number,
+        title: `Story ${number}`,
+        regions: [{ start: lo, end: hi }],
+      };
+      this.stories = [...this.stories, story];
+    }
     this.storiesPanelOpen = true;
     this.requestRender();
     this.cdr.detectChanges();
-    // Focus + select the inline title editor for the just-created row.
-    setTimeout(() => {
-      const el = document.getElementById(`story-title-${story.id}`) as HTMLInputElement | null;
-      if (el) { el.focus(); el.select(); }
-    }, 0);
   }
 
   /** Inline title edit (immediate). Redraws so the ribbon label tracks the new title. */
@@ -2166,9 +2225,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
   }
 
-  /** Delete a story (immediate, off the undo stack). */
+  /** Delete a story (immediate, off the undo stack). Clears the active target if it was this one. */
   deleteStory(story: Story): void {
     this.stories = this.stories.filter(s => s.id !== story.id);
+    if (this.activeStoryId === story.id) this.activeStoryId = null;
     this.requestRender();
   }
 
@@ -2177,17 +2237,21 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     (ev.target as HTMLElement | null)?.blur();
   }
 
-  /** EDITED-seconds timecode range for a story's ORIGINAL span (tracks cuts via originalToEdited). */
+  /** EDITED-seconds timecode span (first region start – last region end) for a story, with a
+   *  region count when it has more than one. Tracks cuts via originalToEdited. */
   storyTimecode(story: Story): string {
-    const a = this.formatTimecode(this.originalToEdited(story.start));
-    const b = this.formatTimecode(this.originalToEdited(story.end));
-    return `${a} – ${b}`;
+    const regions = this.mergeRegions(story.regions);
+    if (regions.length === 0) return '—';
+    const a = this.formatTimecode(this.originalToEdited(regions[0].start));
+    const b = this.formatTimecode(this.originalToEdited(regions[regions.length - 1].end));
+    const count = regions.length > 1 ? `  ·  ${regions.length} regions` : '';
+    return `${a} – ${b}${count}`;
   }
 
-  /** The resolved story (from resolveStoryRegions) whose region contains edited time `t`, or null.
-   *  Resolved regions across stories are disjoint (last-writer-wins), so the hit is unambiguous. */
-  private ribbonStoryAt(t: number): { number: number; title: string; regions: { start: number; end: number }[] } | null {
-    for (const s of this.resolveStoryRegions()) {
+  /** The display story (with id) whose region contains edited time `t`, or null. Regions within
+   *  a story are disjoint; across stories they may overlap, so the FIRST hit in number order wins. */
+  private storyAtEdited(t: number): { id: string; number: number; title: string; regions: { start: number; end: number }[] } | null {
+    for (const s of this.storiesForDisplay()) {
       for (const r of s.regions) {
         const lo = this.originalToEdited(r.start);
         const hi = this.originalToEdited(r.end);
@@ -2229,9 +2293,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   /** Toggle the File menu dropdown. */
   toggleMenu(): void { this.menuOpen = !this.menuOpen; }
 
-  /** File ▸ Export FCPXML: run the export (kept open so its busy state shows; onExport closes it). */
+  /** File ▸ Export: run the export (kept open so its busy state shows; onExport closes it). */
   onExportFromMenu(): void {
-    if (this.cuts.length === 0 || this.exporting) return;
+    if (!this.canExport()) return;
     void this.onExport();
   }
 
