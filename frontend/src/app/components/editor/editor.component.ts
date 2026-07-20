@@ -213,8 +213,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   editedDuration = 0;                    // seconds; == manifest.timelineDuration with zero cuts
   private keptIntervals: KeptInterval[] = [];
   private readonly UNDO_LIMIT = 100;
-  private undoStack: Cut[][] = [];       // snapshots of prior cut lists (immutable arrays)
-  private redoStack: Cut[][] = [];
+  // Undo/redo snapshots BOTH the cut list and the blade boundaries, so Cmd+Z reverses
+  // whichever an action changed — a ripple delete OR dropping a blade.
+  private undoStack: { cuts: Cut[]; blades: number[] }[] = [];
+  private redoStack: { cuts: Cut[]; blades: number[] }[] = [];
   private readonly EPS = 1e-9;           // seconds; sub-frame slop for interval intersection
 
   // ── Selection (EDITED seconds; either edge may be pending/null) ──────────────
@@ -1272,13 +1274,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       return;
     }
 
-    // Blade tool: a track-area click also drops a boundary at the click time (ORIGINAL
-    // seconds) before scrubbing/selecting. Ruler clicks stay pure scrubs in either tool.
-    if (this.toolMode === 'blade' && !inRuler) {
-      this.addBladeBoundary(this.editedToOriginal(t));
-    }
-
-    // A drag on the RULER always scrubs the playhead (either tool) — never a marquee.
+    // A drag on the RULER always scrubs the playhead (either tool) — never a cut/marquee.
     if (inRuler) {
       this.draggingPlayhead = true;
       this.setPlayhead(t);
@@ -1314,11 +1310,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       return;
     }
 
-    // BLADE tool, track lane: keep the original scrub + section-select drag behavior.
+    // BLADE tool. A cut is DROPPED only when the click lands directly on a clip in a track
+    // lane; a click in empty timeline space just moves the playhead (no cut). Dropping a
+    // blade is undoable (Cmd+Z).
     this.draggingPlayhead = true;
     this.setPlayhead(t);
     this.selectedRanges = [];
     if (onClip) {
+      this.addBladeBoundary(this.editedToOriginal(t));
       this.selectSectionAround(t);
     } else {
       this.selStart = null;
@@ -1393,14 +1392,18 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return dedup;
   }
 
-  /** Add a blade boundary (ORIGINAL seconds), sorted + de-duplicated. */
+  /** Add a blade boundary (ORIGINAL seconds), sorted + de-duplicated. Undoable (Cmd+Z). */
   private addBladeBoundary(originalSec: number): void {
     const t = Math.min(this.manifest?.timelineDuration || 0, Math.max(0, originalSec));
     for (const b of this.bladeBoundaries) {
-      if (Math.abs(b - t) <= this.EPS) return; // already present
+      if (Math.abs(b - t) <= this.EPS) return; // already present — no-op, no undo entry
     }
-    this.bladeBoundaries.push(t);
-    this.bladeBoundaries.sort((a, b) => a - b);
+    // A dropped blade is an undoable edit: snapshot first, clear redo, then add immutably
+    // (so the snapshot's blade array is not mutated underneath it).
+    this.pushUndo();
+    this.redoStack = [];
+    this.bladeBoundaries = [...this.bladeBoundaries, t].sort((a, b) => a - b);
+    this.requestRender();
   }
 
   /** Drop blade boundaries that a cut has swallowed (their original time now inside a cut). */
@@ -1756,7 +1759,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private pushUndo(): void {
-    this.undoStack.push(this.cuts);
+    // Copies, since both arrays are replaced/rebuilt in place elsewhere.
+    this.undoStack.push({ cuts: [...this.cuts], blades: [...this.bladeBoundaries] });
     if (this.undoStack.length > this.UNDO_LIMIT) this.undoStack.shift();
   }
 
@@ -1801,8 +1805,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private undo(): void {
     if (this.undoStack.length === 0) return;
     const origTime = this.editedToOriginal(this.playheadTime);
-    this.redoStack.push(this.cuts);
-    this.cuts = this.undoStack.pop()!;
+    this.redoStack.push({ cuts: [...this.cuts], blades: [...this.bladeBoundaries] });
+    const snap = this.undoStack.pop()!;
+    this.cuts = snap.cuts;
+    this.bladeBoundaries = snap.blades;
     this.rebuildEditedModel();
     this.clearSelection();
     this.landPlayheadAfterEdit(this.originalToEdited(origTime), false);
@@ -1811,8 +1817,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private redo(): void {
     if (this.redoStack.length === 0) return;
     const origTime = this.editedToOriginal(this.playheadTime);
-    this.pushUndo();
-    this.cuts = this.redoStack.pop()!;
+    this.undoStack.push({ cuts: [...this.cuts], blades: [...this.bladeBoundaries] });
+    const snap = this.redoStack.pop()!;
+    this.cuts = snap.cuts;
+    this.bladeBoundaries = snap.blades;
     this.rebuildEditedModel();
     this.clearSelection();
     this.landPlayheadAfterEdit(this.originalToEdited(origTime), false);
