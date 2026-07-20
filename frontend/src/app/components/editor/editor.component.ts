@@ -22,6 +22,54 @@ import { EditorManifest, EditorSegment, EditorTrack } from '../../models/editor-
 interface Peaks { min: number[]; max: number[]; }
 
 /**
+ * Transcript sidecar (`<session>_transcript.json`). Words carry ORIGINAL timeline
+ * coordinates (the v1 manifest time base, pre-user-cuts) — the same base the cut list uses,
+ * so the frontend maps a word onto the current edited timeline through originalToEdited().
+ */
+interface TranscriptWord {
+  track: string;
+  text: string;
+  timelineStart: number;   // ORIGINAL seconds
+  timelineEnd: number;     // ORIGINAL seconds
+  fileStart: number;
+  fileEnd: number;
+  group: number;           // index of the containing flattened leaf segment on that file
+  prob?: number;
+}
+interface TranscriptTrack { id: string; label: string; file: string; }
+interface Transcript {
+  schemaVersion: number;
+  session: string;
+  model: string;
+  calibration: string;
+  frameSeconds: number;
+  tracks: TranscriptTrack[];
+  words: TranscriptWord[];
+}
+/**
+ * One rendered transcript block = every word sharing a (track, leaf-segment group) key — i.e.
+ * a single timeline clip's worth of speech on one track. Times are ORIGINAL seconds.
+ */
+interface TranscriptGroup {
+  trackId: string;
+  label: string;
+  color: string;
+  text: string;
+  originalStart: number;   // min word timelineStart
+  originalEnd: number;     // max word timelineEnd
+}
+/** A visible group with its cut-aware edited-timeline timecode (recomputed when cuts change). */
+interface TranscriptGroupView {
+  label: string;
+  color: string;
+  text: string;
+  originalStart: number;   // seek target (mapped through originalToEdited on click)
+  timecode: string;
+}
+/** Transcript pane lifecycle: button / progress+cancel / preview / verbatim error. */
+type TranscriptState = 'none' | 'running' | 'ready' | 'error';
+
+/**
  * A cut is a half-open FRAME range in ORIGINAL timeline coordinates (the manifest's time
  * base, before any edits). 0 <= startFrame < endFrame. Cut lists are kept sorted ascending
  * and non-overlapping (adjacent cuts merged). This is the single source of edit truth.
@@ -156,6 +204,22 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   exportResultPath: string | null = null; // set on a successful FCPXML export
   exportError: string | null = null;       // Python's message, verbatim, on failure
 
+  // ── Transcript ────────────────────────────────────────────────────────────
+  // Stable per-track-id color, assigned by discovery order and cycled for extra tracks.
+  private readonly TRACK_COLORS = ['#e8a33d', '#4a9eff', '#7bc98f', '#c98fd6', '#d67b7b', '#7bd6cf'];
+  transcriptState: TranscriptState = 'none';
+  private transcript: Transcript | null = null;
+  // All groups in timeline order (immutable per loaded transcript). visibleGroups is the
+  // cut-aware, timecoded projection the template renders — recomputed whenever cuts change.
+  private transcriptGroups: TranscriptGroup[] = [];
+  visibleGroups: TranscriptGroupView[] = [];
+  transcriptWordCount = 0;
+  transcriptError = '';                       // verbatim failure message (Python's or a parse error)
+  // Running-job UI + the id used to filter progress/complete events against stale sessions.
+  private transcribeJobId: string | null = null;
+  transcribeProgress = 0;                     // 0-100 int
+  transcribeMessage = '';
+
   // ── Rendering ───────────────────────────────────────────────────────────────
   private renderScheduled = false;
 
@@ -198,6 +262,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       if (p.zipPath === this.currentZipPath) return;
       void this.bootstrap(p.zipPath);
     });
+    // Transcription job events. Registered ONCE (like onEditorPayload) and kept for the
+    // window's life; every event is filtered against the CURRENT job id so a stale job's
+    // progress/completion (from a superseded session) can never touch live UI.
+    this.electron.onTranscribeProgress((d) => this.onTranscribeProgress(d));
+    this.electron.onTranscribeComplete((d) => this.onTranscribeComplete(d));
     try {
       const res = await this.electron.getEditorPayload();
       if (res?.zipPath && res.zipPath !== this.currentZipPath) {
@@ -224,6 +293,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     for (const el of this.audioEls.values()) { try { el.pause(); el.src = ''; } catch { /* gone */ } }
     this.audioEls.clear();
     this.electron.removeEditorListeners();
+    this.electron.removeTranscribeListeners();
   }
 
   // ── Bootstrap: (re)load a session's manifest ────────────────────────────────
@@ -263,6 +333,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.playheadTime = 0;
     this.seekViewerToPlayhead();
     this.requestRender();
+    // The sidecar (if any) is the source of truth for the transcript: null → state 1
+    // (Transcribe button), parsed → state 3 (preview). Loaded async so it never blocks
+    // first paint; generation-guarded so a slow read can't land on a newer session.
+    void this.loadTranscriptForSession(zipPath, generation);
   }
 
   /** Release ALL per-session state so a re-init cannot leak the previous session. */
@@ -303,6 +377,24 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.exporting = false;
     this.exportResultPath = null;
     this.exportError = null;
+    // Transcript: a re-init starts fresh. An in-flight job for the OLD session is
+    // actively cancelled — a multi-hour whisper run must not keep burning CPU for a
+    // session nobody is looking at (dropping the job id alone would only mute its
+    // events). Cancellation is best-effort fire-and-forget; the jobId guard below
+    // still ignores any straggler events. Listeners persist for the window's life
+    // (removed in ngOnDestroy).
+    if (this.transcribeJobId) {
+      void this.electron.cancelTranscription({ jobId: this.transcribeJobId });
+    }
+    this.transcript = null;
+    this.transcriptGroups = [];
+    this.visibleGroups = [];
+    this.transcriptWordCount = 0;
+    this.transcriptState = 'none';
+    this.transcriptError = '';
+    this.transcribeJobId = null;
+    this.transcribeProgress = 0;
+    this.transcribeMessage = '';
   }
 
   /** Validate and index the manifest. Fails loud on anything structurally wrong. */
@@ -401,6 +493,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       // Output is already sorted (segs sorted, kept sorted, non-overlapping).
       this.segsByTrack.set(trackId, out);
     }
+    // Transcript group visibility + edited timecodes depend on the cut model — re-derive
+    // them here so they stay in lockstep with every cut/undo/redo (no-op before load).
+    this.recomputeVisibleGroups();
   }
 
   /** EDITED seconds → ORIGINAL seconds (piecewise, binary-searched over keptIntervals). */
@@ -886,10 +981,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   // ── Timecode readout (HH:MM:SS:FF, NDF colons) ──────────────────────────────
-  get timecode(): string {
+  /** Format an EDITED-timeline time (seconds) as HH:MM:SS:FF at the manifest frame rate. */
+  private formatTimecode(t: number): string {
     const fs = this.manifest?.frameSeconds || (1001 / 30000);
     const fps = Math.round(1 / fs);
-    const totalFrames = Math.round(this.playheadTime / fs);
+    const totalFrames = Math.round(t / fs);
     const ff = totalFrames % fps;
     const totalSeconds = Math.floor(totalFrames / fps);
     const ss = totalSeconds % 60;
@@ -897,6 +993,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const hh = Math.floor(totalSeconds / 3600);
     return `${this.pad2(hh)}:${this.pad2(mm)}:${this.pad2(ss)}:${this.pad2(ff)}`;
   }
+
+  get timecode(): string { return this.formatTimecode(this.playheadTime); }
 
   get sessionName(): string { return this.manifest?.session || ''; }
 
@@ -1298,6 +1396,182 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   /** Reveal the exported file in Finder/Explorer. */
   onShowExport(): void {
     if (this.exportResultPath) void this.electron.showInFolder(this.exportResultPath);
+  }
+
+  // ── Transcript ──────────────────────────────────────────────────────────────
+  /**
+   * Load the session's transcript sidecar (if any) and render state 1 (none) or 3 (ready).
+   * Generation-guarded like the manifest load: a slow read for a superseded session is
+   * dropped. A parse/shape failure surfaces verbatim in the pane (state error), never a
+   * silent empty transcript.
+   */
+  private async loadTranscriptForSession(zipPath: string, generation: number): Promise<void> {
+    let data: any;
+    try {
+      data = await this.electron.loadTranscript({ zipPath });
+    } catch (err: any) {
+      if (generation !== this.bootstrapGeneration) return;
+      this.transcriptState = 'error';
+      this.transcriptError = err?.message || String(err);
+      this.cdr.detectChanges();
+      return;
+    }
+    if (generation !== this.bootstrapGeneration) return; // superseded by a newer session
+    if (!data) { this.transcriptState = 'none'; this.cdr.detectChanges(); return; }
+    try {
+      this.ingestTranscript(data as Transcript);
+    } catch (err: any) {
+      this.transcriptState = 'error';
+      this.transcriptError = err?.message || String(err);
+    }
+    this.cdr.detectChanges();
+  }
+
+  /** Validate + index a transcript into render groups. Fails loud on a malformed shape. */
+  private ingestTranscript(t: Transcript): void {
+    if (!t || typeof t !== 'object') throw new Error('Transcript sidecar was empty or malformed.');
+    if (!Array.isArray(t.tracks)) throw new Error('Transcript sidecar has no tracks array.');
+    if (!Array.isArray(t.words)) throw new Error('Transcript sidecar has no words array.');
+
+    // Stable color per track id, by discovery order (t0, t1, … in the tracks array).
+    const colorByTrack = new Map<string, string>();
+    const labelByTrack = new Map<string, string>();
+    t.tracks.forEach((tr, i) => {
+      colorByTrack.set(tr.id, this.TRACK_COLORS[i % this.TRACK_COLORS.length]);
+      labelByTrack.set(tr.id, tr.label);
+    });
+
+    // Bucket words by (track, group) — one bucket per timeline clip's worth of speech.
+    const buckets = new Map<string, TranscriptWord[]>();
+    for (const w of t.words) {
+      const key = `${w.track}|${w.group}`;
+      let arr = buckets.get(key);
+      if (!arr) { arr = []; buckets.set(key, arr); }
+      arr.push(w);
+    }
+
+    const groups: TranscriptGroup[] = [];
+    for (const arr of buckets.values()) {
+      const trackId = arr[0].track;
+      // Words are already sorted by (track, fileStart); join in that order.
+      const text = arr.map(w => w.text).join(' ').replace(/\s+/g, ' ').trim();
+      let os = Infinity, oe = -Infinity;
+      for (const w of arr) {
+        if (w.timelineStart < os) os = w.timelineStart;
+        if (w.timelineEnd > oe) oe = w.timelineEnd;
+      }
+      groups.push({
+        trackId,
+        label: labelByTrack.get(trackId) ?? trackId,
+        color: colorByTrack.get(trackId) ?? '#8a8a90',
+        text,
+        originalStart: os,
+        originalEnd: oe,
+      });
+    }
+    // Timeline order; ties (concurrent speech on two tracks) broken by track id for stability.
+    groups.sort((a, b) => (a.originalStart - b.originalStart) || a.trackId.localeCompare(b.trackId));
+
+    this.transcript = t;
+    this.transcriptGroups = groups;
+    this.transcriptWordCount = t.words.length;
+    this.transcriptState = 'ready';
+    this.recomputeVisibleGroups();
+  }
+
+  /**
+   * Project transcriptGroups → visibleGroups: drop groups whose whole original range was cut,
+   * and stamp each survivor with its current edited-timeline timecode. Pure recompute (no
+   * caching): called on load and on every cut-model rebuild.
+   */
+  private recomputeVisibleGroups(): void {
+    if (this.transcriptGroups.length === 0) { this.visibleGroups = []; return; }
+    const out: TranscriptGroupView[] = [];
+    for (const g of this.transcriptGroups) {
+      if (this.isGroupFullyCut(g)) continue;
+      const editedStart = this.originalToEdited(g.originalStart);
+      out.push({
+        label: g.label,
+        color: g.color,
+        text: g.text,
+        originalStart: g.originalStart,
+        timecode: this.formatTimecode(editedStart),
+      });
+    }
+    this.visibleGroups = out;
+  }
+
+  /**
+   * A group is fully cut when its entire original range lies inside a single cut interval
+   * (cuts are merged + non-overlapping, so a wholly-removed span can only fall in one). Checked
+   * directly against `cuts` in frames × frameSeconds — the same seconds base the group uses.
+   */
+  private isGroupFullyCut(g: TranscriptGroup): boolean {
+    const fs = this.manifest?.frameSeconds;
+    if (!fs) return false;
+    for (const c of this.cuts) {
+      const cs = c.startFrame * fs;
+      const ce = c.endFrame * fs;
+      if (g.originalStart >= cs - this.EPS && g.originalEnd <= ce + this.EPS) return true;
+    }
+    return false;
+  }
+
+  /** Start (or restart) the transcription job for the current session. */
+  async startTranscription(): Promise<void> {
+    if (!this.currentZipPath) return;
+    this.transcriptState = 'running';
+    this.transcribeProgress = 0;
+    this.transcribeMessage = 'Starting…';
+    this.transcriptError = '';
+    this.transcribeJobId = null;
+    this.cdr.detectChanges();
+    try {
+      const res = await this.electron.transcribeSession({ zipPath: this.currentZipPath });
+      const jobId = res?.jobId;
+      if (!jobId) throw new Error('Transcription did not start (no job id returned).');
+      this.transcribeJobId = jobId;
+    } catch (err: any) {
+      this.transcriptState = 'error';
+      this.transcriptError = err?.message || String(err);
+      this.cdr.detectChanges();
+    }
+  }
+
+  /** Ask the main process to cancel the running job; the failure lands via the complete event. */
+  cancelTranscription(): void {
+    if (this.transcribeJobId) void this.electron.cancelTranscription({ jobId: this.transcribeJobId });
+  }
+
+  /** Progress event: ignore anything not from the current job (stale/superseded session). */
+  private onTranscribeProgress(d: { jobId: string; progress: number; message: string }): void {
+    if (!d || d.jobId !== this.transcribeJobId) return;
+    if (this.transcriptState !== 'running') return;
+    this.transcribeProgress = Math.max(0, Math.min(100, Math.round(d.progress)));
+    this.transcribeMessage = d.message || '';
+    this.cdr.detectChanges();
+  }
+
+  /**
+   * Completion event: guard against a stale job, then on success reload the sidecar (the file
+   * is the single source of truth) and on failure show the verbatim message with Try again.
+   */
+  private onTranscribeComplete(d: { jobId: string; exitCode: number; result: any; errorMessage?: string }): void {
+    if (!d || d.jobId !== this.transcribeJobId) return;
+    this.transcribeJobId = null;
+    if (d.exitCode === 0 && d.result) {
+      // Reload from disk rather than trusting the IPC result payload.
+      if (this.currentZipPath) void this.loadTranscriptForSession(this.currentZipPath, this.bootstrapGeneration);
+    } else {
+      this.transcriptState = 'error';
+      this.transcriptError = d.errorMessage || 'Transcription failed.';
+      this.cdr.detectChanges();
+    }
+  }
+
+  /** Click a transcript group → seek the playhead to its edited-timeline position. */
+  seekToGroup(g: TranscriptGroupView): void {
+    this.setPlayhead(this.originalToEdited(g.originalStart));
   }
 
   // ── Playback (element-based jump-cuts) ──────────────────────────────────────

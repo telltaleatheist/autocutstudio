@@ -731,6 +731,166 @@ export class PythonService {
   }
 
   /**
+   * Run cli/transcribe.py to Whisper-transcribe a processed session's source audio
+   * tracks and write a `<session>_transcript.json` sidecar next to the zip. Mirrors
+   * executeWorkflow's line-buffered stdout protocol (progress/error/success), and
+   * registers the child in runningProcesses so killProcess(jobId) cancels it —
+   * killProcess sends the default signal (SIGTERM), which is exactly what
+   * transcribe.py handles for a clean cancel, so NO special-casing is needed here.
+   *
+   * whisper-cli, the model, and ffmpeg are resolved via BinaryResolver and passed
+   * as CLI args BEFORE spawning; a resolver throw REJECTS the returned promise with
+   * the resolver's actionable message and the process is never spawned. There is no
+   * stdin protocol (args only), so stdin is closed immediately after spawn.
+   *
+   * Terminal delivery is via callbacks.onComplete(code, result, errorMessage),
+   * guaranteed exactly once from EITHER 'close' or 'error'. On success result is the
+   * parsed success payload; on any failure result is null and errorMessage carries
+   * the loud message (Python's error line, else a signal/exit-code reason).
+   */
+  transcribe(
+    jobId: string,
+    zipPath: string,
+    callbacks: {
+      onProgress?: (progress: number, message: string) => void;
+      onComplete?: (code: number, result: any, errorMessage: string | null) => void;
+    }
+  ): Promise<void> {
+    log.info(`Starting transcription [${jobId}] for zip: ${zipPath}`);
+
+    return new Promise<void>((resolve, reject) => {
+      // Resolve every external tool BEFORE spawning — a resolver throw rejects the
+      // promise with its actionable message and NOTHING is spawned.
+      let whisperCli: string;
+      let whisperModel: string;
+      let ffmpeg: string;
+      try {
+        whisperCli = this.binaryResolver.getWhisperCliPath();
+        whisperModel = this.binaryResolver.getWhisperModelPath();
+        ffmpeg = this.binaryResolver.getFfmpegPath();
+      } catch (err) {
+        log.error(`[${jobId}] Tool resolution failed before spawn:`, err);
+        reject(err instanceof Error ? err : new Error(String(err)));
+        return;
+      }
+
+      const pythonPath = this.getPythonPath();
+      const scriptPath = path.join(AppConfig.cliPath, 'transcribe.py');
+      const env = this.getPythonEnv();
+      const workingDir = AppConfig.resourcesPath;
+
+      const args = [
+        scriptPath,
+        '--zip', zipPath,
+        '--whisper-bin', whisperCli,
+        '--whisper-model', whisperModel,
+        '--ffmpeg', ffmpeg,
+      ];
+
+      log.info(`[${jobId}] Spawning transcribe.py:`, args);
+      const pythonProcess = spawn(pythonPath, args, { env, cwd: workingDir });
+      this.runningProcesses.set(jobId, pythonProcess);
+
+      // No stdin protocol — close it so the CLI never blocks on a read, and don't
+      // let an EPIPE (Python exiting) bubble up as an uncaught exception.
+      pythonProcess.stdin.on('error', (err) => {
+        log.error(`[${jobId}] stdin error:`, err);
+      });
+      pythonProcess.stdin.end();
+
+      let finalResult: any = null;
+      let errorMessage: string | null = null;
+      let stdoutBuffer = '';
+      // Rolling stderr tail for the failure message when Python emits no error line.
+      let stderrTail = '';
+
+      // Parse the three message types on stdout: progress, success, error. A
+      // JSON.parse failure is genuinely non-JSON stdout (whisper/ffmpeg chatter).
+      const processLine = (line: string) => {
+        let message: any;
+        try {
+          message = JSON.parse(line);
+        } catch (e) {
+          log.info(`[${jobId}] Non-JSON output:`, line);
+          return;
+        }
+        if (message.type === 'progress') {
+          if (callbacks.onProgress) {
+            callbacks.onProgress(message.progress, message.message);
+          }
+        } else if (message.type === 'success') {
+          finalResult = message.result;
+        } else if (message.type === 'error') {
+          errorMessage = message.message;
+        }
+      };
+
+      pythonProcess.stdout.on('data', (data) => {
+        stdoutBuffer += data.toString();
+        const lines = stdoutBuffer.split('\n');
+        stdoutBuffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed) {
+            processLine(trimmed);
+          }
+        }
+      });
+
+      pythonProcess.stderr.on('data', (data) => {
+        const chunk = data.toString();
+        stderrTail = (stderrTail + chunk).slice(-2000);
+        log.info(`[${jobId}] stderr:`, chunk);
+      });
+
+      // Guarantee exactly one terminal callback, from EITHER 'close' or 'error'.
+      let completed = false;
+      const complete = (code: number, result: any, errMsg: string | null) => {
+        if (completed) return;
+        completed = true;
+        this.runningProcesses.delete(jobId);
+        pythonProcess.stdout.removeAllListeners();
+        pythonProcess.stderr.removeAllListeners();
+        pythonProcess.stdin.removeAllListeners();
+        pythonProcess.removeAllListeners();
+        if (callbacks.onComplete) {
+          callbacks.onComplete(code, result, errMsg);
+        }
+        stdoutBuffer = '';
+        finalResult = null;
+      };
+
+      pythonProcess.on('close', (code, signal) => {
+        if (stdoutBuffer.trim()) {
+          processLine(stdoutBuffer.trim());
+        }
+        if (code === 0 && finalResult) {
+          complete(0, finalResult, null);
+        } else {
+          const stderrSuffix = stderrTail.trim() ? `: ${stderrTail.trim()}` : '';
+          const reason = errorMessage
+            || (code === null
+              ? `transcribe.py terminated by signal ${signal}${stderrSuffix}`
+              : code === 0
+                ? `transcribe.py exited 0 without a success result${stderrSuffix}`
+                : `transcribe.py exited with code ${code}${stderrSuffix}`);
+          log.error(`[${jobId}] Transcription failed: ${reason}`);
+          complete(code === null ? -1 : code, null, reason);
+        }
+      });
+
+      pythonProcess.on('error', (error) => {
+        log.error(`[${jobId}] Transcription process error:`, error);
+        complete(-1, null, `Process error: ${error.message}`);
+      });
+
+      // Spawn succeeded and is fully wired — the returned promise resolves now;
+      // terminal delivery flows through callbacks.onComplete.
+      resolve();
+    });
+  }
+
+  /**
    * Send skip signal to the current running workflow process
    */
   sendSkipSignal(): boolean {

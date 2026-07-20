@@ -32,6 +32,14 @@ export interface ElectronAPI {
 
   // Timeline editor: export a cut list to a revised master-hybrid FCPXML (preload bridge).
   exportEditorCuts: (payload: { zipPath: string; cuts: Array<{ startFrame: number; endFrame: number }> }) => Promise<any>;
+
+  // Timeline editor: per-track Whisper transcription (preload bridge).
+  transcribeSession: (payload: { zipPath: string }) => Promise<{ jobId: string }>;
+  cancelTranscription: (payload: { jobId: string }) => Promise<any>;
+  loadTranscript: (payload: { zipPath: string }) => Promise<TranscriptSidecar | null>;
+  onTranscribeProgress: (callback: (data: { jobId: string; progress: number; message: string }) => void) => void;
+  onTranscribeComplete: (callback: (data: { jobId: string; exitCode: number; result: any; errorMessage?: string }) => void) => void;
+  removeTranscribeListeners: () => void;
   applyAudioDrift: (options: {
     inputPath: string;
     driftFrames: number;
@@ -67,6 +75,25 @@ export interface AssetComponentStatus {
   installable: boolean;
   sizeBytes: number;
   version?: string;
+}
+
+export interface TranscriptSidecar {
+  schemaVersion: number;
+  session: string;
+  model: string;
+  calibration: string;
+  frameSeconds: number;
+  tracks: Array<{ id: string; label: string; file: string }>;
+  words: Array<{
+    track: string;
+    text: string;
+    timelineStart: number;
+    timelineEnd: number;
+    fileStart: number;
+    fileEnd: number;
+    group: number;
+    prob?: number;
+  }>;
 }
 
 export interface AssetProgress {

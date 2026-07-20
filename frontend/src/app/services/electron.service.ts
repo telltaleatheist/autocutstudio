@@ -155,6 +155,51 @@ export class ElectronService {
     }
   }
 
+  // --- Transcription bridge (editor window) ----------------------------------
+  // Same loose-cast pattern as the editor bridge above; typed in electron.d.ts.
+
+  /** Start a Whisper transcription job for a session; resolves with its job id immediately. */
+  async transcribeSession(payload: { zipPath: string }): Promise<{ jobId: string }> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return this.bridge.transcribeSession(payload);
+  }
+
+  /** Cancel a running transcription job (SIGTERM; no partial sidecar is left behind). */
+  async cancelTranscription(payload: { jobId: string }): Promise<any> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return this.bridge.cancelTranscription(payload);
+  }
+
+  /** Load a session's transcript sidecar; resolves null when none exists (a normal state). */
+  async loadTranscript(payload: { zipPath: string }): Promise<any> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return this.bridge.loadTranscript(payload);
+  }
+
+  onTranscribeProgress(callback: (data: { jobId: string; progress: number; message: string }) => void): void {
+    if (this.isElectron()) {
+      this.bridge.onTranscribeProgress((d: any) => this.ngZone.run(() => callback(d)));
+    }
+  }
+
+  onTranscribeComplete(callback: (data: { jobId: string; exitCode: number; result: any; errorMessage?: string }) => void): void {
+    if (this.isElectron()) {
+      this.bridge.onTranscribeComplete((d: any) => this.ngZone.run(() => callback(d)));
+    }
+  }
+
+  removeTranscribeListeners(): void {
+    if (this.isElectron()) {
+      this.bridge.removeTranscribeListeners();
+    }
+  }
+
   /**
    * Check if running in Electron
    */

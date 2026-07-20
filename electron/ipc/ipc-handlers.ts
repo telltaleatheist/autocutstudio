@@ -155,6 +155,100 @@ function setupEditorHandlers(windowService: WindowService): void {
 
     return await pythonService.editorExport(zipPath, cuts);
   });
+
+  // Whisper-transcribe the session's source audio tracks. Returns { jobId }
+  // IMMEDIATELY; progress and completion are pushed to the WINDOW THAT INVOKED
+  // this (event.sender), matching execute-workflow. On completion the renderer
+  // receives 'transcribe-complete' with result on success, or result:null +
+  // errorMessage carrying the loud message on any failure (including a pre-spawn
+  // resolver failure — missing whisper-cli/model — surfaced via .catch).
+  ipcMain.handle('editor:transcribe', async (event, payload: { zipPath: string }) => {
+    const zipPath = payload?.zipPath;
+    if (typeof zipPath !== 'string' || zipPath.trim() === '') {
+      throw new Error('editor:transcribe requires a non-empty zipPath string');
+    }
+    if (!fs.existsSync(zipPath)) {
+      throw new Error(`editor:transcribe zip file does not exist: ${zipPath}`);
+    }
+
+    const jobId = `transcribe_${Date.now()}`;
+    const sender = event.sender;
+
+    pythonService.transcribe(jobId, zipPath, {
+      onProgress: (progress, message) => {
+        if (sender.isDestroyed()) return;
+        sender.send('transcribe-progress', { jobId, progress, message });
+      },
+      onComplete: (code, result, errorMessage) => {
+        if (sender.isDestroyed()) return;
+        sender.send('transcribe-complete', {
+          jobId,
+          exitCode: code,
+          result: code === 0 ? (result ?? null) : null,
+          errorMessage: code === 0 ? null : (errorMessage ?? null),
+        });
+      },
+    }).catch((err: any) => {
+      // Pre-spawn resolution failure (whisper-cli/model not found). Fail loud to
+      // the renderer via the same completion channel so the UI never spins.
+      const message = err?.message || String(err);
+      log.error(`[${jobId}] transcribe failed before spawn: ${message}`);
+      if (!sender.isDestroyed()) {
+        sender.send('transcribe-complete', {
+          jobId,
+          exitCode: -1,
+          result: null,
+          errorMessage: message,
+        });
+      }
+    });
+
+    return { jobId };
+  });
+
+  // Cancel a running transcription. killProcess sends SIGTERM (its default
+  // signal), which transcribe.py handles as a clean cancel.
+  ipcMain.handle('editor:transcribe-cancel', async (_event, payload: { jobId: string }) => {
+    const jobId = payload?.jobId;
+    if (typeof jobId !== 'string' || jobId.trim() === '') {
+      throw new Error('editor:transcribe-cancel requires a non-empty jobId string');
+    }
+    const killed = pythonService.killProcess(jobId);
+    return { success: killed };
+  });
+
+  // Load the `<session>_transcript.json` sidecar next to the zip, deriving the
+  // session name with the SAME rule the CLIs use (zip stem minus trailing
+  // '_compounds'). Absence returns null (a normal state — no transcript yet); a
+  // JSON parse failure is a loud throw, never a silent empty result.
+  ipcMain.handle('editor:transcript-load', async (_event, payload: { zipPath: string }) => {
+    const zipPath = payload?.zipPath;
+    if (typeof zipPath !== 'string' || zipPath.trim() === '') {
+      throw new Error('editor:transcript-load requires a non-empty zipPath string');
+    }
+
+    let stem = path.basename(zipPath, path.extname(zipPath)); // <name>_compounds
+    if (stem.endsWith('_compounds')) {
+      stem = stem.slice(0, -'_compounds'.length);
+    }
+    const transcriptPath = path.join(path.dirname(zipPath), `${stem}_transcript.json`);
+
+    if (!fs.existsSync(transcriptPath)) {
+      return null;
+    }
+
+    let raw: string;
+    try {
+      raw = fs.readFileSync(transcriptPath, 'utf8');
+    } catch (err: any) {
+      throw new Error(`Failed to read transcript sidecar ${transcriptPath}: ${err.message}`);
+    }
+    try {
+      return JSON.parse(raw);
+    } catch (err: any) {
+      throw new Error(`Failed to parse transcript sidecar ${transcriptPath}: ${err.message}`);
+    }
+  });
 }
 
 /**

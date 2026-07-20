@@ -61,6 +61,14 @@ export interface ElectronAPI {
   onEditorPayload: (callback: (payload: any) => void) => void;
   removeEditorListeners: () => void;
 
+  // Transcription (Whisper per source track)
+  transcribeSession: (payload: { zipPath: string }) => Promise<{ jobId: string }>;
+  cancelTranscription: (payload: { jobId: string }) => Promise<{ success: boolean }>;
+  loadTranscript: (payload: { zipPath: string }) => Promise<any>;
+  onTranscribeProgress: (callback: (data: any) => void) => void;
+  onTranscribeComplete: (callback: (data: any) => void) => void;
+  removeTranscribeListeners: () => void;
+
   // Utility
   getAppVersion: () => Promise<string>;
   log: (level: string, ...args: any[]) => Promise<void>;
@@ -154,6 +162,21 @@ const electronAPI: ElectronAPI = {
   },
   removeEditorListeners: () => {
     ipcRenderer.removeAllListeners('editor-payload');
+  },
+
+  // Transcription (Whisper per source track)
+  transcribeSession: (payload) => ipcRenderer.invoke('editor:transcribe', payload),
+  cancelTranscription: (payload) => ipcRenderer.invoke('editor:transcribe-cancel', payload),
+  loadTranscript: (payload) => ipcRenderer.invoke('editor:transcript-load', payload),
+  onTranscribeProgress: (callback) => {
+    ipcRenderer.on('transcribe-progress', (_event, data) => callback(data));
+  },
+  onTranscribeComplete: (callback) => {
+    ipcRenderer.on('transcribe-complete', (_event, data) => callback(data));
+  },
+  removeTranscribeListeners: () => {
+    ipcRenderer.removeAllListeners('transcribe-progress');
+    ipcRenderer.removeAllListeners('transcribe-complete');
   },
 
   // Utility

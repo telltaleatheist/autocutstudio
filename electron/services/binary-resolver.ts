@@ -185,6 +185,104 @@ export class BinaryResolver {
   // cached so an install completed mid-session gets picked up.
   private cachedFfmpegPath: string | null = null;
   private cachedFfprobePath: string | null = null;
+  // Whisper resolutions are validated by SPAWNING the binary (-h), so cache the
+  // successful result for the process lifetime like ffmpeg/ffprobe. Not-found is
+  // NOT cached (throws), so installing the model mid-session is picked up.
+  private cachedWhisperCliPath: string | null = null;
+  private cachedWhisperModelPath: string | null = null;
+
+  /**
+   * Get the path to the whisper.cpp CLI binary (the exact Metal build — a plain
+   * `whisper` on PATH is NOT acceptable, so there is deliberately NO PATH
+   * fallback). Order: managed catalog entry (future-proofing; no such entry yet,
+   * so resolveBinary just returns null), then the bundled utilities/bin/whisper-cli.
+   *
+   * The bundled binary is resolved dev-vs-packaged the same way other bundled
+   * resources are: AppConfig.resourcesPath is the project root in development and
+   * process.resourcesPath in production. As with findBundledBinary, a bundled
+   * binary that exists but lacks +x is chmod'd; and — critically — a binary that
+   * exists but does NOT actually run (-h) is a hard THROW, never a fallback (this
+   * is what caught the original ffprobe SIGABRT class of failure). Throws with an
+   * actionable message when nothing resolves.
+   */
+  getWhisperCliPath(): string {
+    if (this.cachedWhisperCliPath) return this.cachedWhisperCliPath;
+
+    // 1. Managed shared download (no catalog entry yet → resolveBinary returns null).
+    const managed = assetManager.resolveBinary('whisper-cli', 'whisper-cli');
+    if (managed && this.binaryWorks(managed, ['-h'])) {
+      log.info(`Using managed whisper-cli: ${managed}`);
+      this.cachedWhisperCliPath = managed;
+      return managed;
+    }
+
+    // 2. Bundled utilities/bin/whisper-cli.
+    const bundled = path.join(AppConfig.resourcesPath, 'utilities', 'bin', 'whisper-cli');
+    if (fs.existsSync(bundled)) {
+      // Ensure it's executable — a freshly copied bundled binary may lack +x.
+      try {
+        fs.accessSync(bundled, fs.constants.X_OK);
+      } catch {
+        try {
+          fs.chmodSync(bundled, 0o755);
+          log.info(`Made bundled whisper-cli executable: ${bundled}`);
+        } catch (chmodError) {
+          throw new Error(
+            `Whisper binary found but is not executable and chmod failed: ${bundled} ` +
+            `(${(chmodError as Error).message}).`
+          );
+        }
+      }
+      // Exists + executable, but must actually RUN — a non-running binary (wrong
+      // arch, missing dylib) is a throw, not a silent fallback.
+      if (!this.binaryWorks(bundled, ['-h'])) {
+        throw new Error(
+          `Whisper binary found at ${bundled} but it failed to run (-h) — it may be ` +
+          `the wrong architecture or missing its ggml dylibs.`
+        );
+      }
+      log.info(`Using bundled whisper-cli: ${bundled}`);
+      this.cachedWhisperCliPath = bundled;
+      return bundled;
+    }
+
+    // NO PATH fallback — the transcription pipeline needs the exact Metal build.
+    throw new Error(
+      'Whisper binary not found — expected a bundled binary at utilities/bin/whisper-cli.'
+    );
+  }
+
+  /**
+   * Get the path to the whisper base model (ggml-base.bin). Order: the managed
+   * `whisper-base` catalog entry (a REAL entry — installable from Settings → Assets;
+   * resolveEntry returns null only when not installed), then the bundled
+   * utilities/models/ggml-base.bin (resolved dev-vs-packaged via AppConfig.resourcesPath
+   * exactly like getWhisperCliPath). Throws — no PATH/guess fallback — with an
+   * actionable install message when neither exists.
+   */
+  getWhisperModelPath(): string {
+    if (this.cachedWhisperModelPath) return this.cachedWhisperModelPath;
+
+    // 1. Managed shared install (the whisper-base asset from Settings → Assets).
+    const managed = assetManager.resolveEntry('whisper-base');
+    if (managed && fs.existsSync(managed)) {
+      log.info(`Using managed whisper base model: ${managed}`);
+      this.cachedWhisperModelPath = managed;
+      return managed;
+    }
+
+    // 2. Bundled utilities/models/ggml-base.bin.
+    const bundled = path.join(AppConfig.resourcesPath, 'utilities', 'models', 'ggml-base.bin');
+    if (fs.existsSync(bundled)) {
+      log.info(`Using bundled whisper base model: ${bundled}`);
+      this.cachedWhisperModelPath = bundled;
+      return bundled;
+    }
+
+    throw new Error(
+      'Whisper base model not installed — install it from Settings → Assets.'
+    );
+  }
 
   /**
    * Get the path to ffmpeg binary

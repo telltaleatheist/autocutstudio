@@ -41,11 +41,51 @@
 
   <!-- Top region: transcript (left) | vertical splitter | viewer (right). -->
   <section class="top-region" #topRegion>
-    <!-- Transcript placeholder pane (chips land here later; nothing interactive). -->
+    <!-- Transcript pane: Transcribe button / running progress / read-only preview / error.
+         Click-a-group-to-seek is the ONLY interaction this phase (chips land later). -->
     <div class="transcript-pane" [style.flexBasis.%]="splitV * 100">
-      <div class="transcript-placeholder">
-        <div class="transcript-title">Transcript</div>
-        <div class="transcript-note">Whisper transcription will appear here.</div>
+      <!-- State 1 — no sidecar yet. -->
+      <div class="tx-empty" *ngIf="transcriptState === 'none'">
+        <button class="tx-transcribe-btn" (click)="startTranscription()">Transcribe</button>
+        <div class="tx-empty-note">
+          Runs Whisper on each source track (mic, screen) — takes a while for long sessions.
+        </div>
+      </div>
+
+      <!-- State 2 — running (progress + cancel). -->
+      <div class="tx-running" *ngIf="transcriptState === 'running'">
+        <div class="tx-progress-track">
+          <div class="tx-progress-fill" [style.width.%]="transcribeProgress"></div>
+        </div>
+        <div class="tx-progress-row">
+          <span class="tx-progress-msg">{{ transcribeMessage }}</span>
+          <span class="tx-progress-pct">{{ transcribeProgress }}%</span>
+        </div>
+        <button class="tx-cancel-btn" (click)="cancelTranscription()">Cancel</button>
+      </div>
+
+      <!-- Error — verbatim message + retry. -->
+      <div class="tx-error-state" *ngIf="transcriptState === 'error'">
+        <div class="tx-error-title">Transcription failed</div>
+        <div class="tx-error-body">{{ transcriptError }}</div>
+        <button class="tx-retry-btn" (click)="startTranscription()">Try again</button>
+      </div>
+
+      <!-- State 3 — read-only preview. -->
+      <div class="tx-ready" *ngIf="transcriptState === 'ready'">
+        <div class="tx-header">
+          <span class="tx-count">{{ transcriptWordCount }} {{ transcriptWordCount === 1 ? 'word' : 'words' }}</span>
+          <button class="tx-retranscribe" (click)="startTranscription()">re-transcribe</button>
+        </div>
+        <div class="tx-groups">
+          <div class="tx-group" *ngFor="let g of visibleGroups" (click)="seekToGroup(g)" title="Seek here">
+            <div class="tx-group-head">
+              <span class="tx-dot" [style.background]="g.color"></span>
+              <span class="tx-tc">{{ g.timecode }}</span>
+            </div>
+            <div class="tx-group-text">{{ g.text }}</div>
+          </div>
+        </div>
       </div>
     </div>
 
