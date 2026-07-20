@@ -192,32 +192,76 @@ export class BinaryResolver {
   private cachedWhisperModelPath: string | null = null;
 
   /**
-   * Get the path to the whisper.cpp CLI binary (the exact Metal build — a plain
-   * `whisper` on PATH is NOT acceptable, so there is deliberately NO PATH
-   * fallback). Order: managed catalog entry (future-proofing; no such entry yet,
-   * so resolveBinary just returns null), then the bundled utilities/bin/whisper-cli.
+   * Bundled whisper-cli filename for THIS machine's arch. The utilities/bin dir ships
+   * per-arch binaries whose ggml/whisper dylibs are @loader_path-linked with matching
+   * -x64 / (unsuffixed arm64) names, so each binary loads its own arch's libs and the
+   * two sets coexist without collision:
+   *   - Apple Silicon (arm64): `whisper-cli` — the proven Metal build (~40x realtime).
+   *   - Intel (x64): `whisper-cli-x64` — a CPU/BLAS build (no Metal on Intel Macs).
+   *   - Windows: `whisper-cli.exe`.
+   * (This mirrors the arch-selection pattern used by the sibling ContentStudio app,
+   * which is how those x64 artifacts originate.)
+   */
+  private whisperBinaryName(): string {
+    if (process.platform === 'win32') return 'whisper-cli.exe';
+    if (process.platform === 'darwin') {
+      return process.arch === 'arm64' ? 'whisper-cli' : 'whisper-cli-x64';
+    }
+    return 'whisper-cli';
+  }
+
+  /**
+   * On macOS, confirm a Mach-O binary actually contains THIS process's architecture
+   * before we try to run it — a wrong-arch binary otherwise fails with a confusing
+   * dyld error. Fails loud on mismatch; a `file` probe that itself errors is not
+   * treated as a mismatch (binaryWorks(-h) is the real gate right after). Mirrors
+   * ContentStudio's verifyBinary.
+   */
+  private assertBinaryArch(binaryPath: string, name: string): void {
+    if (process.platform !== 'darwin') return;
+    let out: string;
+    try {
+      const { execSync } = require('child_process');
+      out = execSync(`file "${binaryPath}"`, { encoding: 'utf8' });
+    } catch {
+      return; // couldn't probe; the -h run below is the authoritative check
+    }
+    const expected = process.arch === 'arm64' ? 'arm64' : 'x86_64';
+    if (!(out.includes(expected) || out.includes('universal'))) {
+      throw new Error(
+        `${name} has the wrong architecture for this machine (need ${expected}): ${out.trim()}`
+      );
+    }
+  }
+
+  /**
+   * Get the path to the whisper.cpp CLI binary for THIS machine's architecture (see
+   * whisperBinaryName — arm64 Metal build, x64 CPU build, or the .exe). A plain
+   * `whisper` on PATH is NOT acceptable, so there is deliberately NO PATH fallback.
+   * Order: managed catalog entry (future-proofing; no such entry yet, so resolveBinary
+   * returns null), then the arch-specific bundled binary under utilities/bin.
    *
-   * The bundled binary is resolved dev-vs-packaged the same way other bundled
-   * resources are: AppConfig.resourcesPath is the project root in development and
-   * process.resourcesPath in production. As with findBundledBinary, a bundled
-   * binary that exists but lacks +x is chmod'd; and — critically — a binary that
-   * exists but does NOT actually run (-h) is a hard THROW, never a fallback (this
-   * is what caught the original ffprobe SIGABRT class of failure). Throws with an
-   * actionable message when nothing resolves.
+   * The bundled binary is resolved dev-vs-packaged the same way other bundled resources
+   * are: AppConfig.resourcesPath is the project root in development and
+   * process.resourcesPath in production. A bundled binary that exists but lacks +x is
+   * chmod'd; its arch is verified against this machine; and — critically — a binary
+   * that exists but does NOT actually run (-h) is a hard THROW, never a fallback.
    */
   getWhisperCliPath(): string {
     if (this.cachedWhisperCliPath) return this.cachedWhisperCliPath;
 
+    const binName = this.whisperBinaryName();
+
     // 1. Managed shared download (no catalog entry yet → resolveBinary returns null).
-    const managed = assetManager.resolveBinary('whisper-cli', 'whisper-cli');
+    const managed = assetManager.resolveBinary('whisper-cli', binName);
     if (managed && this.binaryWorks(managed, ['-h'])) {
       log.info(`Using managed whisper-cli: ${managed}`);
       this.cachedWhisperCliPath = managed;
       return managed;
     }
 
-    // 2. Bundled utilities/bin/whisper-cli.
-    const bundled = path.join(AppConfig.resourcesPath, 'utilities', 'bin', 'whisper-cli');
+    // 2. Bundled arch-specific binary under utilities/bin.
+    const bundled = path.join(AppConfig.resourcesPath, 'utilities', 'bin', binName);
     if (fs.existsSync(bundled)) {
       // Ensure it's executable — a freshly copied bundled binary may lack +x.
       try {
@@ -233,12 +277,14 @@ export class BinaryResolver {
           );
         }
       }
-      // Exists + executable, but must actually RUN — a non-running binary (wrong
-      // arch, missing dylib) is a throw, not a silent fallback.
+      // Wrong architecture is a loud, specific failure rather than a cryptic dyld error.
+      this.assertBinaryArch(bundled, 'Whisper binary');
+      // Exists + executable + right arch, but must actually RUN — a non-running binary
+      // (missing dylib, bad build) is a throw, not a silent fallback.
       if (!this.binaryWorks(bundled, ['-h'])) {
         throw new Error(
           `Whisper binary found at ${bundled} but it failed to run (-h) — it may be ` +
-          `the wrong architecture or missing its ggml dylibs.`
+          `missing its ggml dylibs.`
         );
       }
       log.info(`Using bundled whisper-cli: ${bundled}`);
@@ -246,9 +292,9 @@ export class BinaryResolver {
       return bundled;
     }
 
-    // NO PATH fallback — the transcription pipeline needs the exact Metal build.
+    // NO PATH fallback — the transcription pipeline needs the exact bundled build.
     throw new Error(
-      'Whisper binary not found — expected a bundled binary at utilities/bin/whisper-cli.'
+      `Whisper binary not found — expected a bundled binary at utilities/bin/${binName}.`
     );
   }
 

@@ -91,6 +91,10 @@
         "to": "cli"
       },
       {
+        "from": "utilities/bin",
+        "to": "utilities/bin"
+      },
+      {
         "from": "environment.yml",
         "to": "environment.yml"
       }
