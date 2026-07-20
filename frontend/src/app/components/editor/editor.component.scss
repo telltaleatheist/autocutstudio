@@ -107,66 +107,160 @@
 
   .topbar-spacer { flex: 1 1 auto; }
 
-  .export-btn {
+  /* File menu button (left of the session name). */
+  .menu-wrap {
     flex: 0 0 auto;
+    position: relative;
+  }
+  .menu-btn {
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.02em;
-    color: #e8e8ea;
+    color: #d8d8dc;
     background: #3a3a40;
     border: 1px solid #0d0d0e;
     border-radius: 4px;
-    padding: 4px 12px;
+    padding: 4px 10px;
     cursor: pointer;
     transition: background 0.12s ease;
 
-    &:hover:not(:disabled) { background: #47474e; }
-    &:active:not(:disabled) { background: #2f2f34; }
-    &:disabled { opacity: 0.4; cursor: default; }
+    &:hover { background: #47474e; }
+    &.open { background: #2f2f34; }
+  }
+
+  .menu-dropdown {
+    position: absolute;
+    top: calc(100% + 5px);
+    left: 0;
+    z-index: 50;
+    min-width: 200px;
+    background: #2c2c30;
+    border: 1px solid #0d0d0e;
+    border-radius: 6px;
+    padding: 4px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+
+    .menu-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      width: 100%;
+      text-align: left;
+      font-size: 12px;
+      color: #e2e2e6;
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      padding: 6px 10px;
+      cursor: pointer;
+      transition: background 0.1s ease;
+
+      &:hover:not(:disabled) { background: #3a7bd0; color: #fff; }
+      &:disabled { opacity: 0.4; cursor: default; }
+
+      .menu-shortcut {
+        font-size: 11px;
+        color: #8a8a90;
+        font-variant-numeric: tabular-nums;
+      }
+      &:hover:not(:disabled) .menu-shortcut { color: #dce6f5; }
+    }
   }
 }
 
-/* Export result strip beneath the top bar: success (neutral) or error (red). */
-.export-strip {
-  flex: 0 0 auto;
+/* Invisible full-window backdrop that captures an outside click to close the File menu. */
+.menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: transparent;
+}
+
+/* Export result modal: dim backdrop + centered FCP-dark card (success or verbatim error). */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 6px 14px;
-  background: #26302a;
-  border-bottom: 1px solid #0d0d0e;
-  font-size: 11px;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 40px;
 
-  .export-msg {
-    flex: 1 1 auto;
-    color: #cfe6d5;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
-  }
-
-  .show-folder-btn {
-    flex: 0 0 auto;
-    font-size: 11px;
-    color: #e8e8ea;
-    background: #3a3a40;
+  .modal {
+    width: 100%;
+    max-width: 520px;
+    background: #26262a;
     border: 1px solid #0d0d0e;
-    border-radius: 4px;
-    padding: 3px 10px;
-    cursor: pointer;
+    border-radius: 10px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+    padding: 20px 22px;
 
-    &:hover { background: #47474e; }
-  }
+    .modal-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: #f0f0f2;
+      margin-bottom: 12px;
+    }
 
-  &.error {
-    background: #34211f;
-    .export-msg {
+    .modal-path {
+      font-size: 12px;
+      color: #cfe6d5;
+      font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+      word-break: break-all;
+      background: #1c1c1f;
+      border: 1px solid #333338;
+      border-radius: 6px;
+      padding: 10px 12px;
+      margin-bottom: 16px;
+    }
+
+    .modal-error {
+      font-size: 12px;
+      line-height: 1.5;
       color: #e08a7a;
       white-space: pre-wrap;
       word-break: break-word;
-      font-family: inherit;
+      background: rgba(200, 106, 90, 0.10);
+      border: 1px solid rgba(200, 106, 90, 0.30);
+      border-radius: 6px;
+      padding: 12px 14px;
+      margin-bottom: 16px;
     }
+
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+
+      .modal-btn {
+        font-size: 12px;
+        font-weight: 500;
+        color: #e2e2e6;
+        background: #3a3a40;
+        border: 1px solid #0d0d0e;
+        border-radius: 5px;
+        padding: 6px 14px;
+        cursor: pointer;
+        transition: background 0.12s ease;
+
+        &:hover { background: #47474e; }
+
+        &.primary {
+          background: #3a7bd0;
+          border-color: #2b5ea0;
+          color: #fff;
+
+          &:hover { background: #4589e0; }
+        }
+      }
+    }
+
+    &.error .modal-title { color: #e6a597; }
   }
 }
 

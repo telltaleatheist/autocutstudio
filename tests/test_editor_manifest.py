@@ -32,7 +32,8 @@ FRAME = 1001 / 30000  # ~0.0333666...
 
 
 def master_fcpxml(primary_src, mix_src, bg_src=None, same_layer_overlap=False,
-                  short_master=False):
+                  short_master=False, screen_src=None, mic2_src=None,
+                  include_mix_audio=True, screen_audio_overlap=False):
     """A minimal master hybrid project.
 
     Timeline (project spine): one ref-clip -> compound rC, offset 60 frames (2.002s),
@@ -48,7 +49,14 @@ def master_fcpxml(primary_src, mix_src, bg_src=None, same_layer_overlap=False,
         OVERLAPS M on a DIFFERENT layer -> allowed internally, dropped from output.
       - if same_layer_overlap: a second no-lane ENABLED video overlapping M on the
         SAME layer (0,0) -> must be a hard error.
-      - audio A1: ref=a2 (mix.wav) full span -> traversed, then dropped from output.
+    Audio lanes (each a distinct PER-SOURCE file -> its own output audio track). Emitted
+    in the spine in DISCOVERY order mix, screen, mic 2 so the non-screen-first / screen-last
+    reordering is observable in the output:
+      - audio A_mix: ref=a2 (mix.wav), start 0s      -> sourceStart 0.0    (kept if include_mix_audio)
+      - audio A_scr: ref=aS (screen),  start 1.001s  -> sourceStart 1.001  (kept if screen_src)
+      - audio A_m2:  ref=aM2 (mic 2),  start 2.002s  -> sourceStart 2.002  (kept if mic2_src)
+      - if screen_audio_overlap: a second aS audio clip overlapping the first on the SAME
+        file -> must be a hard error (two simultaneous layers of one audio file).
     Project sequence declared duration = 360 frames (12.012s) = offset(60) + duration(300).
     """
     bg_asset = ''
@@ -66,6 +74,35 @@ def master_fcpxml(primary_src, mix_src, bg_src=None, same_layer_overlap=False,
         # -> [4.5045s, 9.5095s) overlaps M's span.
         overlap_clip = '''
                     <video ref="a1" name="MASTER" offset="75075/30000s" start="0s" duration="150150/30000s" enabled="1"/>'''
+
+    screen_asset = ''
+    mic2_asset = ''
+    mix_audio = ''
+    screen_audio = ''
+    mic2_audio = ''
+    if include_mix_audio:
+        mix_audio = '''
+                    <audio ref="a2" name="Mix" offset="0s" start="0s" duration="300300/30000s"/>'''
+    if screen_src is not None:
+        screen_asset = f'''
+        <asset id="aS" name="Screen" start="0s" duration="600600/30000s" format="r1" hasAudio="1" audioSources="1" audioChannels="2">
+            <media-rep kind="original-media" src="file://{screen_src}"/>
+        </asset>'''
+        screen_audio = '''
+                    <audio ref="aS" name="Screen" offset="0s" start="30030/30000s" duration="300300/30000s"/>'''
+        if screen_audio_overlap:
+            # second clip of the SAME screen file overlapping the first ->
+            # [4.5045s, 9.5095s) on the timeline overlaps [2.002s, 12.012s).
+            screen_audio += '''
+                    <audio ref="aS" name="Screen" offset="75075/30000s" start="0s" duration="150150/30000s"/>'''
+    if mic2_src is not None:
+        mic2_asset = f'''
+        <asset id="aM2" name="Mic 2" start="0s" duration="600600/30000s" format="r1" hasAudio="1" audioSources="1" audioChannels="2">
+            <media-rep kind="original-media" src="file://{mic2_src}"/>
+        </asset>'''
+        mic2_audio = '''
+                    <audio ref="aM2" name="Mic 2" offset="0s" start="60060/30000s" duration="300300/30000s"/>'''
+
     master_dur = '150150/30000s' if short_master else '300300/30000s'
     return f'''<?xml version="1.0" encoding="UTF-8"?>
 <fcpxml version="1.13">
@@ -76,13 +113,12 @@ def master_fcpxml(primary_src, mix_src, bg_src=None, same_layer_overlap=False,
         </asset>
         <asset id="a2" name="Mix" start="0s" duration="600600/30000s" format="r1" hasAudio="1" audioSources="1" audioChannels="2">
             <media-rep kind="original-media" src="file://{mix_src}"/>
-        </asset>{bg_asset}
+        </asset>{bg_asset}{screen_asset}{mic2_asset}
         <media id="rC" name="Hybrid Cam">
             <sequence format="r1" duration="300300/30000s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
                 <spine>
                     <video ref="a1" name="MASTER" offset="0s" start="30030/30000s" duration="{master_dur}" enabled="1"/>{overlap_clip}
-                    <video ref="a1" name="MASTER" offset="150150/30000s" start="0s" duration="150150/30000s" enabled="0"/>{bg_clip}
-                    <audio ref="a2" name="Mix" offset="0s" start="0s" duration="300300/30000s"/>
+                    <video ref="a1" name="MASTER" offset="150150/30000s" start="0s" duration="150150/30000s" enabled="0"/>{bg_clip}{mix_audio}{screen_audio}{mic2_audio}
                 </spine>
             </sequence>
         </media>
@@ -104,25 +140,34 @@ def master_fcpxml(primary_src, mix_src, bg_src=None, same_layer_overlap=False,
 
 def make_media_files(dirpath):
     # 'Session master.mov' matches the pipeline's master naming convention
-    # (stem ends with ' master'); 'cam.mov' deliberately does NOT.
+    # (stem ends with ' master'); 'cam.mov' deliberately does NOT. 'mix.wav' has NO
+    # session prefix (label stays 'mix'); 'Session screen.wav' / 'Session mic 2.wav'
+    # carry the 'Session ' prefix that the label rule strips ('screen', 'mic 2').
     master = Path(dirpath) / 'Session master.mov'
     cam = Path(dirpath) / 'cam.mov'
     mix = Path(dirpath) / 'mix.wav'
     bg = Path(dirpath) / 'earth background.png'
+    screen = Path(dirpath) / 'Session screen.wav'
+    mic2 = Path(dirpath) / 'Session mic 2.wav'
     for p, data in ((master, 'fake-master-bytes'), (cam, 'fake-video-bytes'),
-                    (mix, 'fake-audio-bytes'), (bg, 'fake-image-bytes')):
+                    (mix, 'fake-audio-bytes'), (bg, 'fake-image-bytes'),
+                    (screen, 'fake-screen-bytes'), (mic2, 'fake-mic2-bytes')):
         with open(p, 'w') as f:
             f.write(data)
-    return str(master), str(cam), str(mix), str(bg)
+    return str(master), str(cam), str(mix), str(bg), str(screen), str(mic2)
 
 
 def build_zip(zip_path, primary_src, mix_src, bg_src=None, same_layer_overlap=False,
-              short_master=False):
+              short_master=False, screen_src=None, mic2_src=None,
+              include_mix_audio=True, screen_audio_overlap=False):
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         zf.writestr('Session/Session_HYBRID.fcpxml',
                     master_fcpxml(primary_src, mix_src, bg_src=bg_src,
                                   same_layer_overlap=same_layer_overlap,
-                                  short_master=short_master))
+                                  short_master=short_master,
+                                  screen_src=screen_src, mic2_src=mic2_src,
+                                  include_mix_audio=include_mix_audio,
+                                  screen_audio_overlap=screen_audio_overlap))
         # Decoys that MUST NOT be mistaken for the master hybrid project:
         zf.writestr('Session/Session_DC.fcpxml', '<fcpxml/>')
         zf.writestr('Session/Session_SOLO.fcpxml', '<fcpxml/>')
@@ -132,35 +177,33 @@ def build_zip(zip_path, primary_src, mix_src, bg_src=None, same_layer_overlap=Fa
 class EditorManifestTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        self.master, self.cam, self.mix, self.bg = make_media_files(self.tmp)
+        (self.master, self.cam, self.mix, self.bg,
+         self.screen, self.mic2) = make_media_files(self.tmp)
 
     def _approx(self, a, b, msg=''):
         self.assertAlmostEqual(a, b, places=9, msg=msg)
 
-    def _assert_two_master_tracks(self, manifest):
-        """The v1 output contract: exactly two tracks, both the master file, with
-        identical segment timing on both."""
-        self.assertEqual(
-            manifest['tracks'],
-            [{'id': 'video', 'label': 'Master', 'kind': 'video'},
-             {'id': 'audio', 'label': 'Master audio', 'kind': 'audio'}])
-        vids = [s for s in manifest['segments'] if s['trackId'] == 'video']
-        auds = [s for s in manifest['segments'] if s['trackId'] == 'audio']
-        self.assertEqual(len(vids) + len(auds), len(manifest['segments']),
-                         'no segments outside the two master tracks')
-        self.assertEqual(len(vids), len(auds))
-        for v, a in zip(vids, auds):
-            self.assertEqual(
-                (v['timelineStart'], v['duration'], v['sourceStart'], v['file'], v['label']),
-                (a['timelineStart'], a['duration'], a['sourceStart'], a['file'], a['label']),
-                'audio track must duplicate the video track timing exactly')
-        for s in manifest['segments']:
-            self.assertEqual(s['file'], self.master, 'every segment references the master file')
+    def _segs_for(self, manifest, track_id):
+        return [s for s in manifest['segments'] if s['trackId'] == track_id]
+
+    def _assert_video_track(self, manifest):
+        """The single 'video' lane: the master recording's flattened video segments."""
+        self.assertEqual(manifest['tracks'][0],
+                         {'id': 'video', 'label': 'Video', 'kind': 'video'})
+        vids = self._segs_for(manifest, 'video')
+        for s in vids:
+            self.assertEqual(s['file'], self.master, 'video segments reference the master')
+            self.assertEqual(s['label'], 'Session master')
         return vids
 
     def test_flatten_exact_numbers_and_disabled_exclusion(self):
+        """One video lane + one audio lane per non-master file, ordered non-screen first
+        then screen. Exact rational-derived timing; disabled inner video excluded."""
         zip_path = Path(self.tmp) / 'Session_compounds.zip'
-        build_zip(zip_path, self.master, self.mix)
+        # discovery order in the spine is mix, screen, mic 2; emission must reorder to
+        # non-screen first (mix -> audio-0, mic 2 -> audio-1) then screen (audio-2).
+        build_zip(zip_path, self.master, self.mix,
+                  screen_src=self.screen, mic2_src=self.mic2)
 
         manifest = build_manifest(str(zip_path))
 
@@ -169,36 +212,86 @@ class EditorManifestTest(unittest.TestCase):
         self._approx(manifest['frameSeconds'], FRAME, 'frameSeconds from format r1')
         self._approx(manifest['timelineDuration'], 12.012, 'declared 360 frames')
 
-        vids = self._assert_two_master_tracks(manifest)
+        # tracks: video, then audio lanes with screen LAST and session prefix stripped.
+        self.assertEqual(
+            manifest['tracks'],
+            [{'id': 'video', 'label': 'Video', 'kind': 'video'},
+             {'id': 'audio-0', 'label': 'mix', 'kind': 'audio'},       # mix.wav (no prefix)
+             {'id': 'audio-1', 'label': 'mic 2', 'kind': 'audio'},     # 'Session mic 2' -> 'mic 2'
+             {'id': 'audio-2', 'label': 'screen', 'kind': 'audio'}])   # screen last
 
-        # DISABLED inner video excluded -> exactly one master segment per track.
+        vids = self._assert_video_track(manifest)
+        # DISABLED inner video excluded -> exactly one master video segment.
         # (Were it included, it would also trip the same-layer overlap error.)
         self.assertEqual(len(vids), 1, 'disabled inner clip must be excluded')
         v = vids[0]
-        # timelineStart = ref-clip offset 60 frames = 2.002s
-        self._approx(v['timelineStart'], 2.002)
-        # duration = inner master clip 300 frames = 10.01s
-        self._approx(v['duration'], 10.01)
-        # sourceStart = inner clip start 30 frames = 1.001s (no left-clipping)
-        self._approx(v['sourceStart'], 1.001)
-        self.assertEqual(v['label'], 'Session master')    # master file stem
+        self._approx(v['timelineStart'], 2.002)   # ref-clip offset 60 frames
+        self._approx(v['duration'], 10.01)         # inner master clip 300 frames
+        self._approx(v['sourceStart'], 1.001)      # inner clip start 30 frames
 
-    def test_non_master_layers_are_dropped(self):
-        """A full-span bg overlay and the mix audio lane are traversed internally but
-        do not surface: still exactly the two master tracks with identical timing."""
+        # Each audio lane carries its OWN file's segment with the right timing.
+        # timelineStart/duration are identical (same offset/duration in the compound);
+        # sourceStart differs per file (start 0 / 1.001 / 2.002).
+        for tid, f, src in (('audio-0', self.mix, 0.0),
+                            ('audio-1', self.mic2, 2.002),
+                            ('audio-2', self.screen, 1.001)):
+            segs = self._segs_for(manifest, tid)
+            self.assertEqual(len(segs), 1, f'{tid} has exactly one segment')
+            s = segs[0]
+            self.assertEqual(s['file'], f, f'{tid} references its own file')
+            self._approx(s['timelineStart'], 2.002)
+            self._approx(s['duration'], 10.01)
+            self._approx(s['sourceStart'], src)
+
+        # No segment lives outside the four declared tracks.
+        track_ids = {t['id'] for t in manifest['tracks']}
+        self.assertTrue(all(s['trackId'] in track_ids for s in manifest['segments']))
+
+    def test_non_master_video_layers_are_dropped(self):
+        """A full-span bg VIDEO overlay is traversed internally but does not surface —
+        the only video lane is the master's; audio lanes come from per-source files."""
         zip_path = Path(self.tmp) / 'Session_compounds.zip'
-        build_zip(zip_path, self.master, self.mix, bg_src=self.bg)
+        build_zip(zip_path, self.master, self.mix, bg_src=self.bg,
+                  screen_src=self.screen)
 
         manifest = build_manifest(str(zip_path))
 
-        vids = self._assert_two_master_tracks(manifest)
+        vids = self._assert_video_track(manifest)
         self.assertEqual(len(vids), 1)
         self._approx(vids[0]['timelineStart'], 2.002)
         self._approx(vids[0]['duration'], 10.01)
         self._approx(vids[0]['sourceStart'], 1.001)
+        # bg is a VIDEO overlay -> dropped entirely (never a segment or a track).
         files = {s['file'] for s in manifest['segments']}
         self.assertNotIn(self.bg, files)
-        self.assertNotIn(self.mix, files)
+        # audio lanes: mix (audio-0), screen (audio-1); no bg lane.
+        self.assertEqual([t['id'] for t in manifest['tracks']],
+                         ['video', 'audio-0', 'audio-1'])
+        self.assertEqual(self._segs_for(manifest, 'audio-0')[0]['file'], self.mix)
+        self.assertEqual(self._segs_for(manifest, 'audio-1')[0]['file'], self.screen)
+
+    def test_zero_non_master_audio_is_loud_error(self):
+        """A session with no per-source (non-master) audio leaves cannot populate the
+        audio lanes -> loud ManifestError."""
+        zip_path = Path(self.tmp) / 'Session_compounds.zip'
+        build_zip(zip_path, self.master, self.mix, include_mix_audio=False)
+
+        with self.assertRaises(ManifestError) as ctx:
+            build_manifest(str(zip_path))
+        self.assertIn('no per-source audio files', str(ctx.exception))
+
+    def test_audio_same_file_overlap_is_loud_error(self):
+        """Two simultaneous layers referencing ONE audio file -> hard error, mirroring
+        the master-overlap check."""
+        zip_path = Path(self.tmp) / 'Session_compounds.zip'
+        build_zip(zip_path, self.master, self.mix,
+                  screen_src=self.screen, screen_audio_overlap=True)
+
+        with self.assertRaises(ManifestError) as ctx:
+            build_manifest(str(zip_path))
+        msg = str(ctx.exception)
+        self.assertIn('overlapping audio segments', msg)
+        self.assertIn('Session screen.wav', msg)
 
     def test_master_identification_error_lists_stems(self):
         """No leaf file stem matches the master convention -> loud error listing stems."""
@@ -257,7 +350,7 @@ class EditorManifestTest(unittest.TestCase):
 
     def test_cli_success_single_json_line(self):
         zip_path = Path(self.tmp) / 'Session_compounds.zip'
-        build_zip(zip_path, self.master, self.mix)
+        build_zip(zip_path, self.master, self.mix, screen_src=self.screen)
 
         proc = subprocess.run(
             [sys.executable, str(CLI), '--zip', str(zip_path)],
@@ -268,9 +361,11 @@ class EditorManifestTest(unittest.TestCase):
         payload = json.loads(lines[0])
         self.assertEqual(payload['type'], 'manifest_result')
         self.assertEqual(payload['manifest']['session'], 'Session')
-        self.assertEqual([t['id'] for t in payload['manifest']['tracks']], ['video', 'audio'])
-        # one master segment on each of the two tracks
-        self.assertEqual(len(payload['manifest']['segments']), 2)
+        # one video lane + one audio lane per non-master file (mix, screen).
+        self.assertEqual([t['id'] for t in payload['manifest']['tracks']],
+                         ['video', 'audio-0', 'audio-1'])
+        # one master video segment + one segment on each audio lane = 3.
+        self.assertEqual(len(payload['manifest']['segments']), 3)
 
     def test_cli_error_shape_and_exit_code(self):
         proc = subprocess.run(

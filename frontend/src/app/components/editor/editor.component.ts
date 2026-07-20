@@ -222,6 +222,19 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   selEnd: number | null = null;          // 'o' mark / drag end
   private draggingSelection = false;
 
+  // Committed multi-selection (EDITED seconds) — the selection source of truth. Single-range
+  // actions (section click, group click, I/O marks, shift-paint) live in selStart/selEnd and
+  // clear this; a marquee writes N ranges here and clears selStart/selEnd. drawSelection and
+  // deleteSelection operate on the UNION of both (allSelectionRanges), so a list of ranges works
+  // everywhere a single range used to.
+  private selectedRanges: { start: number; end: number }[] = [];
+  // Marquee gesture (SELECT-tool drag that starts in a track lane). marqueeMoved distinguishes a
+  // real drag (→ marquee) from a plain click (→ scrub + section select).
+  private marqueeActive = false;
+  private marqueeMoved = false;
+  private marqueeStartTime = 0;          // EDITED seconds
+  private marqueeEndTime = 0;            // EDITED seconds
+
   // ── Tools + blade (FCPX Arrow / Blade) ──────────────────────────────────────
   // The active pointer tool. Blade drops boundaries that subdivide the timeline into
   // sections; clicking a section (either tool) selects it for a ripple delete.
@@ -241,6 +254,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   exporting = false;
   exportResultPath: string | null = null; // set on a successful FCPXML export
   exportError: string | null = null;       // Python's message, verbatim, on failure
+  // Top-bar File menu (Export / Open) open/closed state.
+  menuOpen = false;
 
   // ── Transcript ────────────────────────────────────────────────────────────
   // Stable per-track-id color, assigned by discovery order and cycled for extra tracks.
@@ -431,6 +446,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.selStart = null;
     this.selEnd = null;
     this.draggingSelection = false;
+    this.selectedRanges = [];
+    this.marqueeActive = false;
+    this.marqueeMoved = false;
     // Blade boundaries + transcript-derived selection are per-session; drop them so a
     // re-init cannot leak a previous session's carve marks.
     this.bladeBoundaries = [];
@@ -439,6 +457,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.exporting = false;
     this.exportResultPath = null;
     this.exportError = null;
+    this.menuOpen = false;
     // Transcript: a re-init starts fresh. An in-flight job for the OLD session is
     // actively cancelled — a multi-hour whisper run must not keep burning CPU for a
     // session nobody is looking at (dropping the job id alone would only mute its
@@ -762,20 +781,23 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       ctx.globalAlpha = 1;
     }
 
-    // Clips.
+    // Blade boundaries, in EDITED seconds, so clips can be split at them. A boundary that a
+    // cut swallowed collapses onto a seam via originalToEdited and simply won't fall strictly
+    // inside any clip. Computed once per frame.
+    const bladeEdited = this.bladeBoundaries.map(b => this.originalToEdited(b));
+
+    // Clips. Each clip is split into sub-pieces at any blade boundary that falls strictly
+    // inside it, so a cut reads as a real clip division (in EVERY lane) rather than an overlay
+    // line. With no interior boundary a clip renders as a single piece (identity behavior).
     for (const row of rows) {
       const segs = this.segsByTrack.get(row.track.id) || [];
       for (const seg of segs) {
         const x0 = this.timeToX(seg.timelineStart);
         const x1 = this.timeToX(seg.timelineStart + seg.duration);
         if (x1 < 0 || x0 > W) continue; // off-screen
-        if (row.track.kind === 'video') this.drawVideoClip(ctx, seg, x0, x1, row);
-        else this.drawAudioClip(ctx, seg, x0, x1, row, W);
+        this.drawClipPieces(ctx, seg, row, W, bladeEdited);
       }
     }
-
-    // Blade boundaries (cyan) across the track area, beneath the ruler + selection.
-    this.drawBladeBoundaries(ctx, W, H, rows);
 
     // Ruler last-but-one so clips never bleed over it.
     this.drawRuler(ctx, W);
@@ -792,11 +814,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * and small ruler handles. A one-sided pending mark ('i' or 'o' alone) shows a yellow flag.
    */
   private drawSelection(ctx: CanvasRenderingContext2D, W: number, H: number): void {
-    const range = this.selRange();
-    if (range) {
+    // Every selected range (committed marquee ranges ∪ the in-progress single range) as a
+    // translucent yellow band with 1px edges + ruler handles.
+    const ranges = this.allSelectionRanges();
+    for (const range of ranges) {
       const x0 = this.timeToX(range.lo);
       const x1 = this.timeToX(range.hi);
-      if (x1 < 0 || x0 > W) return;
+      if (x1 < 0 || x0 > W) continue;
       ctx.save();
       ctx.fillStyle = 'rgba(245,197,24,0.12)';
       ctx.fillRect(x0, 0, x1 - x0, H);
@@ -809,45 +833,137 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       ctx.fillRect(x0 - 3, 0, 6, this.RULER_H);
       ctx.fillRect(x1 - 3, 0, 6, this.RULER_H);
       ctx.restore();
-      return;
     }
-    // One-sided pending mark → a small flag in the ruler.
-    const one = this.selStart != null ? this.selStart : (this.selEnd != null ? this.selEnd : null);
-    if (one == null) return;
-    const x = this.timeToX(one);
-    if (x < -1 || x > W + 1) return;
-    ctx.save();
-    ctx.fillStyle = '#f5c518';
-    ctx.fillRect(x - 0.5, 0, 1, this.RULER_H);
-    ctx.beginPath();
-    ctx.moveTo(x, 2);
-    ctx.lineTo(x + 8, 5);
-    ctx.lineTo(x, 8);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
+
+    // In-progress marquee rectangle (translucent), spanning the track area under the ruler.
+    if (this.marqueeActive && this.marqueeMoved) {
+      const mx0 = this.timeToX(Math.min(this.marqueeStartTime, this.marqueeEndTime));
+      const mx1 = this.timeToX(Math.max(this.marqueeStartTime, this.marqueeEndTime));
+      const top = this.RULER_H;
+      ctx.save();
+      ctx.fillStyle = 'rgba(150,180,255,0.14)';
+      ctx.fillRect(mx0, top, mx1 - mx0, H - top);
+      ctx.strokeStyle = 'rgba(150,180,255,0.85)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(mx0 + 0.5, top + 0.5, Math.max(0, mx1 - mx0 - 1), H - top - 1);
+      ctx.restore();
+    }
+
+    // One-sided pending mark ('i' or 'o' alone, no committed ranges) → a small ruler flag.
+    if (ranges.length === 0) {
+      const one = this.selStart != null ? this.selStart : (this.selEnd != null ? this.selEnd : null);
+      if (one == null) return;
+      const x = this.timeToX(one);
+      if (x < -1 || x > W + 1) return;
+      ctx.save();
+      ctx.fillStyle = '#f5c518';
+      ctx.fillRect(x - 0.5, 0, 1, this.RULER_H);
+      ctx.beginPath();
+      ctx.moveTo(x, 2);
+      ctx.lineTo(x + 8, 5);
+      ctx.lineTo(x, 8);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
   }
 
   /**
-   * Blade boundaries as thin cyan marks spanning the track area (below the ruler). Stored in
-   * ORIGINAL seconds; mapped to edited x via originalToEdited so they ride along with cuts.
+   * The whole selection as normalized [lo, hi] edited-second ranges: the committed marquee
+   * ranges (selectedRanges) unioned with the in-progress single range (selStart/selEnd), sorted
+   * and merged so overlaps/adjacencies coalesce. Empty when nothing is selected.
    */
-  private drawBladeBoundaries(ctx: CanvasRenderingContext2D, W: number, H: number, rows: TrackRow[]): void {
-    if (this.bladeBoundaries.length === 0) return;
-    const top = rows.length ? rows[0].top : this.RULER_H;
-    ctx.save();
-    ctx.strokeStyle = '#3fd6e0';
-    ctx.globalAlpha = 0.85;
-    ctx.lineWidth = 1;
-    for (const b of this.bladeBoundaries) {
-      const x = this.timeToX(this.originalToEdited(b));
-      if (x < -1 || x > W + 1) continue;
-      ctx.beginPath();
-      ctx.moveTo(x + 0.5, top);
-      ctx.lineTo(x + 0.5, H);
-      ctx.stroke();
+  private allSelectionRanges(): { lo: number; hi: number }[] {
+    const ranges: { lo: number; hi: number }[] = [];
+    for (const r of this.selectedRanges) {
+      const lo = Math.min(r.start, r.end);
+      const hi = Math.max(r.start, r.end);
+      if (hi - lo > this.EPS) ranges.push({ lo, hi });
     }
-    ctx.restore();
+    const single = this.selRange();
+    if (single) ranges.push(single);
+    return this.mergeRanges(ranges);
+  }
+
+  /** Sort + merge [lo,hi] ranges, coalescing any that overlap or touch. */
+  private mergeRanges(ranges: { lo: number; hi: number }[]): { lo: number; hi: number }[] {
+    if (ranges.length <= 1) return ranges;
+    const sorted = [...ranges].sort((a, b) => a.lo - b.lo);
+    const out: { lo: number; hi: number }[] = [{ ...sorted[0] }];
+    for (let i = 1; i < sorted.length; i++) {
+      const cur = out[out.length - 1];
+      const nx = sorted[i];
+      if (nx.lo <= cur.hi + this.EPS) cur.hi = Math.max(cur.hi, nx.hi);
+      else out.push({ ...nx });
+    }
+    return out;
+  }
+
+  /** Clear every trace of the current selection (single, marquee, and group highlight). */
+  private clearSelection(): void {
+    this.selStart = null;
+    this.selEnd = null;
+    this.selectedRanges = [];
+    this.selectedGroupStart = null;
+    this.selectedGroupEnd = null;
+  }
+
+  /**
+   * Commit an in-progress marquee: select every SECTION (bounded by sectionBoundaries = clip
+   * edges ∪ blades) whose span intersects the dragged time range, snap to those boundaries, and
+   * merge adjacent selected sections into contiguous ranges. Overwrites selectedRanges.
+   */
+  private commitMarquee(): void {
+    const lo = Math.min(this.marqueeStartTime, this.marqueeEndTime);
+    const hi = Math.max(this.marqueeStartTime, this.marqueeEndTime);
+    const bounds = this.sectionBoundaries();
+    const hits: { lo: number; hi: number }[] = [];
+    for (let i = 0; i < bounds.length - 1; i++) {
+      const s = bounds[i];
+      const e = bounds[i + 1];
+      if (e - s <= this.EPS) continue;
+      // Section [s,e] intersects the marquee [lo,hi] (endpoints-only touch excluded via EPS).
+      if (s < hi - this.EPS && e > lo + this.EPS) hits.push({ lo: s, hi: e });
+    }
+    const merged = this.mergeRanges(hits);
+    this.selectedRanges = merged.map(r => ({ start: r.lo, end: r.hi }));
+    this.selStart = null;
+    this.selEnd = null;
+    this.selectedGroupStart = null;
+    this.selectedGroupEnd = null;
+  }
+
+  /**
+   * Draw one segment as a clip, split into sub-pieces at every blade boundary (already mapped
+   * to EDITED seconds) that falls strictly inside its [timelineStart, timelineStart+duration]
+   * span. Each piece is its own rounded clip separated by a ~2px gap, so a cut looks like a real
+   * edit — the clip is divided — instead of an overlay line, and it divides EVERY lane the same
+   * way because every lane's clips are split against the same boundary set. A clip with no
+   * interior boundary is a single piece (byte-for-byte the old rendering).
+   */
+  private drawClipPieces(ctx: CanvasRenderingContext2D, seg: EditorSegment,
+                         row: TrackRow, W: number, bladeEdited: number[]): void {
+    const ts = seg.timelineStart;
+    const te = seg.timelineStart + seg.duration;
+    // Interior split points, ascending. Strictly inside → a touching boundary is a clip edge
+    // already and must not spawn a zero-width sliver.
+    const interior: number[] = [];
+    for (const b of bladeEdited) {
+      if (b > ts + this.EPS && b < te - this.EPS) interior.push(b);
+    }
+    interior.sort((a, b) => a - b);
+    const edges = [ts, ...interior, te];
+    const GAP = 2;             // px of empty space between adjacent pieces
+    for (let i = 0; i < edges.length - 1; i++) {
+      let px0 = this.timeToX(edges[i]);
+      let px1 = this.timeToX(edges[i + 1]);
+      if (i > 0) px0 += GAP / 2;                       // inset the shared edge to open the gap
+      if (i < edges.length - 2) px1 -= GAP / 2;
+      if (px1 - px0 <= 0.5) continue;                  // piece collapsed by the gap at this zoom
+      if (px1 < 0 || px0 > W) continue;                // off-screen piece
+      if (row.track.kind === 'video') this.drawVideoClip(ctx, seg, px0, px1, row);
+      else this.drawAudioClip(ctx, seg, px0, px1, row, W);
+    }
   }
 
   private roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
@@ -1136,10 +1252,15 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   onCanvasMouseDown(ev: MouseEvent): void {
     if (this.errorMessage || !this.manifest) return;
     ev.preventDefault();
+    this.menuOpen = false;                 // a canvas interaction dismisses the File menu
+    const t = this.canvasEventTime(ev);
+    const y = this.canvasEventY(ev);
+    const inRuler = y <= this.RULER_H;
+
     if (ev.shiftKey) {
-      // Shift+drag paints a free selection (edited seconds) instead of scrubbing — a manual
-      // range, so any transcript-group highlight no longer applies.
-      const t = this.canvasEventTime(ev);
+      // Shift+drag paints a single free range (edited seconds) instead of scrubbing — a manual
+      // range that replaces any marquee selection, so a group highlight no longer applies.
+      this.selectedRanges = [];
       this.selStart = t;
       this.selEnd = t;
       this.selectedGroupStart = null;
@@ -1150,21 +1271,56 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.requestRender();
       return;
     }
-    const t = this.canvasEventTime(ev);
-    const inRuler = this.canvasEventY(ev) <= this.RULER_H;
+
     // Blade tool: a track-area click also drops a boundary at the click time (ORIGINAL
     // seconds) before scrubbing/selecting. Ruler clicks stay pure scrubs in either tool.
     if (this.toolMode === 'blade' && !inRuler) {
       this.addBladeBoundary(this.editedToOriginal(t));
     }
-    // Move the playhead (and keep drag-scrub alive for the rest of this gesture).
+
+    // A drag on the RULER always scrubs the playhead (either tool) — never a marquee.
+    if (inRuler) {
+      this.draggingPlayhead = true;
+      this.setPlayhead(t);
+      window.addEventListener('mousemove', this.onWindowMouseMove);
+      window.addEventListener('mouseup', this.onWindowMouseUp);
+      this.requestRender();
+      return;
+    }
+
+    const onClip = !!(this.rowAt(y) && this.segmentAt(this.rowAt(y)!.track.id, t));
+
+    if (this.toolMode === 'select') {
+      // SELECT tool, track lane: a plain CLICK scrubs + selects the clicked section (or clears
+      // in a gap); a DRAG turns into a marquee (committed on release). Set the click outcome
+      // now; commitMarquee overrides it iff the pointer actually moves.
+      this.setPlayhead(t);
+      this.selectedRanges = [];
+      if (onClip) {
+        this.selectSectionAround(t);
+      } else {
+        this.selStart = null;
+        this.selEnd = null;
+        this.selectedGroupStart = null;
+        this.selectedGroupEnd = null;
+      }
+      this.marqueeActive = true;
+      this.marqueeMoved = false;
+      this.marqueeStartTime = t;
+      this.marqueeEndTime = t;
+      window.addEventListener('mousemove', this.onWindowMouseMove);
+      window.addEventListener('mouseup', this.onWindowMouseUp);
+      this.requestRender();
+      return;
+    }
+
+    // BLADE tool, track lane: keep the original scrub + section-select drag behavior.
     this.draggingPlayhead = true;
     this.setPlayhead(t);
-    // Track-area click on a clip → select the enclosing section (clip edges ∪ blades).
-    // Ruler clicks, and clicks in a lane gap, just scrub (selection cleared).
-    if (!inRuler && this.rowAt(this.canvasEventY(ev)) && this.segmentAtY(ev, t)) {
+    this.selectedRanges = [];
+    if (onClip) {
       this.selectSectionAround(t);
-    } else if (!inRuler) {
+    } else {
       this.selStart = null;
       this.selEnd = null;
       this.selectedGroupStart = null;
@@ -1189,13 +1345,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       if (cssY >= row.top && cssY < row.top + row.height) return row;
     }
     return null;
-  }
-
-  /** The clip under the event's lane at edited time t, or null (a gap / no lane). */
-  private segmentAtY(ev: MouseEvent, t: number): EditorSegment | null {
-    const row = this.rowAt(this.canvasEventY(ev));
-    if (!row) return null;
-    return this.segmentAt(row.track.id, t);
   }
 
   /**
@@ -1274,6 +1423,15 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private onWindowMouseMove = (ev: MouseEvent): void => {
     if (this.draggingSelection) { this.selEnd = this.canvasEventTime(ev); this.requestRender(); }
+    else if (this.marqueeActive) {
+      this.marqueeEndTime = this.canvasEventTime(ev);
+      // Promote to a real marquee only past a small pixel threshold, so a jittery click stays
+      // a click (section select) instead of collapsing the selection to a hairline range.
+      if (Math.abs(this.timeToX(this.marqueeEndTime) - this.timeToX(this.marqueeStartTime)) > 3) {
+        this.marqueeMoved = true;
+      }
+      this.requestRender();
+    }
     else if (this.draggingPlayhead) this.setPlayheadFromEvent(ev);
     else if (this.draggingScrollbar) this.setScrollFromScrollbar(ev);
     else if (this.draggingSplitV) this.setSplitVFromEvent(ev);
@@ -1283,11 +1441,19 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private onWindowMouseUp = (): void => {
     if (!this.draggingPlayhead && !this.draggingScrollbar && !this.draggingSplitV
-        && !this.draggingSplitH && !this.draggingSplitP && !this.draggingSelection) return;
+        && !this.draggingSplitH && !this.draggingSplitP && !this.draggingSelection
+        && !this.marqueeActive) return;
     // Persist split preferences once per drag (not per move frame).
     if (this.draggingSplitV) localStorage.setItem(this.SPLIT_V_KEY, String(this.splitV));
     if (this.draggingSplitH) localStorage.setItem(this.SPLIT_H_KEY, String(this.splitH));
     if (this.draggingSplitP) localStorage.setItem(this.SPLIT_P_KEY, String(Math.round(this.projectWidth)));
+    // A marquee that actually moved commits its section selection; a bare click leaves the
+    // section-select outcome from mousedown untouched.
+    if (this.marqueeActive) {
+      if (this.marqueeMoved) this.commitMarquee();
+      this.marqueeActive = false;
+      this.marqueeMoved = false;
+    }
     this.draggingPlayhead = false;
     this.draggingScrollbar = false;
     this.draggingSplitV = false;
@@ -1297,6 +1463,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     document.body.style.userSelect = '';
     window.removeEventListener('mousemove', this.onWindowMouseMove);
     window.removeEventListener('mouseup', this.onWindowMouseUp);
+    this.requestRender();
   };
 
   // ── Pane splitters (vertical: transcript|viewer, horizontal: top|timeline) ──
@@ -1476,8 +1643,16 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   @HostListener('window:keydown', ['$event'])
   onKeyDown(ev: KeyboardEvent): void {
     if (this.errorMessage || !this.manifest) return;
+    // Escape first dismisses an open File menu or export modal — even from a focused field —
+    // so it never falls through to a selection clear underneath.
+    if (ev.key === 'Escape' && (this.menuOpen || this.exportResultPath || this.exportError)) {
+      ev.preventDefault();
+      this.menuOpen = false;
+      this.closeExportModal();
+      return;
+    }
     // Ignore every editor shortcut while the user is typing (e.g. the transcript search
-    // box) — space, A/B, I/O, Delete, Cmd+X must reach the input, not the timeline.
+    // box) — space, A/B, I/O, Delete, Cmd+X, Cmd+E must reach the input, not the timeline.
     if (this.isTypingTarget(ev.target)) return;
     if (ev.key === ' ' || ev.code === 'Space') {
       ev.preventDefault();
@@ -1501,9 +1676,15 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       if (this.loading) return;
       ev.preventDefault();
       if (ev.shiftKey) this.redo(); else this.undo();
+    } else if ((ev.metaKey || ev.ctrlKey) && (ev.key === 'e' || ev.key === 'E')) {
+      // Cmd/Ctrl+E exports (no-op while loading or with zero cuts — onExport guards both).
+      ev.preventDefault();
+      if (this.loading) return;
+      void this.onExport();
     } else if (ev.key === 'i' || ev.key === 'I') {
       if (this.loading) return;
       ev.preventDefault();
+      this.selectedRanges = [];            // a fresh in-mark replaces any marquee selection
       this.selStart = this.playheadTime;   // FCP in-mark at the playhead
       this.selectedGroupStart = null;
       this.selectedGroupEnd = null;
@@ -1511,6 +1692,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     } else if (ev.key === 'o' || ev.key === 'O') {
       if (this.loading) return;
       ev.preventDefault();
+      this.selectedRanges = [];            // a fresh out-mark replaces any marquee selection
       this.selEnd = this.playheadTime;     // FCP out-mark at the playhead
       this.selectedGroupStart = null;
       this.selectedGroupEnd = null;
@@ -1532,11 +1714,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.deleteSelection();
     } else if (ev.key === 'Escape') {
       if (this.loading) return;
-      // Clear both the timeline selection and the transcript-group highlight.
-      this.selStart = null;
-      this.selEnd = null;
-      this.selectedGroupStart = null;
-      this.selectedGroupEnd = null;
+      // Clear the timeline selection (single + marquee) and the transcript-group highlight.
+      this.clearSelection();
       this.requestRender();
     }
   }
@@ -1588,29 +1767,34 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * frames is rejected (just clears) and leaves the undo stack untouched.
    */
   private deleteSelection(): void {
-    const r = this.selRange();
-    if (!r || !this.manifest) return;
+    const ranges = this.allSelectionRanges();
+    if (ranges.length === 0 || !this.manifest) return;
     const fs = this.manifest.frameSeconds;
-    const startFrame = Math.round(this.editedToOriginal(r.lo) / fs);
-    const endFrame = Math.round(this.editedToOriginal(r.hi) / fs);
-    if (endFrame <= startFrame) {
-      // Sub-frame selection — nothing to remove. Clear and bail without touching history.
-      this.selStart = null;
-      this.selEnd = null;
+    // Map every selected range back to ORIGINAL frames FIRST (all against the current edited
+    // model), then merge them into `cuts` in one shot. A single ripple removes them all.
+    const newCuts: Cut[] = [];
+    let firstStartFrame: number | null = null;
+    for (const r of ranges) {
+      const startFrame = Math.round(this.editedToOriginal(r.lo) / fs);
+      const endFrame = Math.round(this.editedToOriginal(r.hi) / fs);
+      if (endFrame <= startFrame) continue;   // sub-frame range — nothing to remove
+      newCuts.push({ startFrame, endFrame });
+      if (firstStartFrame === null || startFrame < firstStartFrame) firstStartFrame = startFrame;
+    }
+    if (newCuts.length === 0) {
+      // Every range rounded to zero frames. Clear and bail without touching history.
+      this.clearSelection();
       this.requestRender();
       return;
     }
     this.pushUndo();
     this.redoStack = [];
-    this.cuts = this.mergeCuts([...this.cuts, { startFrame, endFrame }]);
+    this.cuts = this.mergeCuts([...this.cuts, ...newCuts]);
     this.rebuildEditedModel();
-    this.pruneBladeBoundaries();   // drop any boundary the new cut swallowed
-    this.selStart = null;
-    this.selEnd = null;
-    this.selectedGroupStart = null;
-    this.selectedGroupEnd = null;
-    // Seam = where the removed content used to begin, in the NEW edited timeline.
-    const seam = this.originalToEdited(startFrame * fs);
+    this.pruneBladeBoundaries();   // drop any boundary the new cuts swallowed
+    this.clearSelection();
+    // Seam = where the earliest removed span used to begin, in the NEW edited timeline.
+    const seam = this.originalToEdited(firstStartFrame! * fs);
     this.landPlayheadAfterEdit(seam, true);
   }
 
@@ -1620,10 +1804,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.redoStack.push(this.cuts);
     this.cuts = this.undoStack.pop()!;
     this.rebuildEditedModel();
-    this.selStart = null;
-    this.selEnd = null;
-    this.selectedGroupStart = null;
-    this.selectedGroupEnd = null;
+    this.clearSelection();
     this.landPlayheadAfterEdit(this.originalToEdited(origTime), false);
   }
 
@@ -1633,10 +1814,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.pushUndo();
     this.cuts = this.redoStack.pop()!;
     this.rebuildEditedModel();
-    this.selStart = null;
-    this.selEnd = null;
-    this.selectedGroupStart = null;
-    this.selectedGroupEnd = null;
+    this.clearSelection();
     this.landPlayheadAfterEdit(this.originalToEdited(origTime), false);
   }
 
@@ -1698,6 +1876,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.exportError = err?.message || String(err);
     } finally {
       this.exporting = false;
+      this.menuOpen = false;   // the result now shows in the modal, not the menu
       this.cdr.detectChanges();
     }
   }
@@ -1705,6 +1884,46 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   /** Reveal the exported file in Finder/Explorer. */
   onShowExport(): void {
     if (this.exportResultPath) void this.electron.showInFolder(this.exportResultPath);
+  }
+
+  /** Dismiss the export result/error modal. */
+  closeExportModal(): void {
+    this.exportResultPath = null;
+    this.exportError = null;
+  }
+
+  // ── Top-bar File menu ────────────────────────────────────────────────────────
+  /** Toggle the File menu dropdown. */
+  toggleMenu(): void { this.menuOpen = !this.menuOpen; }
+
+  /** File ▸ Export FCPXML: run the export (kept open so its busy state shows; onExport closes it). */
+  onExportFromMenu(): void {
+    if (this.cuts.length === 0 || this.exporting) return;
+    void this.onExport();
+  }
+
+  /** File ▸ Open…: close the menu and run the existing project picker. */
+  onOpenFromMenu(): void {
+    this.menuOpen = false;
+    void this.pickProject();
+  }
+
+  /**
+   * Friendly DISPLAY name for a track/speaker id: strip a trailing '_voiceiso_processed',
+   * '_processed', or '_voiceiso' (longest first), turn remaining underscores into spaces,
+   * collapse whitespace, trim, and capitalize the first character. Pure — never mutates the
+   * underlying track ids used for logic. 'mic audio_voiceiso_processed' → 'Mic audio';
+   * 'screen audio_processed' → 'Screen audio'; 'merged'/'Merged' → 'Merged'.
+   */
+  prettyLabel(raw: string): string {
+    if (!raw) return raw;
+    let s = raw;
+    for (const suf of ['_voiceiso_processed', '_processed', '_voiceiso']) {
+      if (s.toLowerCase().endsWith(suf)) { s = s.slice(0, s.length - suf.length); break; }
+    }
+    s = s.replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+    if (s.length === 0) return s;
+    return s.charAt(0).toUpperCase() + s.slice(1);
   }
 
   // ── Project picker (recents shared with the launcher) ───────────────────────
@@ -2021,6 +2240,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   selectGroup(g: TranscriptGroupView): void {
     const lo = this.originalToEdited(g.originalStart);
     const hi = this.originalToEdited(g.originalEnd);
+    this.selectedRanges = [];        // the group replaces any marquee selection
     if (hi - lo > this.EPS) {
       this.selStart = lo;
       this.selEnd = hi;

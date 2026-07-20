@@ -17,26 +17,50 @@
 <div class="editor" *ngIf="!errorMessage && !loading">
   <!-- Top bar. -->
   <header class="topbar">
+    <div class="menu-wrap">
+      <button class="menu-btn" [class.open]="menuOpen" (click)="toggleMenu()"
+              title="File menu" aria-label="File menu">File ▾</button>
+      <div class="menu-dropdown" *ngIf="menuOpen">
+        <button class="menu-item" [disabled]="cuts.length === 0 || exporting"
+                (click)="onExportFromMenu()">
+          <span class="menu-item-label">{{ exporting ? 'Exporting…' : 'Export FCPXML' }}</span>
+          <span class="menu-shortcut">⌘E</span>
+        </button>
+        <button class="menu-item" (click)="onOpenFromMenu()">
+          <span class="menu-item-label">Open…</span>
+        </button>
+      </div>
+    </div>
     <span class="session-name">{{ sessionName }}</span>
     <span class="edit-indicator" *ngIf="cuts.length > 0">
       {{ cuts.length }} {{ cuts.length === 1 ? 'cut' : 'cuts' }} · {{ removedLabel }} removed
     </span>
     <span class="topbar-spacer"></span>
-    <button class="export-btn"
-            [disabled]="cuts.length === 0 || exporting"
-            (click)="onExport()">
-      {{ exporting ? 'Exporting…' : 'Export FCPXML' }}
-    </button>
   </header>
 
-  <!-- Export result strip (success path or verbatim Python error). -->
-  <div class="export-strip" *ngIf="exportResultPath || exportError"
-       [class.error]="!!exportError">
-    <ng-container *ngIf="exportResultPath">
-      <span class="export-msg">Exported: {{ exportResultPath }}</span>
-      <button class="show-folder-btn" (click)="onShowExport()">Show in Folder</button>
-    </ng-container>
-    <span class="export-msg" *ngIf="exportError">{{ exportError }}</span>
+  <!-- Invisible backdrop: an outside click closes the File menu. -->
+  <div class="menu-backdrop" *ngIf="menuOpen" (click)="menuOpen = false"></div>
+
+  <!-- Export result modal: success (path + Show in Folder) or verbatim Python error. Escape or
+       a backdrop click closes it. -->
+  <div class="modal-backdrop" *ngIf="exportResultPath || exportError" (click)="closeExportModal()">
+    <div class="modal" [class.error]="!!exportError" (click)="$event.stopPropagation()">
+      <ng-container *ngIf="exportResultPath">
+        <div class="modal-title">Exported</div>
+        <div class="modal-path">{{ exportResultPath }}</div>
+        <div class="modal-actions">
+          <button class="modal-btn primary" (click)="onShowExport()">Show in Folder</button>
+          <button class="modal-btn" (click)="closeExportModal()">Done</button>
+        </div>
+      </ng-container>
+      <ng-container *ngIf="exportError">
+        <div class="modal-title">Export failed</div>
+        <div class="modal-error">{{ exportError }}</div>
+        <div class="modal-actions">
+          <button class="modal-btn" (click)="closeExportModal()">Close</button>
+        </div>
+      </ng-container>
+    </div>
   </div>
 
   <!-- Top region: project picker | transcript | viewer, with two vertical splitters. -->
@@ -99,7 +123,7 @@
           <div class="tx-filter">
             <button *ngFor="let tr of transcriptTracks" class="tx-chip"
                     [class.active]="sourceFilter === tr.id"
-                    (click)="setSourceFilter(tr.id)">{{ tr.label }}</button>
+                    (click)="setSourceFilter(tr.id)">{{ prettyLabel(tr.label) }}</button>
             <button class="tx-chip"
                     [class.active]="sourceFilter === 'merged'"
                     (click)="setSourceFilter('merged')">Merged</button>
@@ -122,7 +146,7 @@
                (click)="selectGroup(g)" title="Select on timeline">
             <div class="tx-group-head">
               <span class="tx-dot" [style.background]="g.color"></span>
-              <span class="tx-speaker">{{ g.label }}</span>
+              <span class="tx-speaker">{{ prettyLabel(g.label) }}</span>
               <span class="tx-tc">{{ g.timecode }}</span>
             </div>
             <div class="tx-group-text">{{ g.text }}</div>
@@ -162,7 +186,7 @@
              [style.height.px]="row.height"
              [class.video]="row.track.kind === 'video'"
              [class.audio]="row.track.kind === 'audio'">
-          <span class="gutter-label">{{ row.track.label }}</span>
+          <span class="gutter-label">{{ prettyLabel(row.track.label) }}</span>
         </div>
       </div>
 

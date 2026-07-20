@@ -8,12 +8,13 @@
 # segments (each pointing at a real media file with a source in-point), and emits a
 # single JSON line describing the whole timeline.
 #
-# v1 OUTPUT SHAPE (product decision): exactly TWO tracks, both referencing the session
-# MASTER recording — "video" (the master's flattened video segments) and "audio" (the
-# same segments; the master file's embedded audio IS the master mix). The full layered
-# flattening below is the internal mechanism that finds those segments and validates
-# the timeline; every other layer (cams, backgrounds, GS/SSB internals, mic/screen
-# audio lanes) is traversed, validated, and then dropped from the output.
+# OUTPUT SHAPE (product decision): ONE "video" track (the session MASTER recording's
+# flattened video segments) PLUS one "audio-<i>" track per distinct PER-SOURCE audio
+# file (mic, screen, mic 2 …), each carrying that file's own flattened audio-leaf
+# segments. Audio lanes are ordered non-screen files first, then screen files. The full
+# layered flattening below is the internal mechanism that finds those segments and
+# validates the timeline; every non-master VIDEO layer (cams, backgrounds, GS/SSB
+# internals) is traversed, validated, and then dropped from the output.
 #
 # Invocation:
 #     python cli/editor_manifest.py --zip /abs/path/<name>_compounds.zip
@@ -346,11 +347,20 @@ class ManifestBuilder:
             f"Distinct leaf file stems seen: {listing}")
 
     def build_tracks(self, total_declared, frame_seconds):
-        """Validate the full flattened layer structure, then collapse the output to
-        exactly TWO tracks referencing the MASTER recording: 'video' (the master
-        leaf's flattened video segments) and 'audio' (the same segments — the master
-        file's embedded audio is the master mix). All other layers are validated and
-        dropped."""
+        """Validate the full flattened layer structure, then emit ONE video track plus
+        ONE audio track per distinct PER-SOURCE audio file.
+
+        - 'video': the MASTER recording's flattened video segments (master identified
+          structurally; same-layer overlap, master-overlap and content-coverage checks
+          all kept intact).
+        - one 'audio-<i>' track per distinct non-master audio file (mic, screen, mic 2 …),
+          each carrying that file's own flattened audio-leaf segments. Emission order
+          (lane order, top->bottom under the video): NON-screen audio files first, then
+          screen files; within each bucket, first-appearance (discovery) order in
+          self.leaves is preserved.
+
+        The old duplicated 'Master audio' track is gone: audio now comes from the real
+        per-source lanes, not from re-labelling the master's video segments."""
         video = [l for l in self.leaves if l['kind'] == 'video']
 
         # Internal mechanism, kept intact: group video by structural LAYER KEY (tuple
@@ -407,16 +417,66 @@ class ManifestBuilder:
                   f"{float(total_declared - coverage_end):.3f}s before the declared timeline "
                   f"end {float(total_declared):.3f}s (trailing gap)", file=sys.stderr)
 
-        tracks = [
-            {'id': 'video', 'label': 'Master', 'kind': 'video'},
-            {'id': 'audio', 'label': 'Master audio', 'kind': 'audio'},
-        ]
+        # --- video track (single lane) --------------------------------------
+        tracks = [{'id': 'video', 'label': 'Video', 'kind': 'video'}]
         segments = []
-        for tid in ('video', 'audio'):
-            for l in master_segs:
-                seg = self._segment(tid, l)
-                seg['label'] = master_stem
-                segments.append(seg)
+        for l in master_segs:
+            seg = self._segment('video', l)
+            seg['label'] = master_stem
+            segments.append(seg)
+
+        # --- per-source audio lanes -----------------------------------------
+        # Cosmetic label rule (mirrors electron_workflow's session-name derivation):
+        # strip a leading "<session> " prefix from the file stem when present. The
+        # session prefix is the master stem with its trailing 'master' removed (the
+        # master is "<session> master"); an unprefixed stem ("mix") is left as-is.
+        # _processed/_voiceiso suffixes are intentionally NOT stripped — the frontend
+        # prettifies labels for display.
+        session_prefix = master_stem[:-len('master')] if master_stem.endswith(' master') else ''
+
+        # Distinct non-master audio files in first-appearance (discovery) order.
+        audio_files = []
+        audio_by_file = {}
+        for l in self.leaves:
+            if l['kind'] != 'audio' or l['file'] == master_file:
+                continue
+            if l['file'] not in audio_by_file:
+                audio_by_file[l['file']] = []
+                audio_files.append(l['file'])
+            audio_by_file[l['file']].append(l)
+
+        if not audio_files:
+            raise ManifestError(
+                "no per-source audio files found in the flattened timeline: a session "
+                "with no non-master audio leaves cannot populate the editor's audio lanes")
+
+        def _is_screen(f):
+            return 'screen' in Path(f).stem.lower()
+
+        # NON-screen files first, then screen files; discovery order within each bucket.
+        ordered_files = ([f for f in audio_files if not _is_screen(f)]
+                         + [f for f in audio_files if _is_screen(f)])
+
+        for i, f in enumerate(ordered_files):
+            tid = f'audio-{i}'
+            stem = Path(f).stem
+            label = stem[len(session_prefix):] if session_prefix and stem.startswith(session_prefix) else stem
+            tracks.append({'id': tid, 'label': label, 'kind': 'audio'})
+
+            leaves = sorted(
+                audio_by_file[f],
+                key=lambda l: (l['timeline_start'], l['timeline_end'], l['source_start']))
+            # Two simultaneous layers referencing the SAME audio file is malformed —
+            # mirror the master-overlap check.
+            for prev, cur in zip(leaves, leaves[1:]):
+                if cur['timeline_start'] < prev['timeline_end']:
+                    raise ManifestError(
+                        f"overlapping audio segments for {Path(f).name} at "
+                        f"{float(cur['timeline_start'])}s — the file is referenced by "
+                        "multiple simultaneous audio layers")
+            for l in leaves:
+                segments.append(self._segment(tid, l))
+
         return tracks, segments
 
     @staticmethod
