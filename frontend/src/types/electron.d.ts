@@ -29,6 +29,9 @@ export interface ElectronAPI {
   onAlignmentComplete: (callback: (data: any) => void) => void;
   onAlignmentCancelled: (callback: (data: any) => void) => void;
   removeAlignmentListeners: () => void;
+
+  // Timeline editor: export a cut list to a revised master-hybrid FCPXML (preload bridge).
+  exportEditorCuts: (payload: { zipPath: string; cuts: Array<{ startFrame: number; endFrame: number }> }) => Promise<any>;
   applyAudioDrift: (options: {
     inputPath: string;
     driftFrames: number;

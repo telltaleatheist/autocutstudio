@@ -21,6 +21,21 @@ import { EditorManifest, EditorSegment, EditorTrack } from '../../models/editor-
 
 interface Peaks { min: number[]; max: number[]; }
 
+/**
+ * A cut is a half-open FRAME range in ORIGINAL timeline coordinates (the manifest's time
+ * base, before any edits). 0 <= startFrame < endFrame. Cut lists are kept sorted ascending
+ * and non-overlapping (adjacent cuts merged). This is the single source of edit truth.
+ */
+export interface Cut { startFrame: number; endFrame: number; }
+
+/**
+ * One kept interval of the timeline after cuts are applied. `os`/`oe` are the interval's
+ * bounds in ORIGINAL seconds; `es`/`ee` are the same span mapped into EDITED seconds (the
+ * ripple just shifts it left, so ee - es === oe - os). Sorted ascending in both domains, so
+ * both maps are binary-searchable.
+ */
+interface KeptInterval { os: number; oe: number; es: number; ee: number; }
+
 /** Vertical layout of a track lane inside the canvas (CSS px, canvas-local). */
 interface TrackRow {
   track: EditorTrack;
@@ -96,7 +111,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private scrollOffset = 0; // seconds at the left edge of the visible track area
   playheadTime = 0;         // seconds
 
-  // Segments grouped + sorted per track (built once from the manifest).
+  // ORIGINAL segments grouped + sorted per track (built once from the manifest, immutable
+  // source for every rebuild).
+  private originalSegsByTrack = new Map<string, EditorSegment[]>();
+  // EDITED segments grouped + sorted per track: the manifest segments with the current cuts
+  // removed and rippled left. THE EDITED MODEL IS THE VIEW — all rendering, scrubbing,
+  // playback, timecode, scrollbar and zoom-fit read this (and editedDuration), never the raw
+  // manifest. With zero cuts it is byte-for-byte the manifest (identity maps).
   private segsByTrack = new Map<string, EditorSegment[]>();
   // Video tracks in MANIFEST order: index 0 is the primary camera storyline, the rest
   // are overlay/background layers. Only the primary drives the viewer (v1 is not a
@@ -113,6 +134,27 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // Monotonic bootstrap generation: a re-init mid-load invalidates the older load so a
   // slow stale manifest can never clobber the newer session.
   private bootstrapGeneration = 0;
+
+  // ── Edit model (cuts → edited timeline) ─────────────────────────────────────
+  // `cuts` is the single source of edit truth (frames, ORIGINAL coords, sorted+merged).
+  // Everything derived (segsByTrack above, editedDuration, keptIntervals) is rebuilt from it.
+  cuts: Cut[] = [];
+  editedDuration = 0;                    // seconds; == manifest.timelineDuration with zero cuts
+  private keptIntervals: KeptInterval[] = [];
+  private readonly UNDO_LIMIT = 100;
+  private undoStack: Cut[][] = [];       // snapshots of prior cut lists (immutable arrays)
+  private redoStack: Cut[][] = [];
+  private readonly EPS = 1e-9;           // seconds; sub-frame slop for interval intersection
+
+  // ── Selection (EDITED seconds; either edge may be pending/null) ──────────────
+  selStart: number | null = null;        // 'i' mark / drag start
+  selEnd: number | null = null;          // 'o' mark / drag end
+  private draggingSelection = false;
+
+  // ── Export ──────────────────────────────────────────────────────────────────
+  exporting = false;
+  exportResultPath: string | null = null; // set on a successful FCPXML export
+  exportError: string | null = null;       // Python's message, verbatim, on failure
 
   // ── Rendering ───────────────────────────────────────────────────────────────
   private renderScheduled = false;
@@ -238,6 +280,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
     this.viewerLoadedFile = null;
     this.manifest = null;
+    this.originalSegsByTrack.clear();
     this.segsByTrack.clear();
     this.videoTrackIds = [];
     this.audioTrackIds = [];
@@ -248,6 +291,18 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.scrollOffset = 0;
     this.errorMessage = '';
     this.transportError = '';
+    // Edit state: a re-init starts the new session with an untouched timeline.
+    this.cuts = [];
+    this.keptIntervals = [];
+    this.editedDuration = 0;
+    this.undoStack = [];
+    this.redoStack = [];
+    this.selStart = null;
+    this.selEnd = null;
+    this.draggingSelection = false;
+    this.exporting = false;
+    this.exportResultPath = null;
+    this.exportError = null;
   }
 
   /** Validate and index the manifest. Fails loud on anything structurally wrong. */
@@ -269,16 +324,115 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.videoTrackIds = videoTracks.map(t => t.id);
     this.audioTrackIds = m.tracks.filter(t => t.kind === 'audio').map(t => t.id);
 
-    this.segsByTrack.clear();
-    for (const t of m.tracks) this.segsByTrack.set(t.id, []);
+    this.originalSegsByTrack.clear();
+    for (const t of m.tracks) this.originalSegsByTrack.set(t.id, []);
     for (const seg of m.segments) {
-      const arr = this.segsByTrack.get(seg.trackId);
+      const arr = this.originalSegsByTrack.get(seg.trackId);
       if (!arr) throw new Error(`Segment references unknown track "${seg.trackId}".`);
       arr.push(seg);
     }
-    for (const arr of this.segsByTrack.values()) {
+    for (const arr of this.originalSegsByTrack.values()) {
       arr.sort((a, b) => a.timelineStart - b.timelineStart);
     }
+    // With cuts empty (always, right after ingest) this builds the identity edited model:
+    // segsByTrack === the manifest segments, editedDuration === timelineDuration.
+    this.rebuildEditedModel();
+  }
+
+  // ── Edited model + piecewise time maps ──────────────────────────────────────
+  /**
+   * Rebuild every derived edit artifact from `cuts`: the kept-interval list, editedDuration,
+   * the per-track edited segments, and (implicitly) the editedToOriginal/originalToEdited
+   * maps that read keptIntervals. A manifest segment [ts, ts+d) is intersected with each kept
+   * interval; every non-empty intersection is one edited segment whose sourceStart carries the
+   * offset into the media file, so jump-cut playback across removed ranges is automatic.
+   */
+  private rebuildEditedModel(): void {
+    const m = this.manifest;
+    if (!m) { this.keptIntervals = []; this.editedDuration = 0; this.segsByTrack.clear(); return; }
+    const dur = m.timelineDuration;
+    const fs = m.frameSeconds;
+
+    // Kept intervals = the complement of the cuts within [0, dur], each carrying its rippled
+    // edited-space start. cuts are sorted+merged, so a single left-to-right walk suffices.
+    const kept: KeptInterval[] = [];
+    let cursor = 0, acc = 0;
+    for (const c of this.cuts) {
+      const cs = c.startFrame * fs;
+      const ce = c.endFrame * fs;
+      if (cs > cursor + this.EPS) {
+        const len = cs - cursor;
+        kept.push({ os: cursor, oe: cs, es: acc, ee: acc + len });
+        acc += len;
+      }
+      if (ce > cursor) cursor = ce;
+    }
+    if (dur > cursor + this.EPS) {
+      const len = dur - cursor;
+      kept.push({ os: cursor, oe: dur, es: acc, ee: acc + len });
+      acc += len;
+    }
+    this.keptIntervals = kept;
+    this.editedDuration = acc;
+
+    // Split each original segment against the kept intervals.
+    this.segsByTrack.clear();
+    for (const [trackId, segs] of this.originalSegsByTrack) {
+      const out: EditorSegment[] = [];
+      for (const seg of segs) {
+        const ts = seg.timelineStart;
+        const te = ts + seg.duration;
+        for (const iv of kept) {
+          if (iv.os >= te) break;          // kept intervals are sorted; nothing further overlaps
+          if (iv.oe <= ts) continue;
+          const os = Math.max(ts, iv.os);
+          const oe = Math.min(te, iv.oe);
+          if (oe - os <= this.EPS) continue;
+          out.push({
+            trackId: seg.trackId,
+            timelineStart: iv.es + (os - iv.os),   // rippled position
+            duration: oe - os,
+            file: seg.file,
+            sourceStart: seg.sourceStart + (os - ts),
+            label: seg.label,
+          });
+        }
+      }
+      // Output is already sorted (segs sorted, kept sorted, non-overlapping).
+      this.segsByTrack.set(trackId, out);
+    }
+  }
+
+  /** EDITED seconds → ORIGINAL seconds (piecewise, binary-searched over keptIntervals). */
+  private editedToOriginal(e: number): number {
+    const iv = this.keptIntervals;
+    if (iv.length === 0) return 0;
+    const t = Math.min(this.editedDuration, Math.max(0, e));
+    let lo = 0, hi = iv.length - 1, idx = 0;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (iv[mid].es <= t) { idx = mid; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    return iv[idx].os + (t - iv[idx].es);
+  }
+
+  /**
+   * ORIGINAL seconds → EDITED seconds. A time inside a removed range collapses to that cut's
+   * seam (the edited position where the removed content used to begin), which is exactly the
+   * landing spot after a ripple delete.
+   */
+  private originalToEdited(t: number): number {
+    const iv = this.keptIntervals;
+    if (iv.length === 0) return 0;
+    const c = Math.min(this.manifest?.timelineDuration || 0, Math.max(0, t));
+    let lo = 0, hi = iv.length - 1, idx = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (iv[mid].os <= c) { idx = mid; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    if (idx < 0) return iv[0].es;               // c precedes the first kept interval (leading cut)
+    if (c <= iv[idx].oe) return iv[idx].es + (c - iv[idx].os);
+    return iv[idx].ee;                          // c is in a cut that follows this kept interval
   }
 
   private fail(message: string): void {
@@ -329,12 +483,12 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return this.scrollOffset + x / this.pxPerSec;
   }
   private clampScroll(v: number): number {
-    const max = Math.max(0, (this.manifest?.timelineDuration || 0) - this.viewportSec);
+    const max = Math.max(0, this.editedDuration - this.viewportSec);
     return Math.min(max, Math.max(0, v));
   }
 
   private initialZoomToFit(): void {
-    const dur = this.manifest?.timelineDuration || 0;
+    const dur = this.editedDuration;
     if (dur <= 0) return;
     const w = this.viewportWidth;
     this.pxPerSec = this.clampZoom(w / dur);
@@ -424,8 +578,52 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // Ruler last-but-one so clips never bleed over it.
     this.drawRuler(ctx, W);
 
+    // Selection overlay tints ruler + tracks; playhead draws on top of it.
+    this.drawSelection(ctx, W, H);
+
     // Playhead over everything (ruler + tracks).
     this.drawPlayhead(ctx, W, H);
+  }
+
+  /**
+   * FCP-style range selection: a translucent yellow fill across ruler + tracks with 1px edges
+   * and small ruler handles. A one-sided pending mark ('i' or 'o' alone) shows a yellow flag.
+   */
+  private drawSelection(ctx: CanvasRenderingContext2D, W: number, H: number): void {
+    const range = this.selRange();
+    if (range) {
+      const x0 = this.timeToX(range.lo);
+      const x1 = this.timeToX(range.hi);
+      if (x1 < 0 || x0 > W) return;
+      ctx.save();
+      ctx.fillStyle = 'rgba(245,197,24,0.12)';
+      ctx.fillRect(x0, 0, x1 - x0, H);
+      ctx.strokeStyle = '#f5c518';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, H); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x1 + 0.5, 0); ctx.lineTo(x1 + 0.5, H); ctx.stroke();
+      // 6px handles in the ruler band.
+      ctx.fillStyle = '#f5c518';
+      ctx.fillRect(x0 - 3, 0, 6, this.RULER_H);
+      ctx.fillRect(x1 - 3, 0, 6, this.RULER_H);
+      ctx.restore();
+      return;
+    }
+    // One-sided pending mark → a small flag in the ruler.
+    const one = this.selStart != null ? this.selStart : (this.selEnd != null ? this.selEnd : null);
+    if (one == null) return;
+    const x = this.timeToX(one);
+    if (x < -1 || x > W + 1) return;
+    ctx.save();
+    ctx.fillStyle = '#f5c518';
+    ctx.fillRect(x - 0.5, 0, 1, this.RULER_H);
+    ctx.beginPath();
+    ctx.moveTo(x, 2);
+    ctx.lineTo(x + 8, 5);
+    ctx.lineTo(x, 8);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
   }
 
   private roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
@@ -711,6 +909,17 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   onCanvasMouseDown(ev: MouseEvent): void {
     if (this.errorMessage || !this.manifest) return;
     ev.preventDefault();
+    if (ev.shiftKey) {
+      // Shift+drag paints a selection (edited seconds) instead of scrubbing the playhead.
+      const t = this.canvasEventTime(ev);
+      this.selStart = t;
+      this.selEnd = t;
+      this.draggingSelection = true;
+      window.addEventListener('mousemove', this.onWindowMouseMove);
+      window.addEventListener('mouseup', this.onWindowMouseUp);
+      this.requestRender();
+      return;
+    }
     this.draggingPlayhead = true;
     this.setPlayheadFromEvent(ev);
     window.addEventListener('mousemove', this.onWindowMouseMove);
@@ -718,14 +927,16 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private onWindowMouseMove = (ev: MouseEvent): void => {
-    if (this.draggingPlayhead) this.setPlayheadFromEvent(ev);
+    if (this.draggingSelection) { this.selEnd = this.canvasEventTime(ev); this.requestRender(); }
+    else if (this.draggingPlayhead) this.setPlayheadFromEvent(ev);
     else if (this.draggingScrollbar) this.setScrollFromScrollbar(ev);
     else if (this.draggingSplitV) this.setSplitVFromEvent(ev);
     else if (this.draggingSplitH) this.setSplitHFromEvent(ev);
   };
 
   private onWindowMouseUp = (): void => {
-    if (!this.draggingPlayhead && !this.draggingScrollbar && !this.draggingSplitV && !this.draggingSplitH) return;
+    if (!this.draggingPlayhead && !this.draggingScrollbar && !this.draggingSplitV
+        && !this.draggingSplitH && !this.draggingSelection) return;
     // Persist split preferences once per drag (not per move frame).
     if (this.draggingSplitV) localStorage.setItem(this.SPLIT_V_KEY, String(this.splitV));
     if (this.draggingSplitH) localStorage.setItem(this.SPLIT_H_KEY, String(this.splitH));
@@ -733,6 +944,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.draggingScrollbar = false;
     this.draggingSplitV = false;
     this.draggingSplitH = false;
+    this.draggingSelection = false;
     document.body.style.userSelect = '';
     window.removeEventListener('mousemove', this.onWindowMouseMove);
     window.removeEventListener('mouseup', this.onWindowMouseUp);
@@ -786,17 +998,22 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.onResize();
   }
 
-  private setPlayheadFromEvent(ev: MouseEvent): void {
+  /** Edited-seconds time under a canvas mouse event, clamped to [0, editedDuration]. */
+  private canvasEventTime(ev: MouseEvent): number {
     const canvas = this.canvasRef?.nativeElement;
-    if (!canvas) return;
+    if (!canvas) return 0;
     const rect = canvas.getBoundingClientRect();
     const cssX = ev.clientX - rect.left - (canvas.clientLeft || 0);
     const t = this.xToTime(Math.max(0, cssX));
-    this.setPlayhead(t);
+    return Math.min(this.editedDuration, Math.max(0, t));
+  }
+
+  private setPlayheadFromEvent(ev: MouseEvent): void {
+    this.setPlayhead(this.canvasEventTime(ev));
   }
 
   private setPlayhead(t: number): void {
-    const dur = this.manifest?.timelineDuration || 0;
+    const dur = this.editedDuration;
     this.playheadTime = Math.min(dur, Math.max(0, t));
     if (this.isPlaying) {
       // Re-anchor the clock so playback continues from the new position.
@@ -810,7 +1027,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   // ── Scrollbar ───────────────────────────────────────────────────────────────
   get scrollbarThumb(): { left: number; width: number } {
-    const dur = this.manifest?.timelineDuration || 1;
+    const dur = this.editedDuration || 1;
     const width = Math.max(6, Math.min(100, (this.viewportSec / dur) * 100));
     const maxScroll = Math.max(1e-6, dur - this.viewportSec);
     const left = maxScroll <= 0 ? 0 : (this.scrollOffset / maxScroll) * (100 - width);
@@ -834,7 +1051,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const canvas = this.canvasRef?.nativeElement;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const dur = this.manifest?.timelineDuration || 0;
+    const dur = this.editedDuration;
     const thumb = this.scrollbarThumb;
     const trackW = rect.width;
     const thumbWpx = (thumb.width / 100) * trackW;
@@ -896,7 +1113,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.setPlayhead(0);
     } else if (ev.key === 'End') {
       ev.preventDefault();
-      this.setPlayhead(this.manifest.timelineDuration);
+      this.setPlayhead(this.editedDuration);
     } else if ((ev.metaKey || ev.ctrlKey) && (ev.key === '=' || ev.key === '+')) {
       ev.preventDefault();
       const anchorX = this.timeToX(this.playheadTime);
@@ -905,7 +1122,182 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       ev.preventDefault();
       const anchorX = this.timeToX(this.playheadTime);
       this.setZoom(this.pxPerSec / 1.25, this.playheadTime, anchorX);
+    } else if ((ev.metaKey || ev.ctrlKey) && (ev.key === 'z' || ev.key === 'Z')) {
+      // Undo / redo the cut list (Shift adds redo). Guarded off while loading.
+      if (this.loading) return;
+      ev.preventDefault();
+      if (ev.shiftKey) this.redo(); else this.undo();
+    } else if (ev.key === 'i' || ev.key === 'I') {
+      if (this.loading) return;
+      ev.preventDefault();
+      this.selStart = this.playheadTime;   // FCP in-mark at the playhead
+      this.requestRender();
+    } else if (ev.key === 'o' || ev.key === 'O') {
+      if (this.loading) return;
+      ev.preventDefault();
+      this.selEnd = this.playheadTime;     // FCP out-mark at the playhead
+      this.requestRender();
+    } else if (ev.key === 'Delete' || ev.key === 'Backspace') {
+      if (this.loading) return;
+      ev.preventDefault();
+      this.deleteSelection();
+    } else if (ev.key === 'Escape') {
+      if (this.loading) return;
+      this.selStart = null;
+      this.selEnd = null;
+      this.requestRender();
     }
+  }
+
+  // ── Selection + cut editing ─────────────────────────────────────────────────
+  /** Normalized selection [lo, hi] in EDITED seconds, or null when absent/one-sided/empty. */
+  private selRange(): { lo: number; hi: number } | null {
+    if (this.selStart == null || this.selEnd == null) return null;
+    const lo = Math.min(this.selStart, this.selEnd);
+    const hi = Math.max(this.selStart, this.selEnd);
+    if (hi - lo <= this.EPS) return null;
+    return { lo, hi };
+  }
+
+  /** Merge a cut list into sorted, non-overlapping order (adjacent frame ranges coalesce). */
+  private mergeCuts(list: Cut[]): Cut[] {
+    if (list.length === 0) return [];
+    const sorted = [...list].sort((a, b) => a.startFrame - b.startFrame);
+    const out: Cut[] = [{ ...sorted[0] }];
+    for (let i = 1; i < sorted.length; i++) {
+      const cur = out[out.length - 1];
+      const next = sorted[i];
+      if (next.startFrame <= cur.endFrame) {
+        cur.endFrame = Math.max(cur.endFrame, next.endFrame);
+      } else {
+        out.push({ ...next });
+      }
+    }
+    return out;
+  }
+
+  private pushUndo(): void {
+    this.undoStack.push(this.cuts);
+    if (this.undoStack.length > this.UNDO_LIMIT) this.undoStack.shift();
+  }
+
+  /**
+   * Ripple-delete the current selection: map its edited edges back to original seconds,
+   * quantize to frames (the ONE place frame quantization happens), merge into `cuts`, rebuild
+   * the edited model, and land the playhead on the seam. A selection that rounds to zero
+   * frames is rejected (just clears) and leaves the undo stack untouched.
+   */
+  private deleteSelection(): void {
+    const r = this.selRange();
+    if (!r || !this.manifest) return;
+    const fs = this.manifest.frameSeconds;
+    const startFrame = Math.round(this.editedToOriginal(r.lo) / fs);
+    const endFrame = Math.round(this.editedToOriginal(r.hi) / fs);
+    if (endFrame <= startFrame) {
+      // Sub-frame selection — nothing to remove. Clear and bail without touching history.
+      this.selStart = null;
+      this.selEnd = null;
+      this.requestRender();
+      return;
+    }
+    this.pushUndo();
+    this.redoStack = [];
+    this.cuts = this.mergeCuts([...this.cuts, { startFrame, endFrame }]);
+    this.rebuildEditedModel();
+    this.selStart = null;
+    this.selEnd = null;
+    // Seam = where the removed content used to begin, in the NEW edited timeline.
+    const seam = this.originalToEdited(startFrame * fs);
+    this.landPlayheadAfterEdit(seam, true);
+  }
+
+  private undo(): void {
+    if (this.undoStack.length === 0) return;
+    const origTime = this.editedToOriginal(this.playheadTime);
+    this.redoStack.push(this.cuts);
+    this.cuts = this.undoStack.pop()!;
+    this.rebuildEditedModel();
+    this.selStart = null;
+    this.selEnd = null;
+    this.landPlayheadAfterEdit(this.originalToEdited(origTime), false);
+  }
+
+  private redo(): void {
+    if (this.redoStack.length === 0) return;
+    const origTime = this.editedToOriginal(this.playheadTime);
+    this.pushUndo();
+    this.cuts = this.redoStack.pop()!;
+    this.rebuildEditedModel();
+    this.selStart = null;
+    this.selEnd = null;
+    this.landPlayheadAfterEdit(this.originalToEdited(origTime), false);
+  }
+
+  /**
+   * After a model rebuild, place the playhead at `t` (edited seconds), reclamp scroll, and
+   * resync media. `stopIfPlaying` stops playback (ripple delete jumps the timeline under the
+   * clock); undo/redo instead re-anchor and keep playing.
+   */
+  private landPlayheadAfterEdit(t: number, stopIfPlaying: boolean): void {
+    this.playheadTime = Math.min(this.editedDuration, Math.max(0, t));
+    this.scrollOffset = this.clampScroll(this.scrollOffset);
+    if (this.isPlaying) {
+      if (stopIfPlaying) {
+        this.stopPlayback();
+        this.seekViewerToPlayhead();
+      } else {
+        // Re-anchor the clock so playback continues from the mapped position.
+        this.playAnchorPerfMs = performance.now();
+        this.playAnchorTime = this.playheadTime;
+      }
+    } else {
+      this.seekViewerToPlayhead();
+    }
+    this.requestRender();
+    this.cdr.detectChanges();
+  }
+
+  // ── Export ──────────────────────────────────────────────────────────────────
+  /** Total removed time (seconds) across all cuts. */
+  get removedSeconds(): number {
+    const fs = this.manifest?.frameSeconds || (1001 / 30000);
+    let frames = 0;
+    for (const c of this.cuts) frames += (c.endFrame - c.startFrame);
+    return frames * fs;
+  }
+
+  /** "M:SS" removed-time label for the top-bar edit indicator. */
+  get removedLabel(): string {
+    const sec = Math.round(this.removedSeconds);
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${this.pad2(s)}`;
+  }
+
+  /** Export the current cut list to a revised master-hybrid FCPXML via Python. */
+  async onExport(): Promise<void> {
+    if (this.exporting || this.cuts.length === 0 || !this.currentZipPath) return;
+    this.exporting = true;
+    this.exportError = null;
+    this.exportResultPath = null;
+    this.cdr.detectChanges();
+    try {
+      const res = await this.electron.exportEditorCuts({ zipPath: this.currentZipPath, cuts: this.cuts });
+      const path = res?.path;
+      if (!path) throw new Error(res?.message || 'Export did not return an output path.');
+      this.exportResultPath = path;
+    } catch (err: any) {
+      // Python's message is authoritative — show it verbatim.
+      this.exportError = err?.message || String(err);
+    } finally {
+      this.exporting = false;
+      this.cdr.detectChanges();
+    }
+  }
+
+  /** Reveal the exported file in Finder/Explorer. */
+  onShowExport(): void {
+    if (this.exportResultPath) void this.electron.showInFolder(this.exportResultPath);
   }
 
   // ── Playback (element-based jump-cuts) ──────────────────────────────────────
@@ -918,7 +1310,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!this.manifest) return;
     this.transportError = '';
     // Starting at (or past) the end restarts from the top.
-    if (this.playheadTime >= this.manifest.timelineDuration - 1e-3) {
+    if (this.playheadTime >= this.editedDuration - 1e-3) {
       this.playheadTime = 0;
     }
     this.isPlaying = true;
@@ -941,8 +1333,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!this.isPlaying || !this.manifest) { this.rafId = null; return; }
     const elapsed = (performance.now() - this.playAnchorPerfMs) / 1000;
     let t = this.playAnchorTime + elapsed;
-    if (t >= this.manifest.timelineDuration) {
-      t = this.manifest.timelineDuration;
+    if (t >= this.editedDuration) {
+      t = this.editedDuration;
       this.playheadTime = t;
       this.syncElements(t, false); // park everything at the end
       this.stopPlayback();

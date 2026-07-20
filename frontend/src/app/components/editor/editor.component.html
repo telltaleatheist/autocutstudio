@@ -18,7 +18,26 @@
   <!-- Top bar. -->
   <header class="topbar">
     <span class="session-name">{{ sessionName }}</span>
+    <span class="edit-indicator" *ngIf="cuts.length > 0">
+      {{ cuts.length }} {{ cuts.length === 1 ? 'cut' : 'cuts' }} · {{ removedLabel }} removed
+    </span>
+    <span class="topbar-spacer"></span>
+    <button class="export-btn"
+            [disabled]="cuts.length === 0 || exporting"
+            (click)="onExport()">
+      {{ exporting ? 'Exporting…' : 'Export FCPXML' }}
+    </button>
   </header>
+
+  <!-- Export result strip (success path or verbatim Python error). -->
+  <div class="export-strip" *ngIf="exportResultPath || exportError"
+       [class.error]="!!exportError">
+    <ng-container *ngIf="exportResultPath">
+      <span class="export-msg">Exported: {{ exportResultPath }}</span>
+      <button class="show-folder-btn" (click)="onShowExport()">Show in Folder</button>
+    </ng-container>
+    <span class="export-msg" *ngIf="exportError">{{ exportError }}</span>
+  </div>
 
   <!-- Top region: transcript (left) | vertical splitter | viewer (right). -->
   <section class="top-region" #topRegion>

@@ -130,6 +130,18 @@ export class ElectronService {
     return this.bridge.getEditorManifest(zipPath);
   }
 
+  /**
+   * (Editor window) Export a cut list to a revised master-hybrid FCPXML. Resolves with the
+   * Python export_result object ({ path, cutsApplied, newDurationSeconds, … }); rejects with
+   * Python's verbatim message on failure. Bridge added in preload.ts.
+   */
+  async exportEditorCuts(payload: { zipPath: string; cuts: Array<{ startFrame: number; endFrame: number }> }): Promise<any> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return this.bridge.exportEditorCuts(payload);
+  }
+
   /** (Editor window) Push half of the race-free payload pull. */
   onEditorPayload(callback: (payload: { zipPath: string }) => void): void {
     if (this.isElectron()) {

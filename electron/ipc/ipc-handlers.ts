@@ -113,6 +113,48 @@ function setupEditorHandlers(windowService: WindowService): void {
     }
     return await pythonService.editorManifest(zipPath);
   });
+
+  // Apply a list of frame-range cuts and write a revised .fcpxml next to the zip.
+  // Validate loudly per the cut contract before spawning Python: a bad payload is
+  // a caller bug, never a silent no-op. Rejections propagate the Python error
+  // message verbatim; the export result is never fabricated.
+  ipcMain.handle('editor:export', async (_event, payload: {
+    zipPath: string; cuts: Array<{ startFrame: number; endFrame: number }>;
+  }) => {
+    const zipPath = payload?.zipPath;
+    if (typeof zipPath !== 'string' || zipPath.trim() === '') {
+      throw new Error('editor:export requires a non-empty zipPath string');
+    }
+    if (!fs.existsSync(zipPath)) {
+      throw new Error(`editor:export zip file does not exist: ${zipPath}`);
+    }
+
+    const cuts = payload?.cuts;
+    if (!Array.isArray(cuts) || cuts.length === 0) {
+      throw new Error('editor:export requires a non-empty cuts array');
+    }
+    for (let i = 0; i < cuts.length; i++) {
+      const cut = cuts[i];
+      if (!cut || typeof cut !== 'object') {
+        throw new Error(`editor:export cut at index ${i} is not an object`);
+      }
+      const { startFrame, endFrame } = cut;
+      if (!Number.isInteger(startFrame)) {
+        throw new Error(`editor:export cut at index ${i} has non-integer startFrame: ${startFrame}`);
+      }
+      if (!Number.isInteger(endFrame)) {
+        throw new Error(`editor:export cut at index ${i} has non-integer endFrame: ${endFrame}`);
+      }
+      if (startFrame < 0) {
+        throw new Error(`editor:export cut at index ${i} has negative startFrame: ${startFrame}`);
+      }
+      if (startFrame >= endFrame) {
+        throw new Error(`editor:export cut at index ${i} has startFrame >= endFrame: ${startFrame} >= ${endFrame}`);
+      }
+    }
+
+    return await pythonService.editorExport(zipPath, cuts);
+  });
 }
 
 /**

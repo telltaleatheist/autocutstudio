@@ -612,6 +612,125 @@ export class PythonService {
   }
 
   /**
+   * Run cli/editor_export.py to apply a list of frame-range cuts to a processed
+   * session's Master Hybrid project and write a revised, LOOSE .fcpxml next to the
+   * zip. Spawns Python the SAME way as editorManifest (resolved python binary,
+   * python env, resourcesPath cwd), then writes the `{ cuts }` payload to the
+   * child's STDIN and ends it. Line-buffers stdout and parses the single
+   * export_result line. Rejects — never fabricates a result — on a Python-side
+   * error line, a non-zero / signalled exit (with the stderr tail in the message),
+   * or a spawn failure. Single-settle guard: only the first resolve/reject wins.
+   */
+  editorExport(zipPath: string, cuts: Array<{ startFrame: number; endFrame: number }>): Promise<any> {
+    const jobId = `editor_export_${Date.now()}`;
+    log.info(`Running editor export [${jobId}] for zip: ${zipPath} (${cuts.length} cuts)`);
+
+    const pythonPath = this.getPythonPath();
+    const scriptPath = path.join(AppConfig.cliPath, 'editor_export.py');
+    const env = this.getPythonEnv();
+    const workingDir = AppConfig.resourcesPath;
+
+    return new Promise((resolve, reject) => {
+      const pythonProcess = spawn(pythonPath, [scriptPath, '--zip', zipPath], { env, cwd: workingDir });
+      this.runningProcesses.set(jobId, pythonProcess);
+
+      let result: any = null;
+      let errorMessage: string | null = null;
+      let stdoutBuffer = '';
+      // Keep a rolling tail of stderr for the failure message.
+      let stderrTail = '';
+
+      // Surface stdin errors instead of letting an EPIPE (Python exiting before it
+      // read stdin) bubble up as an uncaught exception that crashes main. The real
+      // rejection comes from the close/error path (non-zero exit or spawn error).
+      pythonProcess.stdin.on('error', (err) => {
+        log.error(`[${jobId}] stdin error:`, err);
+      });
+      pythonProcess.stdin.write(JSON.stringify({ cuts }), (err) => {
+        if (err) {
+          log.error(`[${jobId}] Failed to write cuts to stdin:`, err);
+        }
+      });
+      pythonProcess.stdin.end();
+
+      // Parse only the two message types that matter: the single export_result,
+      // and any error line. A JSON.parse failure is genuinely non-JSON stdout.
+      const processLine = (line: string) => {
+        let message: any;
+        try {
+          message = JSON.parse(line);
+        } catch (e) {
+          log.info(`[${jobId}] Non-JSON output:`, line);
+          return;
+        }
+        if (message.type === 'export_result') {
+          result = message;
+        } else if (message.type === 'error') {
+          errorMessage = message.message;
+        }
+      };
+
+      pythonProcess.stdout.on('data', (data) => {
+        stdoutBuffer += data.toString();
+        const lines = stdoutBuffer.split('\n');
+        stdoutBuffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed) {
+            processLine(trimmed);
+          }
+        }
+      });
+
+      pythonProcess.stderr.on('data', (data) => {
+        const chunk = data.toString();
+        stderrTail = (stderrTail + chunk).slice(-2000);
+        log.info(`[${jobId}] stderr:`, chunk);
+      });
+
+      // Guarantee exactly one settle, from EITHER 'close' or 'error'.
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        this.runningProcesses.delete(jobId);
+        pythonProcess.stdout.removeAllListeners();
+        pythonProcess.stderr.removeAllListeners();
+        pythonProcess.stdin.removeAllListeners();
+        pythonProcess.removeAllListeners();
+        fn();
+      };
+
+      pythonProcess.on('close', (code, signal) => {
+        if (stdoutBuffer.trim()) {
+          processLine(stdoutBuffer.trim());
+        }
+        if (code === 0 && result) {
+          finish(() => resolve({
+            path: result.path,
+            cutsApplied: result.cutsApplied,
+            newDurationSeconds: result.newDurationSeconds
+          }));
+        } else {
+          const stderrSuffix = stderrTail.trim() ? `: ${stderrTail.trim()}` : '';
+          const reason = errorMessage
+            || (code === null
+              ? `editor_export.py terminated by signal ${signal}${stderrSuffix}`
+              : `editor_export.py exited with code ${code}${stderrSuffix}`)
+            || 'no export result produced';
+          log.error(`[${jobId}] Editor export failed: ${reason}`);
+          finish(() => reject(new Error(reason)));
+        }
+      });
+
+      pythonProcess.on('error', (error) => {
+        log.error(`[${jobId}] Editor export process error:`, error);
+        finish(() => reject(error));
+      });
+    });
+  }
+
+  /**
    * Send skip signal to the current running workflow process
    */
   sendSkipSignal(): boolean {

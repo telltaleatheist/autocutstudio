@@ -57,6 +57,7 @@ export interface ElectronAPI {
   openEditor: (payload: { zipPath: string }) => Promise<{ success: boolean; error?: string }>;
   getEditorPayload: () => Promise<{ zipPath: string }>;
   getEditorManifest: (zipPath: string) => Promise<any>;
+  exportEditorCuts: (payload: { zipPath: string; cuts: Array<{ startFrame: number; endFrame: number }> }) => Promise<any>;
   onEditorPayload: (callback: (payload: any) => void) => void;
   removeEditorListeners: () => void;
 
@@ -147,6 +148,7 @@ const electronAPI: ElectronAPI = {
   openEditor: (payload) => ipcRenderer.invoke('editor:open', payload),
   getEditorPayload: () => ipcRenderer.invoke('editor:get-payload'),
   getEditorManifest: (zipPath) => ipcRenderer.invoke('editor:manifest', { zipPath }),
+  exportEditorCuts: (payload) => ipcRenderer.invoke('editor:export', payload),
   onEditorPayload: (callback) => {
     ipcRenderer.on('editor-payload', (_event, payload) => callback(payload));
   },

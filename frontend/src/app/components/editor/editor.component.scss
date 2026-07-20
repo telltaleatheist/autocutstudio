@@ -86,6 +86,7 @@
   height: 30px;
   display: flex;
   align-items: center;
+  gap: 12px;
   padding: 0 14px;
   background: #28282a;
   border-bottom: 1px solid #0d0d0e;
@@ -95,6 +96,77 @@
     font-weight: 500;
     color: #b8b8be;
     letter-spacing: 0.02em;
+  }
+
+  .edit-indicator {
+    font-size: 11px;
+    font-weight: 500;
+    color: #e0b83a;
+    white-space: nowrap;
+  }
+
+  .topbar-spacer { flex: 1 1 auto; }
+
+  .export-btn {
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: #e8e8ea;
+    background: #3a3a40;
+    border: 1px solid #0d0d0e;
+    border-radius: 4px;
+    padding: 4px 12px;
+    cursor: pointer;
+    transition: background 0.12s ease;
+
+    &:hover:not(:disabled) { background: #47474e; }
+    &:active:not(:disabled) { background: #2f2f34; }
+    &:disabled { opacity: 0.4; cursor: default; }
+  }
+}
+
+/* Export result strip beneath the top bar: success (neutral) or error (red). */
+.export-strip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 14px;
+  background: #26302a;
+  border-bottom: 1px solid #0d0d0e;
+  font-size: 11px;
+
+  .export-msg {
+    flex: 1 1 auto;
+    color: #cfe6d5;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  }
+
+  .show-folder-btn {
+    flex: 0 0 auto;
+    font-size: 11px;
+    color: #e8e8ea;
+    background: #3a3a40;
+    border: 1px solid #0d0d0e;
+    border-radius: 4px;
+    padding: 3px 10px;
+    cursor: pointer;
+
+    &:hover { background: #47474e; }
+  }
+
+  &.error {
+    background: #34211f;
+    .export-msg {
+      color: #e08a7a;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: inherit;
+    }
   }
 }
 
