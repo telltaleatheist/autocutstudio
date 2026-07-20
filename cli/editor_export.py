@@ -278,12 +278,14 @@ def _collect_parts(root, entry_name):
     return parts, frame_seconds, total_declared
 
 
-def _validate_cuts(cuts_raw, frame_seconds, total_declared):
+def _validate_cuts(cuts_raw, frame_seconds, total_declared, allow_empty=False):
     """Validate the STDIN cut list loudly and return frame ranges as
-    [(start_frame, end_frame, cut_start_seconds, cut_end_seconds), ...] (Fraction)."""
+    [(start_frame, end_frame, cut_start_seconds, cut_end_seconds), ...] (Fraction).
+
+    allow_empty is True on the per-story path (a user may mark stories without cutting)."""
     if not isinstance(cuts_raw, list):
         raise ManifestError("cuts must be a JSON array")
-    if not cuts_raw:
+    if not cuts_raw and not allow_empty:
         raise ManifestError("empty cuts list: nothing to export (a caller must send at least one cut)")
     cuts = []
     for i, c in enumerate(cuts_raw):
@@ -386,6 +388,306 @@ def apply_cuts(tree, entry_name, cuts_raw):
     return new_total, len(cuts)
 
 
+# ---------------------------------------------------------------------------
+# Per-story export (split the timeline into one <project> per marked story)
+# ---------------------------------------------------------------------------
+#
+# A story export is the INVERSE of a cut export: instead of removing the cuts and
+# keeping everything else, we KEEP only a story's resolved regions (minus the user's
+# cuts) and drop everything else, then collapse the survivors to a single continuous
+# timeline rebased to 0. It reuses the exact same spine surgery (split_spine_element /
+# _trim_children) — we just feed it the COMPLEMENT of the story's kept intervals as the
+# per-part "cuts", and supply a GLOBAL collapse ripple (continuous across parts) instead
+# of make_ripple's per-part one. Within any single kept interval the collapse map is a
+# uniform shift t - const — the very property _trim_children already relies on — so a
+# survivor piece's anchored children stay internally consistent wherever the piece lands.
+
+def _complement(intervals, lo, hi):
+    """Gaps of [lo, hi) not covered by `intervals` (sorted ascending, disjoint, already
+    clamped inside [lo, hi)). Returns sorted disjoint (s, e) — the per-part cut list that
+    makes split_spine_element keep exactly `intervals`."""
+    gaps = []
+    cur = lo
+    for s, e in intervals:
+        if s > cur:
+            gaps.append((cur, s))
+        cur = e
+    if cur < hi:
+        gaps.append((cur, hi))
+    return gaps
+
+
+def _snap_to_frame(sec, frame_seconds, context):
+    """Snap a frontend float-seconds boundary to its exact frame time. The frontend already
+    quantizes story boundaries to frames, so round() recovers the integer frame index
+    exactly; a value more than half a frame off is a contract violation -> raise loud."""
+    if not isinstance(sec, (int, float)) or isinstance(sec, bool):
+        raise ManifestError(f"{context}: expected a number of seconds, got {sec!r}")
+    idx = round(sec / float(frame_seconds))
+    if idx < 0:
+        raise ManifestError(f"{context}: negative time {sec}s")
+    exact = idx * frame_seconds
+    drift = abs(float(exact) - float(sec))
+    if drift > float(frame_seconds) / 2:
+        raise ManifestError(
+            f"{context}: {sec}s is not on a frame boundary (nearest frame {idx} = "
+            f"{float(exact)}s, off by {drift}s > half a frame)")
+    return idx, exact
+
+
+def _slugify(title, number):
+    """Kebab-case slug for filenames / the CS round-trip key. Falls back to the story number
+    when the title has no slug-able characters."""
+    out = []
+    prev_dash = False
+    for ch in (title or '').lower():
+        if ch.isalnum():
+            out.append(ch)
+            prev_dash = False
+        elif not prev_dash:
+            out.append('-')
+            prev_dash = True
+    slug = ''.join(out).strip('-')
+    return slug or f"story-{number}"
+
+
+def _make_collapse(kept):
+    """Build the global collapse ripple for a story from its kept intervals (sorted disjoint
+    Fraction seconds). collapse(t) maps a KEPT global time to its position on the story's
+    0-based collapsed timeline; total is the collapsed duration. A t not inside any kept
+    interval is an internal inconsistency (survivor starts always are) -> raise."""
+    cum = []
+    acc = Fraction(0)
+    for (s, e) in kept:
+        cum.append(acc)
+        acc += (e - s)
+    total = acc
+
+    def collapse(t):
+        for i, (s, e) in enumerate(kept):
+            if s <= t <= e:
+                return cum[i] + (t - s)
+        raise ManifestError(
+            f"internal error: collapse time {format_time(t)} is not inside any kept region")
+    return collapse, total
+
+
+def _validate_stories(stories_raw, frame_seconds, total_declared):
+    """Validate the STDIN stories list loudly. Returns a list of dicts:
+    {number:int, title:str, slug:str, kept:[(s,e) Fraction global secs]} in the given order.
+    Each story's kept intervals are its resolved regions snapped to frames, clamped to the
+    timeline; cuts are subtracted later. Empty region lists are allowed (a fully-overlapped
+    story) and yield kept=[]."""
+    if not isinstance(stories_raw, list):
+        raise ManifestError("stories must be a JSON array")
+    if not stories_raw:
+        raise ManifestError("empty stories list on the per-story export path")
+    total_frames = total_declared / frame_seconds
+    if total_frames.denominator != 1:
+        raise ManifestError(
+            f"internal error: concatenated duration {float(total_declared)}s is not a whole "
+            f"number of frames")
+    total_frames = int(total_frames)
+    out = []
+    for i, st in enumerate(stories_raw):
+        if not isinstance(st, dict):
+            raise ManifestError(f"story #{i} is not an object")
+        number = st.get('number')
+        if not isinstance(number, int) or isinstance(number, bool):
+            raise ManifestError(f"story #{i} has a non-integer 'number': {number!r}")
+        title = st.get('title')
+        if not isinstance(title, str) or not title.strip():
+            raise ManifestError(f"story #{i} (number {number}) has an empty title")
+        regions_raw = st.get('regions')
+        if not isinstance(regions_raw, list):
+            raise ManifestError(f"story {title!r} 'regions' must be an array")
+        regions = []
+        for r in regions_raw:
+            if not isinstance(r, dict):
+                raise ManifestError(f"story {title!r} has a non-object region")
+            si, s = _snap_to_frame(r.get('start'), frame_seconds, f"story {title!r} region start")
+            ei, e = _snap_to_frame(r.get('end'), frame_seconds, f"story {title!r} region end")
+            if si >= ei:
+                raise ManifestError(f"story {title!r} region is empty or reversed: {si}..{ei} frames")
+            if ei > total_frames:
+                raise ManifestError(
+                    f"story {title!r} region ends at frame {ei} beyond the timeline's "
+                    f"{total_frames} frames")
+            regions.append((s, e))
+        regions.sort()
+        for k in range(1, len(regions)):
+            if regions[k][0] < regions[k - 1][1]:
+                raise ManifestError(
+                    f"story {title!r} regions overlap: {float(regions[k][0])}s precedes prior "
+                    f"end {float(regions[k - 1][1])}s (resolveStoryRegions must emit disjoint regions)")
+        out.append({'number': number, 'title': title.strip(),
+                    'slug': _slugify(title, number), 'regions': regions})
+    return out
+
+
+def _build_story_project(story, kept, parts, frame_seconds, check_align, seq_template, entry_name):
+    """Build one <project> for a story from its kept global intervals. Returns the <project>
+    Element and the collapsed duration (Fraction), or (None, 0) if the story keeps nothing."""
+    if not kept:
+        return None, Fraction(0)
+    collapse, total = _make_collapse(kept)
+
+    new_children = []
+    base = Fraction(0)
+    for part in parts:
+        declared = part['declared']
+        # Kept intervals overlapping this part, mapped to part-LOCAL [0, declared).
+        part_kept = []
+        for (ks, ke) in kept:
+            s = max(ks - base, Fraction(0))
+            e = min(ke - base, declared)
+            if s < e:
+                part_kept.append((s, e))
+        if not part_kept:
+            base += declared
+            continue
+        local_cuts = _complement(part_kept, Fraction(0), declared)
+        # Capture base by value; ripple maps a part-local survivor start to global collapsed.
+        ripple = (lambda b: (lambda s: collapse(b + s)))(base)
+        context = f"{entry_name}: story {story['title']!r} @ part {part['name']!r}"
+        for ch in list(part['spine']):
+            if ch.tag not in TIMELINE_TAGS:
+                raise ManifestError(
+                    f"{context}: unexpected non-timeline spine child <{ch.tag}>; cannot split it safely")
+            for piece in split_spine_element(ch, local_cuts, ripple, frame_seconds, check_align, context):
+                new_children.append(piece)
+        base += declared
+
+    # Collapsed pieces must be pairwise non-overlapping and ascending (parts and pieces are in
+    # ascending order and collapse is monotone). HOLES are expected and legitimate: within a
+    # kept region that spans a part seam, the earlier part's spine ends before its DECLARED
+    # length (trailing padding), so the collapsed timeline has an empty stretch there. A bare
+    # offset-hole in a spine is invalid FCPX, so every leading/internal hole is filled with an
+    # explicit <gap> (the same element the generators use for compound headroom). Trailing
+    # padding (last content end < total) stays implicit — a sequence whose declared duration
+    # exceeds its last clip is valid and is exactly the source parts' own convention.
+    project = ET.Element('project', {'name': story['title']})
+    sequence = ET.SubElement(project, 'sequence')
+    for k, v in seq_template.attrib.items():
+        sequence.set(k, v)          # inherit format/tcStart/tcFormat/audioLayout/audioRate
+    sequence.set('duration', format_time(total))
+    spine = ET.SubElement(sequence, 'spine')
+
+    cursor = Fraction(0)
+    for piece in new_children:
+        off = parse_rational(piece.get('offset'), 'collapsed piece offset')
+        dur = parse_rational(piece.get('duration'), 'collapsed piece duration')
+        if off < cursor:
+            raise ManifestError(
+                f"{entry_name}: story {story['title']!r}: collapsed pieces overlap "
+                f"(offset {format_time(off)} < previous end {format_time(cursor)})")
+        if off > cursor:
+            gap = ET.SubElement(spine, 'gap')
+            gap.set('name', 'Gap')
+            gap.set('offset', format_time(cursor))
+            gap.set('duration', format_time(off - cursor))
+        spine.append(piece)
+        cursor = off + dur
+    if cursor > total:
+        raise ManifestError(
+            f"{entry_name}: story {story['title']!r}: collapsed content ends at "
+            f"{format_time(cursor)} beyond the kept total {format_time(total)}")
+    return project, total
+
+
+def apply_stories(tree, entry_name, cuts_raw, stories_raw):
+    """Mutate `tree` in place: replace the part <project>s under <event> with one <project>
+    per story (regions minus cuts, collapsed to 0, named by title, ordered by number).
+    Returns a list of per-story result dicts."""
+    root = tree.getroot()
+    parts, frame_seconds, total_declared = _collect_parts(root, entry_name)
+    cuts = _validate_cuts(cuts_raw, frame_seconds, total_declared, allow_empty=True)
+    stories = _validate_stories(stories_raw, frame_seconds, total_declared)
+    check_align = _inputs_frame_aligned(parts, frame_seconds)
+    if not check_align:
+        print(f"[editor_export] {entry_name}: source spine values are not all frame-aligned; "
+              "frame-alignment assertions on computed values are disabled", file=sys.stderr)
+
+    global_cuts = [(cs, ce) for (_sf, _ef, cs, ce) in cuts]
+    seq_template = parts[0]['sequence']
+
+    projects = []
+    results = []
+    seen_slugs = set()
+    for story in stories:
+        # kept = this story's regions with the user's cuts removed (both global secs).
+        kept = []
+        for (rs, re) in story['regions']:
+            kept.extend(subtract_cuts(rs, re, global_cuts))
+        kept.sort()
+        project, total = _build_story_project(
+            story, kept, parts, frame_seconds, check_align, seq_template, entry_name)
+        slug = story['slug']
+        if slug in seen_slugs:
+            n = 2
+            while f"{slug}-{n}" in seen_slugs:
+                n += 1
+            slug = f"{slug}-{n}"
+        seen_slugs.add(slug)
+        emitted = project is not None
+        if emitted:
+            projects.append((story['number'], project))
+        else:
+            print(f"[editor_export] story {story['title']!r} keeps no content (fully overlapped "
+                  f"or entirely cut) — not emitted", file=sys.stderr)
+        results.append({
+            'number': story['number'], 'title': story['title'], 'slug': slug,
+            'durationSeconds': float(total), 'emitted': emitted,
+        })
+
+    if not projects:
+        raise ManifestError("no story keeps any content: nothing to export")
+
+    event = root.find('.//event')
+    if event is None:
+        raise ManifestError(f"{entry_name}: no <event> element to hold story projects")
+    for p in event.findall('project'):
+        event.remove(p)
+    projects.sort(key=lambda np: np[0])   # by story number ascending
+    for _num, project in projects:
+        event.append(project)
+
+    return results
+
+
+def export_stories(zip_path, cuts_raw, stories_raw):
+    zp = Path(zip_path)
+    if not zp.is_file():
+        raise ManifestError(f"zip not found: {zip_path}")
+    if not zipfile.is_zipfile(zp):
+        raise ManifestError(f"not a valid zip file: {zip_path}")
+
+    with zipfile.ZipFile(zp, 'r') as zf:
+        entry = _find_master_hybrid_entry(zf, zip_path)
+        print(f"[editor_export] master hybrid entry: {entry}", file=sys.stderr)
+        with zf.open(entry) as fh:
+            try:
+                tree = ET.parse(fh)
+            except ET.ParseError as e:
+                raise ManifestError(f"{entry}: XML parse error: {e}")
+
+    results = apply_stories(tree, entry, cuts_raw, stories_raw)
+
+    out_path = zp.parent / f"{_session_name(zip_path)}_HYBRID_stories.fcpxml"
+    if out_path.exists():
+        print(f"[editor_export] overwriting existing derived artifact: {out_path}", file=sys.stderr)
+    FCPXMLUtils.save_fcpxml(tree, str(out_path))
+    emitted = sum(1 for r in results if r['emitted'])
+    print(f"[editor_export] wrote {out_path} ({emitted}/{len(results)} stories emitted)", file=sys.stderr)
+
+    return {
+        'type': 'story_export_result',
+        'path': str(out_path),
+        'storiesEmitted': emitted,
+        'stories': results,
+    }
+
+
 def export(zip_path, cuts_raw):
     zp = Path(zip_path)
     if not zp.is_file():
@@ -419,7 +721,9 @@ def export(zip_path, cuts_raw):
     }
 
 
-def _read_cuts_from_stdin():
+def _read_payload_from_stdin():
+    """Parse the stdin JSON. Returns (cuts, stories) where stories is None on the plain
+    cut-export path and a list on the per-story path."""
     raw = sys.stdin.read()
     if not raw.strip():
         raise ManifestError("no JSON received on stdin (expected {\"cuts\": [...]})")
@@ -429,7 +733,10 @@ def _read_cuts_from_stdin():
         raise ManifestError(f"stdin is not valid JSON: {e}")
     if not isinstance(payload, dict) or 'cuts' not in payload:
         raise ManifestError("stdin JSON must be an object with a 'cuts' array")
-    return payload['cuts']
+    stories = payload.get('stories')
+    if stories is not None and not isinstance(stories, list):
+        raise ManifestError("stdin 'stories', when present, must be an array")
+    return payload['cuts'], stories
 
 
 def main(argv=None):
@@ -440,8 +747,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     try:
-        cuts_raw = _read_cuts_from_stdin()
-        result = export(args.zip_path, cuts_raw)
+        cuts_raw, stories_raw = _read_payload_from_stdin()
+        if stories_raw:
+            result = export_stories(args.zip_path, cuts_raw, stories_raw)
+        else:
+            result = export(args.zip_path, cuts_raw)
     except ManifestError as e:
         sys.stdout.write(json.dumps({'type': 'error', 'message': str(e)}) + '\n')
         sys.stdout.flush()
