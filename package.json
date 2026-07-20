@@ -80,19 +80,29 @@
     "extraResources": [
       {
         "from": "core",
-        "to": "core"
+        "to": "core",
+        "filter": [
+          "**/*",
+          "!**/._*",
+          "!**/__pycache__/**"
+        ]
       },
       {
         "from": "config",
-        "to": "config"
+        "to": "config",
+        "filter": [
+          "**/*",
+          "!**/._*"
+        ]
       },
       {
         "from": "cli",
-        "to": "cli"
-      },
-      {
-        "from": "utilities/bin",
-        "to": "utilities/bin"
+        "to": "cli",
+        "filter": [
+          "**/*",
+          "!**/._*",
+          "!**/__pycache__/**"
+        ]
       },
       {
         "from": "environment.yml",
@@ -123,7 +133,19 @@
       "gatekeeperAssess": false,
       "extendInfo": {
         "LSUIElement": false
-      }
+      },
+      "extraResources": [
+        {
+          "from": "utilities/bin",
+          "to": "utilities/bin",
+          "filter": [
+            "**/*",
+            "!**/._*",
+            "!*.dll",
+            "!*.exe"
+          ]
+        }
+      ]
     },
     "dmg": {
       "format": "ULFO",
@@ -163,7 +185,20 @@
       ],
       "icon": "build/icons/icon.ico",
       "publisherName": "AutoCutStudio",
-      "verifyUpdateCodeSignature": false
+      "verifyUpdateCodeSignature": false,
+      "extraResources": [
+        {
+          "from": "utilities/bin",
+          "to": "utilities/bin",
+          "filter": [
+            "**/*",
+            "!**/._*",
+            "!*.dylib",
+            "!whisper-cli",
+            "!whisper-cli-x64"
+          ]
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
