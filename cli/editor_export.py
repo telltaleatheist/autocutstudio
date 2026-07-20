@@ -705,11 +705,49 @@ def _build_story_transcript(story, kept, total, sidecar, speaker_map):
     }
 
 
-def apply_stories(tree, entry_name, cuts_raw, stories_raw, sidecar=None):
+def _dedup_slug(slug, seen):
+    """Make `slug` unique against `seen` (mutated) by appending -2, -3, ..."""
+    if slug in seen:
+        n = 2
+        while f"{slug}-{n}" in seen:
+            n += 1
+        slug = f"{slug}-{n}"
+    seen.add(slug)
+    return slug
+
+
+def _merge_intervals(intervals):
+    """Merge sorted-or-not (s, e) Fraction intervals into a sorted disjoint list."""
+    out = []
+    for (s, e) in sorted(intervals):
+        if out and s <= out[-1][1]:
+            if e > out[-1][1]:
+                out[-1] = (out[-1][0], e)
+        else:
+            out.append((s, e))
+    return out
+
+
+def _story_kepts(stories, global_cuts):
+    """Per validated story: kept global intervals = its regions minus the cuts. Returns
+    [(story_with_unique_slug, kept)] preserving order."""
+    seen_slugs = set()
+    out = []
+    for story in stories:
+        kept = []
+        for (rs, re) in story['regions']:
+            kept.extend(subtract_cuts(rs, re, global_cuts))
+        kept.sort()
+        out.append(({**story, 'slug': _dedup_slug(story['slug'], seen_slugs)}, kept))
+    return out
+
+
+def apply_stories(tree, entry_name, cuts_raw, stories_raw):
     """Mutate `tree` in place: replace the part <project>s under <event> with one <project>
-    per story (regions minus cuts, collapsed to 0, named by title, ordered by number).
-    Returns a list of per-story result dicts; each carries its Content Studio transcript doc
-    under 'transcript' when a sidecar was supplied and the story kept content."""
+    per story (regions minus cuts, collapsed to 0, named by title, ordered by number), PLUS
+    a final "Scrap" project holding every stretch of the timeline no story claimed (minus
+    cuts) — so nothing the user didn't explicitly cut is lost. Returns per-story result
+    dicts (Scrap included, flagged 'scrap')."""
     root = tree.getroot()
     parts, frame_seconds, total_declared = _collect_parts(root, entry_name)
     cuts = _validate_cuts(cuts_raw, frame_seconds, total_declared, allow_empty=True)
@@ -721,27 +759,27 @@ def apply_stories(tree, entry_name, cuts_raw, stories_raw, sidecar=None):
 
     global_cuts = [(cs, ce) for (_sf, _ef, cs, ce) in cuts]
     seq_template = parts[0]['sequence']
-    speaker_map = _speaker_map(sidecar['tracks']) if sidecar else None
+
+    # Scrap = the timeline minus the union of every story's claimed regions, minus cuts.
+    # Ordered LAST (number = max story number + 1).
+    claimed = _merge_intervals([r for st in stories for r in st['regions']])
+    scrap_regions = _complement(claimed, Fraction(0), total_declared)
+    scrap_number = max(st['number'] for st in stories) + 1
+    with_kepts = _story_kepts(stories, global_cuts)
+    scrap_kept = []
+    for (rs, re) in scrap_regions:
+        scrap_kept.extend(subtract_cuts(rs, re, global_cuts))
+    scrap_kept.sort()
+    if scrap_kept:
+        with_kepts.append((
+            {'number': scrap_number, 'title': 'Scrap', 'slug': 'scrap', 'scrap': True},
+            scrap_kept))
+    else:
+        print("[editor_export] no unclaimed content — Scrap project omitted", file=sys.stderr)
 
     projects = []
     results = []
-    seen_slugs = set()
-    for story in stories:
-        # kept = this story's regions with the user's cuts removed (both global secs).
-        kept = []
-        for (rs, re) in story['regions']:
-            kept.extend(subtract_cuts(rs, re, global_cuts))
-        kept.sort()
-        # Slug is assigned even for empty stories so numbering/keys stay stable.
-        slug = story['slug']
-        if slug in seen_slugs:
-            n = 2
-            while f"{slug}-{n}" in seen_slugs:
-                n += 1
-            slug = f"{slug}-{n}"
-        seen_slugs.add(slug)
-        story = {**story, 'slug': slug}
-
+    for story, kept in with_kepts:
         if kept:
             collapse, total = _make_collapse(kept)
             project = _build_story_project(
@@ -751,14 +789,11 @@ def apply_stories(tree, entry_name, cuts_raw, stories_raw, sidecar=None):
             total = Fraction(0)
             print(f"[editor_export] story {story['title']!r} keeps no content (fully overlapped "
                   f"or entirely cut) — not emitted", file=sys.stderr)
-
-        result = {
-            'number': story['number'], 'title': story['title'], 'slug': slug,
+        results.append({
+            'number': story['number'], 'title': story['title'], 'slug': story['slug'],
             'durationSeconds': float(total), 'emitted': bool(kept),
-        }
-        if kept and sidecar is not None:
-            result['transcript'] = _build_story_transcript(story, kept, total, sidecar, speaker_map)
-        results.append(result)
+            'scrap': bool(story.get('scrap')),
+        })
 
     if not projects:
         raise ManifestError("no story keeps any content: nothing to export")
@@ -768,20 +803,20 @@ def apply_stories(tree, entry_name, cuts_raw, stories_raw, sidecar=None):
         raise ManifestError(f"{entry_name}: no <event> element to hold story projects")
     for p in event.findall('project'):
         event.remove(p)
-    projects.sort(key=lambda np: np[0])   # by story number ascending
+    projects.sort(key=lambda np: np[0])   # by story number ascending; Scrap last
     for _num, project in projects:
         event.append(project)
 
     return results
 
 
-def export_stories(zip_path, cuts_raw, stories_raw):
+def _parse_master_tree(zip_path):
+    """Open the zip, locate the master hybrid entry, and parse it. Shared by all exports."""
     zp = Path(zip_path)
     if not zp.is_file():
         raise ManifestError(f"zip not found: {zip_path}")
     if not zipfile.is_zipfile(zp):
         raise ManifestError(f"not a valid zip file: {zip_path}")
-
     with zipfile.ZipFile(zp, 'r') as zf:
         entry = _find_master_hybrid_entry(zf, zip_path)
         print(f"[editor_export] master hybrid entry: {entry}", file=sys.stderr)
@@ -790,43 +825,81 @@ def export_stories(zip_path, cuts_raw, stories_raw):
                 tree = ET.parse(fh)
             except ET.ParseError as e:
                 raise ManifestError(f"{entry}: XML parse error: {e}")
+    return zp, entry, tree
 
-    # frame_seconds is needed to validate the sidecar; recover it the same way apply_stories
-    # does (cheap — _collect_parts is pure and side-effect-free on the tree).
-    _parts, frame_seconds, _td = _collect_parts(tree.getroot(), entry)
-    sidecar = _load_transcript_sidecar(zip_path, frame_seconds)
 
-    results = apply_stories(tree, entry, cuts_raw, stories_raw, sidecar)
+def export_stories(zip_path, cuts_raw, stories_raw):
+    """Master FCPXML split by stories: one <project> per story + a Scrap project of the
+    unclaimed remainder. Writes ONLY the fcpxml (transcripts are a separate export)."""
+    zp, entry, tree = _parse_master_tree(zip_path)
+    results = apply_stories(tree, entry, cuts_raw, stories_raw)
 
-    out_path = zp.parent / f"{_session_name(zip_path)}_HYBRID_stories.fcpxml"
+    out_path = zp.parent / f"{_session_name(zip_path)}_HYBRID_edited.fcpxml"
     if out_path.exists():
         print(f"[editor_export] overwriting existing derived artifact: {out_path}", file=sys.stderr)
     FCPXMLUtils.save_fcpxml(tree, str(out_path))
     emitted = sum(1 for r in results if r['emitted'])
-    print(f"[editor_export] wrote {out_path} ({emitted}/{len(results)} stories emitted)", file=sys.stderr)
-
-    # Per-story transcript files (Content Studio import format), grouped in a sibling folder.
-    tx_dir = zp.parent / f"{_session_name(zip_path)}_stories_transcripts"
-    for r in results:
-        doc = r.pop('transcript', None)
-        if doc is None:
-            continue
-        tx_dir.mkdir(exist_ok=True)
-        tx_path = tx_dir / f"{r['number']:02d}-{r['slug']}.json"
-        tmp = tx_path.with_suffix('.json.tmp')
-        with open(tmp, 'w') as fh:
-            json.dump(doc, fh, ensure_ascii=False, indent=2)
-        tmp.replace(tx_path)
-        r['transcriptPath'] = str(tx_path)
-        r['wordCount'] = len(doc['words'])
-        print(f"[editor_export] wrote transcript {tx_path.name} ({len(doc['words'])} words)", file=sys.stderr)
+    print(f"[editor_export] wrote {out_path} ({emitted}/{len(results)} projects emitted)", file=sys.stderr)
 
     return {
         'type': 'story_export_result',
         'path': str(out_path),
         'storiesEmitted': emitted,
         'stories': results,
-        'transcriptsDir': str(tx_dir) if any('transcriptPath' in r for r in results) else None,
+    }
+
+
+def export_transcripts(zip_path, cuts_raw, stories_raw):
+    """Per-story Content Studio transcript files ONLY (no fcpxml). The transcript sidecar is
+    REQUIRED — exporting transcripts without one is a caller error, not a silent no-op."""
+    zp, entry, tree = _parse_master_tree(zip_path)
+    _parts, frame_seconds, total_declared = _collect_parts(tree.getroot(), entry)
+    sidecar = _load_transcript_sidecar(zip_path, frame_seconds)
+    if sidecar is None:
+        raise ManifestError(
+            f"no transcript sidecar ({_session_name(zip_path)}_transcript.json) next to the zip — "
+            "transcribe the session before exporting story transcripts")
+    speaker_map = _speaker_map(sidecar['tracks'])
+
+    cuts = _validate_cuts(cuts_raw, frame_seconds, total_declared, allow_empty=True)
+    stories = _validate_stories(stories_raw, frame_seconds, total_declared)
+    global_cuts = [(cs, ce) for (_sf, _ef, cs, ce) in cuts]
+
+    tx_dir = zp.parent / f"{_session_name(zip_path)}_stories_transcripts"
+    results = []
+    wrote = 0
+    for story, kept in _story_kepts(stories, global_cuts):
+        result = {'number': story['number'], 'title': story['title'], 'slug': story['slug'],
+                  'emitted': bool(kept)}
+        if kept:
+            _collapse, total = _make_collapse(kept)
+            doc = _build_story_transcript(story, kept, total, sidecar, speaker_map)
+            tx_dir.mkdir(exist_ok=True)
+            tx_path = tx_dir / f"{story['number']:02d}-{story['slug']}.json"
+            tmp = tx_path.with_suffix('.json.tmp')
+            with open(tmp, 'w') as fh:
+                json.dump(doc, fh, ensure_ascii=False, indent=2)
+            tmp.replace(tx_path)
+            result['transcriptPath'] = str(tx_path)
+            result['wordCount'] = len(doc['words'])
+            result['durationSeconds'] = float(total)
+            wrote += 1
+            print(f"[editor_export] wrote transcript {tx_path.name} ({len(doc['words'])} words)",
+                  file=sys.stderr)
+        else:
+            print(f"[editor_export] story {story['title']!r} keeps no content — no transcript",
+                  file=sys.stderr)
+        results.append(result)
+
+    if wrote == 0:
+        raise ManifestError("no story keeps any content: nothing to export")
+
+    return {
+        'type': 'story_export_result',
+        'path': str(tx_dir),
+        'storiesEmitted': wrote,
+        'stories': results,
+        'transcriptsDir': str(tx_dir),
     }
 
 
@@ -864,8 +937,10 @@ def export(zip_path, cuts_raw):
 
 
 def _read_payload_from_stdin():
-    """Parse the stdin JSON. Returns (cuts, stories) where stories is None on the plain
-    cut-export path and a list on the per-story path."""
+    """Parse the stdin JSON. Returns (cuts, stories, output). stories is None on the plain
+    cut-export path; when present, 'output' must name what to produce ('fcpxml' — the
+    story-split master project, or 'transcripts' — Content Studio files only). Requiring the
+    caller to say which (no default) keeps the contract unambiguous."""
     raw = sys.stdin.read()
     if not raw.strip():
         raise ManifestError("no JSON received on stdin (expected {\"cuts\": [...]})")
@@ -876,9 +951,17 @@ def _read_payload_from_stdin():
     if not isinstance(payload, dict) or 'cuts' not in payload:
         raise ManifestError("stdin JSON must be an object with a 'cuts' array")
     stories = payload.get('stories')
+    output = payload.get('output')
     if stories is not None and not isinstance(stories, list):
         raise ManifestError("stdin 'stories', when present, must be an array")
-    return payload['cuts'], stories
+    if stories:
+        if output not in ('fcpxml', 'transcripts'):
+            raise ManifestError(
+                "with 'stories' present, 'output' must be 'fcpxml' or 'transcripts' "
+                f"(got {output!r})")
+    elif output is not None:
+        raise ManifestError("'output' is only meaningful together with a 'stories' array")
+    return payload['cuts'], stories, output
 
 
 def main(argv=None):
@@ -889,8 +972,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     try:
-        cuts_raw, stories_raw = _read_payload_from_stdin()
-        if stories_raw:
+        cuts_raw, stories_raw, output = _read_payload_from_stdin()
+        if stories_raw and output == 'transcripts':
+            result = export_transcripts(args.zip_path, cuts_raw, stories_raw)
+        elif stories_raw:
             result = export_stories(args.zip_path, cuts_raw, stories_raw)
         else:
             result = export(args.zip_path, cuts_raw)

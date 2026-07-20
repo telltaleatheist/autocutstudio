@@ -51,19 +51,26 @@
     <div class="modal export-chooser" (click)="$event.stopPropagation()">
       <div class="modal-title">Export</div>
       <div class="chooser-options">
-        <button class="chooser-opt" [disabled]="cuts.length === 0" (click)="onExportChoice('cuts')">
+        <button class="chooser-opt" [disabled]="cuts.length === 0 && !hasStories()"
+                (click)="onExportChoice('fcpxml')">
           <span class="chooser-opt-title">Master FCPXML</span>
-          <span class="chooser-opt-desc" *ngIf="cuts.length > 0">
+          <span class="chooser-opt-desc" *ngIf="hasStories()">
+            One project per story ({{ stories.length }}) plus a Scrap project for unmarked
+            sections<ng-container *ngIf="cuts.length > 0"> — {{ cuts.length }} {{ cuts.length === 1 ? 'cut' : 'cuts' }} applied</ng-container>
+          </span>
+          <span class="chooser-opt-desc" *ngIf="!hasStories() && cuts.length > 0">
             The whole timeline with your {{ cuts.length }} {{ cuts.length === 1 ? 'cut' : 'cuts' }} applied
           </span>
-          <span class="chooser-opt-desc" *ngIf="cuts.length === 0">Place at least one cut first</span>
+          <span class="chooser-opt-desc" *ngIf="!hasStories() && cuts.length === 0">Place a cut or mark a story first</span>
         </button>
-        <button class="chooser-opt" [disabled]="!hasStories()" (click)="onExportChoice('stories')">
-          <span class="chooser-opt-title">Stories</span>
-          <span class="chooser-opt-desc" *ngIf="hasStories()">
-            One FCPX project per story ({{ stories.length }}) — cuts applied, transcripts included when available
+        <button class="chooser-opt" [disabled]="!hasStories() || transcriptState !== 'ready'"
+                (click)="onExportChoice('transcripts')">
+          <span class="chooser-opt-title">Story Transcripts → Content Studio</span>
+          <span class="chooser-opt-desc" *ngIf="hasStories() && transcriptState === 'ready'">
+            One transcript file per story ({{ stories.length }}) for Content Studio import — no FCPXML
           </span>
           <span class="chooser-opt-desc" *ngIf="!hasStories()">Mark at least one story first</span>
+          <span class="chooser-opt-desc" *ngIf="hasStories() && transcriptState !== 'ready'">Transcribe the session first</span>
         </button>
       </div>
       <div class="modal-actions">
@@ -134,7 +141,7 @@
         <div class="stories-hint">
           {{ activeStoryId
               ? 'Adding regions to the selected story — drag on the timeline to add more. Click it again to start a new one.'
-              : 'Drag on the timeline to start a new story. Click a story below to add more regions to it. Drag a story’s edges in the strip above the timeline to adjust it.' }}
+              : 'Drag on the timeline to start a new story — edges take whole clips. Click a story below to add more regions to it; drag its edges in the strip to adjust. Need a mid-clip boundary? Cut it with the Blade (B) first.' }}
         </div>
         <div class="stories-empty" *ngIf="!hasStories()">No stories yet — drag on the timeline to mark one.</div>
         <div class="story-row" *ngFor="let s of stories"

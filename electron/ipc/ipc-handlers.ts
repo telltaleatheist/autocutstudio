@@ -122,6 +122,7 @@ function setupEditorHandlers(windowService: WindowService): void {
     zipPath: string;
     cuts: Array<{ startFrame: number; endFrame: number }>;
     stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }>;
+    output?: 'fcpxml' | 'transcripts';
   }) => {
     const zipPath = payload?.zipPath;
     if (typeof zipPath !== 'string' || zipPath.trim() === '') {
@@ -135,8 +136,12 @@ function setupEditorHandlers(windowService: WindowService): void {
     // can mark stories without cutting). Validate stories loudly when present. Python
     // re-validates and owns the coordinate math — this is a fast caller-bug guard.
     const stories = payload?.stories;
+    const output = payload?.output;
     const isStoryExport = Array.isArray(stories) && stories.length > 0;
     if (isStoryExport) {
+      if (output !== 'fcpxml' && output !== 'transcripts') {
+        throw new Error(`editor:export with stories requires output 'fcpxml' or 'transcripts', got: ${output}`);
+      }
       for (let i = 0; i < stories.length; i++) {
         const s = stories[i];
         if (!s || typeof s !== 'object') {
@@ -184,7 +189,8 @@ function setupEditorHandlers(windowService: WindowService): void {
       }
     }
 
-    return await pythonService.editorExport(zipPath, cuts, isStoryExport ? stories : undefined);
+    return await pythonService.editorExport(
+      zipPath, cuts, isStoryExport ? stories : undefined, isStoryExport ? output : undefined);
   });
 
   // Whisper-transcribe the session's source audio tracks. Returns { jobId }

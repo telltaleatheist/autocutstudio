@@ -139,6 +139,7 @@ export class ElectronService {
     zipPath: string;
     cuts: Array<{ startFrame: number; endFrame: number }>;
     stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }>;
+    output?: 'fcpxml' | 'transcripts';
   }): Promise<any> {
     if (!this.isElectron()) {
       throw new Error('Not running in Electron');

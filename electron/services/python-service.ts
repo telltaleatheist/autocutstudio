@@ -624,10 +624,11 @@ export class PythonService {
   editorExport(
     zipPath: string,
     cuts: Array<{ startFrame: number; endFrame: number }>,
-    stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }>
+    stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }>,
+    output?: 'fcpxml' | 'transcripts'
   ): Promise<any> {
     const jobId = `editor_export_${Date.now()}`;
-    const mode = stories && stories.length ? `${stories.length} stories` : `${cuts.length} cuts`;
+    const mode = stories && stories.length ? `${stories.length} stories → ${output}` : `${cuts.length} cuts`;
     log.info(`Running editor export [${jobId}] for zip: ${zipPath} (${mode})`);
 
     const pythonPath = this.getPythonPath();
@@ -651,7 +652,7 @@ export class PythonService {
       pythonProcess.stdin.on('error', (err) => {
         log.error(`[${jobId}] stdin error:`, err);
       });
-      const payload = stories && stories.length ? { cuts, stories } : { cuts };
+      const payload = stories && stories.length ? { cuts, stories, output } : { cuts };
       pythonProcess.stdin.write(JSON.stringify(payload), (err) => {
         if (err) {
           log.error(`[${jobId}] Failed to write export payload to stdin:`, err);
@@ -714,7 +715,8 @@ export class PythonService {
         if (code === 0 && result) {
           finish(() => resolve(
             result.type === 'story_export_result'
-              ? { path: result.path, storiesEmitted: result.storiesEmitted, stories: result.stories }
+              ? { path: result.path, storiesEmitted: result.storiesEmitted, stories: result.stories,
+                  transcriptsDir: result.transcriptsDir }
               : { path: result.path, cutsApplied: result.cutsApplied, newDurationSeconds: result.newDurationSeconds }
           ));
         } else {

@@ -31,7 +31,7 @@ export interface ElectronAPI {
   removeAlignmentListeners: () => void;
 
   // Timeline editor: export a cut list to a revised master-hybrid FCPXML (preload bridge).
-  exportEditorCuts: (payload: { zipPath: string; cuts: Array<{ startFrame: number; endFrame: number }>; stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }> }) => Promise<any>;
+  exportEditorCuts: (payload: { zipPath: string; cuts: Array<{ startFrame: number; endFrame: number }>; stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }>; output?: 'fcpxml' | 'transcripts' }) => Promise<any>;
 
   // Timeline editor: per-track Whisper transcription (preload bridge).
   transcribeSession: (payload: { zipPath: string }) => Promise<{ jobId: string }>;

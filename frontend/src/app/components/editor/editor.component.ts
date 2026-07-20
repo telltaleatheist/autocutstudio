@@ -655,13 +655,15 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   /**
-   * Snap an EDITED-seconds time to the nearest cut boundary (clip edge / cut seam / blade)
-   * within SNAP_PX at the current zoom. `bypass` (the Option key during a drag) disables it.
+   * Snap an EDITED-seconds time to the nearest cut boundary (clip edge / cut seam / blade).
+   * Default radius is SNAP_PX at the current zoom; `radiusPx = Infinity` HARD-quantizes (the
+   * story gestures — a story either takes a whole section or none of it, so its edges may
+   * only ever sit on a boundary). `bypass` (Option during soft-snap drags) disables it.
    */
-  private snapEdited(t: number, bypass = false): number {
+  private snapEdited(t: number, bypass = false, radiusPx = this.SNAP_PX): number {
     if (bypass) return t;
     let best = t;
-    let bestD = this.SNAP_PX / this.pxPerSec;
+    let bestD = radiusPx / this.pxPerSec;
     const pts = this.snapPoints;
     if (pts.length > 0) {
       // Binary-search the insertion point, then only its neighbors can be nearest.
@@ -1495,10 +1497,12 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       return;
     }
 
-    // STORY MODE: a drag in a track lane paints a region (committed on release into the active
-    // story, or a new one). Reuses the marquee gesture, flagged so mouseup routes it to a story
-    // rather than a cut selection. A bare click (no move) is a no-op.
-    if (this.storyMode) {
+    // STORY MODE + Select tool: a drag in a track lane paints a region (committed on release
+    // into the active story, or a new one). Reuses the marquee gesture, flagged so mouseup
+    // routes it to a story rather than a cut selection. A bare click (no move) is a no-op.
+    // With the BLADE tool active, story mode defers to the blade branch below — so the user
+    // can pre-cut a section mid-clip and then paint stories against the new boundary.
+    if (this.storyMode && this.toolMode === 'select') {
       this.selectedRanges = [];
       this.selStart = null;
       this.selEnd = null;
@@ -1507,7 +1511,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.marqueeActive = true;
       this.marqueeMoved = false;
       this.marqueeForStory = true;
-      this.marqueeStartTime = this.snapEdited(t, ev.altKey);
+      this.marqueeStartTime = this.snapEdited(t, false, Infinity);   // whole sections only
       this.marqueeEndTime = this.marqueeStartTime;
       window.addEventListener('mousemove', this.onWindowMouseMove);
       window.addEventListener('mouseup', this.onWindowMouseUp);
@@ -1660,7 +1664,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (this.draggingStoryEdge) { this.updateStoryEdgeDrag(ev); }
     else if (this.draggingSelection) { this.selEnd = this.snapEdited(this.canvasEventTime(ev), ev.altKey); this.requestRender(); }
     else if (this.marqueeActive) {
-      this.marqueeEndTime = this.snapEdited(this.canvasEventTime(ev), ev.altKey);
+      this.marqueeEndTime = this.marqueeForStory
+        ? this.snapEdited(this.canvasEventTime(ev), false, Infinity)   // whole sections only
+        : this.snapEdited(this.canvasEventTime(ev), ev.altKey);
       // Promote to a real marquee only past a small pixel threshold, so a jittery click stays
       // a click (section select) instead of collapsing the selection to a hairline range.
       if (Math.abs(this.timeToX(this.marqueeEndTime) - this.timeToX(this.marqueeStartTime)) > 3) {
@@ -2159,27 +2165,31 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   /** Chooser modal choice → run that export. */
-  onExportChoice(kind: 'cuts' | 'stories'): void {
+  onExportChoice(kind: 'fcpxml' | 'transcripts'): void {
     this.exportChooserOpen = false;
     void this.onExport(kind);
   }
 
   /**
-   * Export via Python. 'cuts' applies the cut list to the whole timeline (master FCPXML);
-   * 'stories' splits into one <project> per story (regions minus cuts, plus per-story
-   * transcripts when a sidecar exists).
+   * Export via Python. 'fcpxml' writes the master FCPXML: with stories marked it splits into
+   * one <project> per story plus a Scrap project of unmarked sections (cuts applied); with
+   * none it applies the cuts to the existing part projects. 'transcripts' writes ONLY the
+   * per-story Content Studio transcript files.
    */
-  async onExport(kind: 'cuts' | 'stories'): Promise<void> {
+  async onExport(kind: 'fcpxml' | 'transcripts'): Promise<void> {
     if (this.exporting || !this.currentZipPath) return;
-    if (kind === 'cuts' && this.cuts.length === 0) return;
-    if (kind === 'stories' && !this.hasStories()) return;
+    if (kind === 'fcpxml' && this.cuts.length === 0 && !this.hasStories()) return;
+    if (kind === 'transcripts' && !this.hasStories()) return;
     this.exporting = true;
     this.exportError = null;
     this.exportResultPath = null;
     this.cdr.detectChanges();
     try {
-      const stories = kind === 'stories' ? this.resolveStoryRegions() : undefined;
-      const res = await this.electron.exportEditorCuts({ zipPath: this.currentZipPath!, cuts: this.cuts, stories });
+      const stories = this.hasStories() ? this.resolveStoryRegions() : undefined;
+      const res = await this.electron.exportEditorCuts({
+        zipPath: this.currentZipPath!, cuts: this.cuts,
+        stories, output: stories ? kind : undefined,
+      });
       const path = res?.path;
       if (!path) throw new Error(res?.message || 'Export did not return an output path.');
       this.exportResultPath = path;
@@ -2385,9 +2395,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return null;
   }
 
-  /** Live update of a grabbed story-region edge: pointer time SNAPPED to the nearest cut
-   *  boundary (Option bypasses), mapped to ORIGINAL seconds, clamped to the timeline and to
-   *  one frame of minimum region width. */
+  /** Live update of a grabbed story-region edge: pointer time HARD-quantized to the nearest
+   *  cut boundary (whole sections only), mapped to ORIGINAL seconds, clamped to the timeline
+   *  and to one frame of minimum region width. */
   private updateStoryEdgeDrag(ev: MouseEvent): void {
     const drag = this.draggingStoryEdge!;
     const story = this.stories.find(s => s.id === drag.storyId);
@@ -2395,7 +2405,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!story || !region) { this.draggingStoryEdge = null; return; }
     const fs = this.manifest?.frameSeconds || (1001 / 30000);
     const durOrig = this.manifest?.timelineDuration || 0;
-    const tEdited = this.snapEdited(this.canvasEventTime(ev), ev.altKey);
+    const tEdited = this.snapEdited(this.canvasEventTime(ev), false, Infinity);
     const t = Math.min(durOrig, Math.max(0, this.editedToOriginal(tEdited)));
     if (drag.edge === 'start') {
       region.start = Math.max(0, Math.min(t, region.end - fs));
