@@ -165,7 +165,7 @@
       <div class="viewer-box">
         <video #viewerVideo class="viewer-video" muted playsinline></video>
       </div>
-      <div class="timecode">{{ timecode }}</div>
+      <div class="timecode">{{ timecode }}<span class="speed-badge" *ngIf="isPlaying && playbackRate !== 1"> · {{ playbackRate }}×</span></div>
       <div class="transport-error" *ngIf="transportError">{{ transportError }}</div>
     </section>
   </section>

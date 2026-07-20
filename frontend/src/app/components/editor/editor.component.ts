@@ -1660,6 +1660,15 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (ev.key === ' ' || ev.code === 'Space') {
       ev.preventDefault();
       this.togglePlayback();
+    } else if (ev.key === 'k' || ev.key === 'K') {
+      ev.preventDefault();
+      this.togglePlayback();          // K: play/pause (resets speed on pause)
+    } else if (ev.key === 'l' || ev.key === 'L') {
+      ev.preventDefault();
+      this.cycleSpeedUp();            // L: faster (1.5→2→2.5→3)
+    } else if (ev.key === 'j' || ev.key === 'J') {
+      ev.preventDefault();
+      this.cycleSpeedDown();         // J: slower (0.75→0.66→0.5→0.25)
     } else if (ev.key === 'Home') {
       ev.preventDefault();
       this.setPlayhead(0);
@@ -2288,9 +2297,56 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   // ── Playback (element-based jump-cuts) ──────────────────────────────────────
+  // Variable-speed transport (FCPX-style JKL). L steps the speed UP through L_SPEEDS,
+  // J steps it DOWN (slow) through J_SPEEDS, K/Space toggle play/pause. Pausing resets
+  // to 1x. The rAF clock advances by elapsed*playbackRate; media elements mirror the rate.
+  playbackRate = 1;
+  private readonly L_SPEEDS = [1.5, 2, 2.5, 3];
+  private readonly J_SPEEDS = [0.75, 0.66, 0.5, 0.25];
+
   togglePlayback(): void {
     if (this.isPlaying) this.stopPlayback();
     else this.startPlayback();
+  }
+
+  /** Push the current playbackRate onto the viewer video + every audio element. */
+  private applyRateToElements(): void {
+    const v = this.viewerVideoRef?.nativeElement;
+    if (v) { try { v.playbackRate = this.playbackRate; } catch { /* not settable yet */ } }
+    for (const el of this.audioEls.values()) {
+      try { el.playbackRate = this.playbackRate; } catch { /* gone */ }
+    }
+  }
+
+  /**
+   * Set the playback speed, re-anchoring the timeline clock so the position stays
+   * continuous across the change. Starts playback if paused.
+   */
+  private setPlaybackRate(rate: number): void {
+    if (!this.manifest) return;
+    if (!this.isPlaying) {
+      this.startPlayback();                 // anchors at the playhead, rate reset to 1
+    } else {
+      this.playAnchorTime = this.playheadTime;
+      this.playAnchorPerfMs = performance.now();
+    }
+    this.playbackRate = rate;
+    this.applyRateToElements();
+    this.cdr.detectChanges();
+  }
+
+  /** L: step the speed up (1.5 → 2 → 2.5 → 3), jumping onto the fast ladder from any state. */
+  private cycleSpeedUp(): void {
+    const i = this.L_SPEEDS.indexOf(this.playbackRate);
+    const next = i >= 0 ? this.L_SPEEDS[Math.min(i + 1, this.L_SPEEDS.length - 1)] : this.L_SPEEDS[0];
+    this.setPlaybackRate(next);
+  }
+
+  /** J: step the speed down (0.75 → 0.66 → 0.5 → 0.25), jumping onto the slow ladder. */
+  private cycleSpeedDown(): void {
+    const i = this.J_SPEEDS.indexOf(this.playbackRate);
+    const next = i >= 0 ? this.J_SPEEDS[Math.min(i + 1, this.J_SPEEDS.length - 1)] : this.J_SPEEDS[0];
+    this.setPlaybackRate(next);
   }
 
   private startPlayback(): void {
@@ -2301,6 +2357,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.playheadTime = 0;
     }
     this.isPlaying = true;
+    this.playbackRate = 1;            // plain play/K/Space always starts at normal speed
+    this.applyRateToElements();
     this.playAnchorPerfMs = performance.now();
     this.playAnchorTime = this.playheadTime;
     if (this.rafId !== null) cancelAnimationFrame(this.rafId);
@@ -2309,6 +2367,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private stopPlayback(): void {
     this.isPlaying = false;
+    this.playbackRate = 1;            // pausing resets the speed (next play is 1x)
     if (this.rafId !== null) { cancelAnimationFrame(this.rafId); this.rafId = null; }
     const v = this.viewerVideoRef?.nativeElement;
     if (v) { try { v.pause(); } catch { /* already paused */ } }
@@ -2319,7 +2378,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private tick = (): void => {
     if (!this.isPlaying || !this.manifest) { this.rafId = null; return; }
     const elapsed = (performance.now() - this.playAnchorPerfMs) / 1000;
-    let t = this.playAnchorTime + elapsed;
+    let t = this.playAnchorTime + elapsed * this.playbackRate;
     if (t >= this.editedDuration) {
       t = this.editedDuration;
       this.playheadTime = t;
@@ -2386,6 +2445,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       v.onerror = () => this.onMediaError(`Could not load video: ${seg.file}`);
       v.src = this.pathToFileUrl(seg.file);
       this.viewerLoadedFile = seg.file;
+      try { v.playbackRate = this.playbackRate; } catch { /* set on play */ }
     }
     const desired = seg.sourceStart + (t - seg.timelineStart);
     if (Math.abs(v.currentTime - desired) > this.SEEK_TOLERANCE) {
@@ -2407,6 +2467,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     el.preload = 'auto';
     el.onerror = () => this.onMediaError(`Could not load audio: ${file}`);
     el.src = this.pathToFileUrl(file);
+    try { el.playbackRate = this.playbackRate; } catch { /* set on play */ }
     this.audioEls.set(file, el);
     return el;
   }
