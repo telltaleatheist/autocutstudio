@@ -87,12 +87,17 @@ export class WindowService {
       return this.editorWindow;
     }
 
+    // NOTE: deliberately NOT a child of the main window. On macOS a BrowserWindow with
+    // a `parent` is an attached child that is pinned to the parent and cannot be dragged
+    // onto a separate display — DisplayLink virtual monitors in particular. The editor is
+    // a standalone tool window the user moves to a second monitor, so it must be top-level
+    // and independently movable. (The alignment wizard was also parented and gains the same
+    // freedom; it remains a single reused window either way.)
     this.editorWindow = new BrowserWindow({
       width,
       height,
       minWidth,
       minHeight,
-      parent: this.mainWindow || undefined,
       title,
       autoHideMenuBar: true,
       webPreferences: {
