@@ -64,6 +64,25 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   @ViewChild('timelineCanvas') canvasRef!: ElementRef<HTMLCanvasElement>;
   @ViewChild('viewerVideo') viewerVideoRef!: ElementRef<HTMLVideoElement>;
+  @ViewChild('topRegion') topRegionRef?: ElementRef<HTMLElement>;
+
+  // ── Resizable layout (FCPX-style panes) ─────────────────────────────────────
+  // splitV: fraction of the top region's WIDTH given to the transcript (left) pane.
+  // splitH: fraction of the window HEIGHT given to the timeline pane.
+  // UI preferences, not sacred data: corrupt/missing stored values fall back to the
+  // defaults and out-of-range values are clamped.
+  private readonly SPLIT_V_KEY = 'editor.splitV';
+  private readonly SPLIT_H_KEY = 'editor.splitH';
+  private readonly SPLIT_V_MIN = 0.2;
+  private readonly SPLIT_V_MAX = 0.8;
+  private readonly SPLIT_V_DEFAULT = 0.5;
+  private readonly SPLIT_H_MIN = 0.2;
+  private readonly SPLIT_H_MAX = 0.6;
+  private readonly SPLIT_H_DEFAULT = 0.4;
+  splitV = this.SPLIT_V_DEFAULT;
+  splitH = this.SPLIT_H_DEFAULT;
+  draggingSplitV = false;  // public: template highlights the splitter while dragging
+  draggingSplitH = false;
 
   // ── Load / error state ──────────────────────────────────────────────────────
   loading = true;
@@ -123,6 +142,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   // ── Lifecycle ───────────────────────────────────────────────────────────────
   async ngOnInit(): Promise<void> {
+    // Restore pane-split preferences (validated + clamped; fall back on anything odd).
+    this.splitV = this.readSplit(this.SPLIT_V_KEY, this.SPLIT_V_MIN, this.SPLIT_V_MAX, this.SPLIT_V_DEFAULT);
+    this.splitH = this.readSplit(this.SPLIT_H_KEY, this.SPLIT_H_MIN, this.SPLIT_H_MAX, this.SPLIT_H_DEFAULT);
     // Race-free pull + push, like the alignment wizard — but the push listener is
     // PERMANENT: when this window is already open on a session and the launcher opens a
     // DIFFERENT one, the main process pushes the new payload over the same channel
@@ -155,6 +177,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.stopPlayback();
     window.removeEventListener('mousemove', this.onWindowMouseMove);
     window.removeEventListener('mouseup', this.onWindowMouseUp);
+    document.body.style.userSelect = ''; // in case we're destroyed mid-splitter-drag
     if (this.rafId !== null) { cancelAnimationFrame(this.rafId); this.rafId = null; }
     for (const el of this.audioEls.values()) { try { el.pause(); el.src = ''; } catch { /* gone */ } }
     this.audioEls.clear();
@@ -697,15 +720,71 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private onWindowMouseMove = (ev: MouseEvent): void => {
     if (this.draggingPlayhead) this.setPlayheadFromEvent(ev);
     else if (this.draggingScrollbar) this.setScrollFromScrollbar(ev);
+    else if (this.draggingSplitV) this.setSplitVFromEvent(ev);
+    else if (this.draggingSplitH) this.setSplitHFromEvent(ev);
   };
 
   private onWindowMouseUp = (): void => {
-    if (!this.draggingPlayhead && !this.draggingScrollbar) return;
+    if (!this.draggingPlayhead && !this.draggingScrollbar && !this.draggingSplitV && !this.draggingSplitH) return;
+    // Persist split preferences once per drag (not per move frame).
+    if (this.draggingSplitV) localStorage.setItem(this.SPLIT_V_KEY, String(this.splitV));
+    if (this.draggingSplitH) localStorage.setItem(this.SPLIT_H_KEY, String(this.splitH));
     this.draggingPlayhead = false;
     this.draggingScrollbar = false;
+    this.draggingSplitV = false;
+    this.draggingSplitH = false;
+    document.body.style.userSelect = '';
     window.removeEventListener('mousemove', this.onWindowMouseMove);
     window.removeEventListener('mouseup', this.onWindowMouseUp);
   };
+
+  // ── Pane splitters (vertical: transcript|viewer, horizontal: top|timeline) ──
+  /** Read a persisted split ratio; corrupt values fall back, valid ones are clamped. */
+  private readSplit(key: string, min: number, max: number, fallback: number): number {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return fallback;
+    const v = parseFloat(raw);
+    if (!Number.isFinite(v)) return fallback;
+    return Math.min(max, Math.max(min, v));
+  }
+
+  onSplitVMouseDown(ev: MouseEvent): void {
+    ev.preventDefault();
+    this.draggingSplitV = true;
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', this.onWindowMouseMove);
+    window.addEventListener('mouseup', this.onWindowMouseUp);
+  }
+
+  onSplitHMouseDown(ev: MouseEvent): void {
+    ev.preventDefault();
+    this.draggingSplitH = true;
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', this.onWindowMouseMove);
+    window.addEventListener('mouseup', this.onWindowMouseUp);
+  }
+
+  private setSplitVFromEvent(ev: MouseEvent): void {
+    const el = this.topRegionRef?.nativeElement;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const frac = (ev.clientX - rect.left) / rect.width;
+    this.splitV = Math.min(this.SPLIT_V_MAX, Math.max(this.SPLIT_V_MIN, frac));
+    // Same path as the window-resize handler so any layout knock-on re-renders live.
+    this.onResize();
+  }
+
+  private setSplitHFromEvent(ev: MouseEvent): void {
+    const h = window.innerHeight;
+    if (h <= 0) return;
+    // Timeline share = distance from the cursor to the window bottom.
+    const frac = (h - ev.clientY) / h;
+    this.splitH = Math.min(this.SPLIT_H_MAX, Math.max(this.SPLIT_H_MIN, frac));
+    // The canvas height (and, via flex, potentially width) changes under the cursor:
+    // clampScroll + requestRender every drag frame so the redraw tracks the drag live.
+    this.onResize();
+  }
 
   private setPlayheadFromEvent(ev: MouseEvent): void {
     const canvas = this.canvasRef?.nativeElement;

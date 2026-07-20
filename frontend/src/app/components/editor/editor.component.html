@@ -20,17 +20,36 @@
     <span class="session-name">{{ sessionName }}</span>
   </header>
 
-  <!-- Viewer on pure black, letterboxed, timecode centered beneath. -->
-  <section class="viewer-wrap">
-    <div class="viewer-box">
-      <video #viewerVideo class="viewer-video" muted playsinline></video>
+  <!-- Top region: transcript (left) | vertical splitter | viewer (right). -->
+  <section class="top-region" #topRegion>
+    <!-- Transcript placeholder pane (chips land here later; nothing interactive). -->
+    <div class="transcript-pane" [style.flexBasis.%]="splitV * 100">
+      <div class="transcript-placeholder">
+        <div class="transcript-title">Transcript</div>
+        <div class="transcript-note">Whisper transcription will appear here.</div>
+      </div>
     </div>
-    <div class="timecode">{{ timecode }}</div>
-    <div class="transport-error" *ngIf="transportError">{{ transportError }}</div>
+
+    <div class="splitter splitter-v"
+         [class.dragging]="draggingSplitV"
+         (mousedown)="onSplitVMouseDown($event)"></div>
+
+    <!-- Viewer on pure black, letterboxed, timecode centered beneath. -->
+    <section class="viewer-wrap">
+      <div class="viewer-box">
+        <video #viewerVideo class="viewer-video" muted playsinline></video>
+      </div>
+      <div class="timecode">{{ timecode }}</div>
+      <div class="transport-error" *ngIf="transportError">{{ transportError }}</div>
+    </section>
   </section>
 
+  <div class="splitter splitter-h"
+       [class.dragging]="draggingSplitH"
+       (mousedown)="onSplitHMouseDown($event)"></div>
+
   <!-- Timeline pane. -->
-  <section class="timeline-pane">
+  <section class="timeline-pane" [style.flexBasis.%]="splitH * 100">
     <div class="timeline-body">
       <!-- Track-header gutter. -->
       <div class="track-gutter" [style.width.px]="GUTTER_W">
