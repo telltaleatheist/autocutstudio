@@ -834,6 +834,12 @@ def export_stories(zip_path, cuts_raw, stories_raw):
     zp, entry, tree = _parse_master_tree(zip_path)
     results = apply_stories(tree, entry, cuts_raw, stories_raw)
 
+    # Land the story projects in their OWN event, distinctly named. FCP merges imports into
+    # an existing same-named event, so keeping the generators' 'Auto-Editor Media Group'
+    # name would drop the stories next to previously imported part-projects — confusing.
+    event = tree.getroot().find('.//event')
+    event.set('name', f"{_session_name(zip_path)} Stories")
+
     out_path = zp.parent / f"{_session_name(zip_path)}_HYBRID_edited.fcpxml"
     if out_path.exists():
         print(f"[editor_export] overwriting existing derived artifact: {out_path}", file=sys.stderr)
