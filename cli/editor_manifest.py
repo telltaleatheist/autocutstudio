@@ -190,15 +190,23 @@ class ManifestBuilder:
                                 context=f"project {pname!r}", lanes=())
 
             # Per-part agreement check: last emitted segment end vs declared part duration.
+            # A trailing GAP is legitimate FCPXML — a sequence can declare a duration past
+            # its last clip (empty timeline at the end). So only OVERSHOOT (content extending
+            # beyond the declared sequence end) is a real inconsistency and fails loud;
+            # content ending at or before the declared end is fine (noted to stderr for
+            # forensics when the gap is larger than a frame).
             part_leaves = self.leaves[part_leaves_before:]
             if part_leaves:
                 part_end = max(l['timeline_end'] for l in part_leaves)
-                # allow up to one frame of disagreement, error loudly beyond that
-                if abs(part_end - (base + declared_dur)) > frame_seconds:
+                declared_end = base + declared_dur
+                if part_end - declared_end > frame_seconds:
                     raise ManifestError(
-                        f"{self.entry_name}: project {pname!r} declared duration "
-                        f"{float(base + declared_dur - base)}s disagrees with flattened content end "
-                        f"{float(part_end - base)}s by more than one frame")
+                        f"{self.entry_name}: project {pname!r} flattened content end "
+                        f"{float(part_end - base)}s extends beyond its declared duration "
+                        f"{float(declared_dur)}s by more than one frame")
+                if declared_end - part_end > frame_seconds:
+                    print(f"[editor_manifest] project {pname!r}: {float(declared_end - part_end):.3f}s "
+                          "trailing gap (sequence declared longer than its last clip)", file=sys.stderr)
 
             base += declared_dur
             total_declared += declared_dur
@@ -381,15 +389,23 @@ class ManifestBuilder:
                     f"the master file {Path(master_file).name} is referenced by multiple "
                     "simultaneous video layers")
 
-        # The master is expected to be present across every cut: an uncovered tail
-        # beyond one frame vs the declared sequence duration is a loud error.
+        # The master must span all timeline CONTENT. Compare against the end of the actual
+        # flattened content (every enabled leaf, all layers), NOT the declared sequence
+        # duration: a sequence legitimately declares a duration past its last clip (a
+        # trailing gap of empty timeline), and the master ending there is fine. But the
+        # master ending before OTHER content (e.g. the mix/overlays still playing) means
+        # the master is genuinely missing from a content-bearing region — a loud error.
         coverage_end = max(l['timeline_end'] for l in master_segs)
-        if total_declared - coverage_end > frame_seconds:
+        content_end = max(l['timeline_end'] for l in self.leaves)
+        if content_end - coverage_end > frame_seconds:
             raise ManifestError(
-                f"master video coverage ends at {float(coverage_end)}s but the declared "
-                f"timeline duration is {float(total_declared)}s — uncovered tail exceeds "
-                f"one frame ({float(frame_seconds)}s); the master is expected to span "
-                "every cut")
+                f"master video coverage ends at {float(coverage_end)}s but other enabled "
+                f"content extends to {float(content_end)}s — the master must span all "
+                "timeline content")
+        if total_declared - coverage_end > frame_seconds:
+            print(f"[editor_manifest] master video ends at {float(coverage_end):.3f}s, "
+                  f"{float(total_declared - coverage_end):.3f}s before the declared timeline "
+                  f"end {float(total_declared):.3f}s (trailing gap)", file=sys.stderr)
 
         tracks = [
             {'id': 'video', 'label': 'Master', 'kind': 'video'},
@@ -485,16 +501,18 @@ def build_manifest(zip_path):
     builder.check_files_exist()
     tracks, segments = builder.build_tracks(total_declared, frame_seconds)
 
-    # timelineDuration: prefer the declared (summed) sequence duration. Cross-check
-    # against the flattened content end; disagree by > one frame -> error stating both.
+    # timelineDuration: prefer the declared (summed) sequence duration — that is the
+    # timeline length FCPX shows. Content ending BEFORE the declared end is a legitimate
+    # trailing gap (allowed); only content extending BEYOND the declared end is a real
+    # inconsistency and fails loud.
     content_end = Fraction(0)
     for l in builder.leaves:
         if l['timeline_end'] > content_end:
             content_end = l['timeline_end']
-    if builder.leaves and abs(content_end - total_declared) > frame_seconds:
+    if builder.leaves and content_end - total_declared > frame_seconds:
         raise ManifestError(
-            f"declared timeline duration {float(total_declared)}s disagrees with flattened "
-            f"content end {float(content_end)}s by more than one frame ({float(frame_seconds)}s)")
+            f"flattened content end {float(content_end)}s extends beyond the declared timeline "
+            f"duration {float(total_declared)}s by more than one frame ({float(frame_seconds)}s)")
     timeline_duration = total_declared
 
     return {
