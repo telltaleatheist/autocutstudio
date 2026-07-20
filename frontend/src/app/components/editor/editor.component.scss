@@ -107,7 +107,7 @@
 
   .topbar-spacer { flex: 1 1 auto; }
 
-  /* File menu button (left of the session name). */
+  /* File menu button — reused (same class) for "Mark Story" and the "Stories (N)" toggle. */
   .menu-wrap {
     flex: 0 0 auto;
     position: relative;
@@ -122,9 +122,11 @@
     border-radius: 4px;
     padding: 4px 10px;
     cursor: pointer;
+    white-space: nowrap;
     transition: background 0.12s ease;
 
-    &:hover { background: #47474e; }
+    &:hover:not(:disabled) { background: #47474e; }
+    &:disabled { opacity: 0.4; cursor: default; }
     &.open { background: #2f2f34; }
   }
 
@@ -178,6 +180,79 @@
   inset: 0;
   z-index: 40;
   background: transparent;
+}
+
+/* Stories management strip — collapsible FCP-dark list under the top bar. Unobtrusive:
+   in-flow (pushes the panes down a touch), capped height with its own scroll. */
+.stories-strip {
+  flex: 0 0 auto;
+  max-height: 148px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 5px 10px;
+  background: #202023;
+  border-bottom: 1px solid #0d0d0e;
+
+  .story-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 4px;
+    border-radius: 4px;
+
+    &:hover { background: #26262a; }
+
+    .story-swatch { flex: 0 0 auto; width: 10px; height: 10px; border-radius: 2px; }
+
+    /* Inline-editable number + title share the dark field look. */
+    .story-num,
+    .story-title {
+      font-size: 11px;
+      color: #e2e2e6;
+      background: #1c1c1f;
+      border: 1px solid #3a3a40;
+      border-radius: 4px;
+      padding: 2px 6px;
+      outline: none;
+      font-family: inherit;
+
+      &:focus { border-color: #55555c; }
+    }
+    .story-num { flex: 0 0 auto; width: 42px; font-variant-numeric: tabular-nums; }
+    .story-title { flex: 1 1 auto; min-width: 0; font-size: 12px; }
+
+    .story-tc {
+      flex: 0 0 auto;
+      font-size: 10px;
+      font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+      color: #7a7a80;
+      white-space: nowrap;
+    }
+
+    .story-empty {
+      flex: 0 0 auto;
+      font-size: 9.5px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: #201800;
+      background: #d8a24a;
+      border-radius: 3px;
+      padding: 1px 5px;
+    }
+
+    .story-del {
+      flex: 0 0 auto;
+      width: 18px;
+      font-size: 14px;
+      line-height: 1;
+      color: #8a8a90;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+
+      &:hover { color: #e08a7a; }
+    }
+  }
 }
 
 /* Export result modal: dim backdrop + centered FCP-dark card (success or verbatim error). */
@@ -783,6 +858,14 @@
     flex: 0 0 auto;
     background: #2a2a2d;
     border-bottom: 1px solid #0d0d0e;
+  }
+
+  /* Mirrors the canvas stories-ribbon band (0px with no stories, so it collapses fully and
+     the gutter stays byte-identical) so labels stay aligned. No border: a 1px edge would
+     survive the 0px height and nudge every label out of alignment. */
+  .gutter-ribbon-spacer {
+    flex: 0 0 auto;
+    background: #161618;
   }
 
   /* Vertical-center offset: mirrors the canvas track-stack offset so labels line up. */

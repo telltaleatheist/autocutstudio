@@ -36,7 +36,34 @@
       {{ cuts.length }} {{ cuts.length === 1 ? 'cut' : 'cuts' }} · {{ removedLabel }} removed
     </span>
     <span class="topbar-spacer"></span>
+    <button class="menu-btn" [disabled]="!hasSelection" (click)="markStoryFromSelection()"
+            [title]="hasSelection ? 'Mark a story from the selection (S)' : 'Select a range first'">
+      ✚ Mark Story
+    </button>
+    <button class="menu-btn" *ngIf="hasStories()" [class.open]="storiesPanelOpen"
+            (click)="storiesPanelOpen = !storiesPanelOpen"
+            title="Show / hide the stories list">Stories ({{ stories.length }}) ▾</button>
   </header>
+
+  <!-- Stories management strip (collapsible, FCP-dark). Renumber / rename / delete. Each
+       row's number + title are inline-editable; the swatch matches its ribbon color; the
+       timecode is the span mapped through the current cuts; "empty" flags a fully-overlapped
+       story (zero resolved regions). -->
+  <div class="stories-strip" *ngIf="storiesPanelOpen && hasStories()">
+    <div class="story-row" *ngFor="let s of stories">
+      <span class="story-swatch" [style.background]="storyColor(s.number)"></span>
+      <input class="story-num" type="number" min="1" [value]="s.number"
+             (input)="onStoryNumberInput(s, $any($event.target).value)"
+             (keydown.enter)="blurStoryInput($event)" title="Project number" />
+      <input class="story-title" id="story-title-{{ s.id }}" [value]="s.title"
+             (input)="onStoryTitleInput(s, $any($event.target).value)"
+             (keydown.enter)="blurStoryInput($event)" placeholder="Story title" />
+      <span class="story-tc">{{ storyTimecode(s) }}</span>
+      <span class="story-empty" *ngIf="isStoryEmpty(s)"
+            title="Fully overlapped by a later story — no resolved regions">empty</span>
+      <button class="story-del" (click)="deleteStory(s)" title="Delete story">×</button>
+    </div>
+  </div>
 
   <!-- Invisible backdrop: an outside click closes the File menu. -->
   <div class="menu-backdrop" *ngIf="menuOpen" (click)="menuOpen = false"></div>
@@ -180,6 +207,9 @@
       <!-- Track-header gutter. -->
       <div class="track-gutter" [style.width.px]="GUTTER_W">
         <div class="gutter-ruler-spacer"></div>
+        <!-- Mirrors the canvas stories-ribbon band (0px with no stories) so the offset below
+             — and every track label — stays aligned with the lanes. -->
+        <div class="gutter-ribbon-spacer" [style.height.px]="ribbonHeight"></div>
         <!-- Matches the canvas vertical-center offset so gutter labels align with lanes. -->
         <div class="gutter-offset" [style.height.px]="trackTopOffset"></div>
         <div class="gutter-track" *ngFor="let row of trackRows"

@@ -91,6 +91,17 @@ type ToolMode = 'select' | 'blade';
 export interface Cut { startFrame: number; endFrame: number; }
 
 /**
+ * A user-marked "story" span in ORIGINAL timeline seconds (start < end). A session covers
+ * ~5 stories; on export the fcpxml is split into one project per story. Stories may be
+ * NESTED/overlapping — a story created LATER paints OVER an earlier one where they overlap
+ * (last-writer-wins), the earlier keeping the leftover pieces (see resolveStoryRegions).
+ * `stories` is held in CREATION order (the paint order). `number` is a separate, user-facing
+ * ordering (auto = max existing + 1, editable) that orders the exported projects. Not
+ * persisted across sessions (v1); reset on session re-init.
+ */
+export interface Story { id: string; number: number; title: string; start: number; end: number; }
+
+/**
  * One kept interval of the timeline after cuts are applied. `os`/`oe` are the interval's
  * bounds in ORIGINAL seconds; `es`/`ee` are the same span mapped into EDITED seconds (the
  * ripple just shifts it left, so ee - es === oe - os). Sorted ascending in both domains, so
@@ -115,6 +126,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // ── FCP visual constants (CSS px) ───────────────────────────────────────────
   readonly GUTTER_W = 110;      // left track-header column
   private readonly RULER_H = 26;
+  private readonly RIBBON_H = 16;      // stories ribbon band, directly under the ruler
   private readonly VIDEO_TRACK_H = 62;
   private readonly AUDIO_TRACK_H = 54;
   private readonly CLIP_INSET_Y = 4;   // vertical padding of a clip inside its lane
@@ -258,6 +270,16 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   exportError: string | null = null;       // Python's message, verbatim, on failure
   // Top-bar File menu (Export / Open) open/closed state.
   menuOpen = false;
+
+  // ── Stories (mark/name/number spans; ORIGINAL seconds) ───────────────────────
+  // Held in CREATION order (= paint order; a later story wins overlaps). `number` is the
+  // separate user-facing project ordering. Purely additive UI state: nothing here touches
+  // the cut model, playback, export IPC, or any data contract. Reset on session re-init.
+  stories: Story[] = [];
+  private storyIdCounter = 0;          // monotonic id source (reset per session)
+  storiesPanelOpen = false;            // collapsible management strip under the top bar
+  // Stable, distinct color per story NUMBER (cycled). Dark FCP-friendly hues.
+  private readonly STORY_COLORS = ['#e8a33d', '#4a9eff', '#7bc98f', '#c98fd6', '#d67b7b', '#7bd6cf', '#e0c650', '#9a8ff0'];
 
   // ── Transcript ────────────────────────────────────────────────────────────
   // Stable per-track-id color, assigned by discovery order and cycled for extra tracks.
@@ -460,6 +482,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.exportResultPath = null;
     this.exportError = null;
     this.menuOpen = false;
+    // Stories are per-session and NOT persisted (v1) — a re-init starts with none.
+    this.stories = [];
+    this.storyIdCounter = 0;
+    this.storiesPanelOpen = false;
     // Transcript: a re-init starts fresh. An in-flight job for the OLD session is
     // actively cancelled — a multi-hour whisper run must not keep burning CPU for a
     // session nobody is looking at (dropping the job id alone would only mute its
@@ -641,11 +667,12 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const videoTracks = this.manifest.tracks.filter(t => t.kind === 'video');
     const audioTracks = this.manifest.tracks.filter(t => t.kind === 'audio');
     const ordered = [...videoTracks].reverse().concat(audioTracks);
-    // FCPX-style: center the whole track stack in the area below the ruler, so short
-    // stacks float in the middle instead of hugging the top. The offset is baked into
-    // every row's `top`, so canvas draw + gutter (which both read trackRows / the same
-    // offset getter) stay pixel-aligned.
-    let y = this.RULER_H + this.trackTopOffset;
+    // FCPX-style: center the whole track stack in the area below the ruler AND the stories
+    // ribbon, so short stacks float in the middle instead of hugging the top. The offset is
+    // baked into every row's `top`, so canvas draw + gutter (which both read trackRows / the
+    // same offset getter) stay pixel-aligned. ribbonHeight is 0 with zero stories, so the
+    // layout is byte-identical to before when no story exists.
+    let y = this.RULER_H + this.ribbonHeight + this.trackTopOffset;
     for (const track of ordered) {
       const height = track.kind === 'video' ? this.VIDEO_TRACK_H : this.AUDIO_TRACK_H;
       rows.push({ track, top: y, height });
@@ -673,9 +700,20 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   get trackTopOffset(): number {
     const c = this.canvasRef?.nativeElement;
     const H = c ? (c.clientHeight || 0) : 0;
-    const avail = H - this.RULER_H;
+    const avail = H - this.RULER_H - this.ribbonHeight;
     const stack = this.trackStackHeight();
     return avail > stack ? Math.floor((avail - stack) / 2) : 0;
+  }
+
+  /**
+   * Height (CSS px) the stories ribbon occupies directly under the ruler: the fixed band
+   * when any story exists, else 0 — so with zero stories the ribbon is hidden and the track
+   * area sits exactly where it always did (byte-identical layout). Read by canvas draw, by
+   * trackRows / trackTopOffset (which shift the whole track stack down by it), by ribbon
+   * hit-testing, and by the DOM gutter's ribbon spacer — one source of truth.
+   */
+  get ribbonHeight(): number {
+    return this.hasStories() ? this.RIBBON_H : 0;
   }
 
   // ── Coordinate mapping ──────────────────────────────────────────────────────
@@ -804,6 +842,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // Ruler last-but-one so clips never bleed over it.
     this.drawRuler(ctx, W);
 
+    // Stories ribbon in its band directly under the ruler (no-op with zero stories).
+    this.drawStoriesRibbon(ctx, W);
+
     // Selection overlay tints ruler + tracks; playhead draws on top of it.
     this.drawSelection(ctx, W, H);
 
@@ -841,7 +882,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (this.marqueeActive && this.marqueeMoved) {
       const mx0 = this.timeToX(Math.min(this.marqueeStartTime, this.marqueeEndTime));
       const mx1 = this.timeToX(Math.max(this.marqueeStartTime, this.marqueeEndTime));
-      const top = this.RULER_H;
+      const top = this.RULER_H + this.ribbonHeight;
       ctx.save();
       ctx.fillStyle = 'rgba(150,180,255,0.14)';
       ctx.fillRect(mx0, top, mx1 - mx0, H - top);
@@ -1206,6 +1247,61 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return h > 0 ? `${h}:${this.pad2(m)}:${this.pad2(s)}` : `${m}:${this.pad2(s)}`;
   }
 
+  /**
+   * Draw the stories ribbon in its band directly under the ruler. Each story's RESOLVED
+   * regions (from resolveStoryRegions — the same last-writer-wins paint the export will use)
+   * render as colored blocks, so nesting reads visually: the leftover pieces of an
+   * overpainted story and the block that covered it show the painted result, never the raw
+   * overlapping ranges. Region bounds are ORIGINAL seconds mapped through originalToEdited →
+   * timeToX, exactly like clips, so the ribbon tracks cuts/scroll/zoom. No-op with zero
+   * stories (the band collapses to nothing via ribbonHeight).
+   */
+  private drawStoriesRibbon(ctx: CanvasRenderingContext2D, W: number): void {
+    if (!this.hasStories()) return;
+    const top = this.RULER_H;
+    const h = this.RIBBON_H;
+    // Band background + bottom hairline separating it from the tracks.
+    ctx.fillStyle = '#161618';
+    ctx.fillRect(0, top, W, h);
+    ctx.strokeStyle = '#000';
+    ctx.globalAlpha = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(0, top + h + 0.5);
+    ctx.lineTo(W, top + h + 0.5);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    const by = top + 1;
+    const bh = h - 2;
+    for (const s of this.resolveStoryRegions()) {
+      const color = this.storyColor(s.number);
+      for (const r of s.regions) {
+        const x0 = this.timeToX(this.originalToEdited(r.start));
+        const x1 = this.timeToX(this.originalToEdited(r.end));
+        if (x1 <= x0) continue;
+        if (x1 < 0 || x0 > W) continue;              // off-screen
+        const bx0 = Math.max(0, x0);
+        const bx1 = Math.min(W, x1);
+        const bw = bx1 - bx0;
+        if (bw <= 0.5) continue;                     // collapsed at this zoom
+        ctx.save();
+        this.roundRectPath(ctx, bx0, by, bw, bh, 2);
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.88;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        if (bw > 22 && s.title) {
+          ctx.clip();
+          ctx.fillStyle = '#141208';
+          ctx.font = '10px -apple-system, "Segoe UI", sans-serif';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(s.title, bx0 + 5, by + bh / 2 + 0.5);
+        }
+        ctx.restore();
+      }
+    }
+  }
+
   private drawPlayhead(ctx: CanvasRenderingContext2D, W: number, H: number): void {
     const x = this.timeToX(this.playheadTime);
     if (x < -1 || x > W + 1) return;
@@ -1258,6 +1354,17 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const t = this.canvasEventTime(ev);
     const y = this.canvasEventY(ev);
     const inRuler = y <= this.RULER_H;
+    const inRibbon = this.hasStories() && y > this.RULER_H && y <= this.RULER_H + this.ribbonHeight;
+
+    // A click in the stories ribbon selects the clicked story's resolved region(s) as the
+    // timeline selection (so its extent is visible) and scrolls it into view — lightweight,
+    // no scrub/cut/marquee.
+    if (inRibbon) {
+      const s = this.ribbonStoryAt(t);
+      if (s) this.selectResolvedStory(s);
+      this.requestRender();
+      return;
+    }
 
     if (ev.shiftKey) {
       // Shift+drag paints a single free range (edited seconds) instead of scrubbing — a manual
@@ -1715,6 +1822,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     } else if (ev.key === 'b' || ev.key === 'B') {
       ev.preventDefault();
       this.setTool('blade');               // FCP Blade tool
+    } else if ((ev.key === 's' || ev.key === 'S') && !ev.metaKey && !ev.ctrlKey) {
+      // S: mark a story from the current selection (no-op with no selection).
+      if (this.loading) return;
+      ev.preventDefault();
+      this.markStoryFromSelection();
     } else if ((ev.metaKey || ev.ctrlKey) && (ev.key === 'x' || ev.key === 'X')) {
       // Cmd/Ctrl+X == ripple-delete the current selection (FCP alias for Delete).
       if (this.loading) return;
@@ -1907,6 +2019,199 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   closeExportModal(): void {
     this.exportResultPath = null;
     this.exportError = null;
+  }
+
+  // ── Stories (mark / name / number spans) ─────────────────────────────────────
+  /** True when any story is marked (drives the ribbon's visibility + height). PUBLIC — the
+   *  export wiring will consult it in a later change. */
+  hasStories(): boolean {
+    return this.stories.length > 0;
+  }
+
+  /**
+   * The SINGLE source of truth for both the ribbon and (later) the export: resolve each
+   * story's EFFECTIVE regions under last-writer-wins nesting. PURE — reads only `stories`,
+   * mutates nothing. For story i (creation order) its regions = its [start,end] MINUS the
+   * union of every LATER story j>i (exact interval subtraction, ORIGINAL float seconds — the
+   * export re-quantizes to frames). A story wholly painted over yields zero regions (still
+   * listed, empty). The returned list is ordered by `number` ascending (export/project order;
+   * ties broken by creation order for stability); each story's regions are sorted ascending.
+   * PUBLIC — the export wiring will call it later.
+   */
+  resolveStoryRegions(): { number: number; title: string; regions: { start: number; end: number }[] }[] {
+    const resolved = this.stories.map((story, i) => {
+      let regions: { start: number; end: number }[] = [{ start: story.start, end: story.end }];
+      for (let j = i + 1; j < this.stories.length; j++) {
+        const later = this.stories[j];
+        regions = this.subtractInterval(regions, later.start, later.end);
+      }
+      regions.sort((a, b) => a.start - b.start);
+      return { i, number: story.number, title: story.title, regions };
+    });
+    // Export/project order: by number ascending, creation order breaking ties.
+    resolved.sort((a, b) => (a.number - b.number) || (a.i - b.i));
+    return resolved.map(r => ({ number: r.number, title: r.title, regions: r.regions }));
+  }
+
+  /**
+   * Subtract the interval [cutStart, cutEnd] from every region in `regions`, returning the
+   * leftover pieces (a region straddled by the cut yields its left and/or right remainder).
+   * Sub-EPS slivers are dropped. Pure.
+   */
+  private subtractInterval(regions: { start: number; end: number }[],
+                           cutStart: number, cutEnd: number): { start: number; end: number }[] {
+    const out: { start: number; end: number }[] = [];
+    for (const r of regions) {
+      // No overlap → the region survives whole.
+      if (cutEnd <= r.start + this.EPS || cutStart >= r.end - this.EPS) { out.push(r); continue; }
+      // Left leftover.
+      if (cutStart > r.start + this.EPS) out.push({ start: r.start, end: Math.min(cutStart, r.end) });
+      // Right leftover.
+      if (cutEnd < r.end - this.EPS) out.push({ start: Math.max(cutEnd, r.start), end: r.end });
+    }
+    return out;
+  }
+
+  /** True when a story's whole range is painted over by later stories (zero resolved regions). */
+  isStoryEmpty(story: Story): boolean {
+    const i = this.stories.indexOf(story);
+    if (i < 0) return false;
+    let regions: { start: number; end: number }[] = [{ start: story.start, end: story.end }];
+    for (let j = i + 1; j < this.stories.length; j++) {
+      regions = this.subtractInterval(regions, this.stories[j].start, this.stories[j].end);
+    }
+    return regions.length === 0;
+  }
+
+  /** Stable, distinct color for a story NUMBER (palette cycled; safe for any integer). */
+  storyColor(n: number): string {
+    const len = this.STORY_COLORS.length;
+    const i = (((Math.round(n) - 1) % len) + len) % len;
+    return this.STORY_COLORS[i];
+  }
+
+  /** True when the current selection spans a real range (enables "Mark Story"). */
+  get hasSelection(): boolean {
+    return this.currentSelectionOriginalBounds() !== null;
+  }
+
+  /**
+   * Union bounds [min,max] of the current selection (committed marquee ranges ∪ the
+   * in-progress single range), in EDITED seconds, mapped to ORIGINAL via editedToOriginal.
+   * null when nothing is selected or the span is sub-EPS.
+   */
+  private currentSelectionOriginalBounds(): { start: number; end: number } | null {
+    const ranges = this.allSelectionRanges();
+    if (ranges.length === 0) return null;
+    let lo = Infinity, hi = -Infinity;
+    for (const r of ranges) { if (r.lo < lo) lo = r.lo; if (r.hi > hi) hi = r.hi; }
+    if (!(hi > lo)) return null;
+    const start = this.editedToOriginal(lo);
+    const end = this.editedToOriginal(hi);
+    if (!(end > start)) return null;
+    return { start, end };
+  }
+
+  /**
+   * Create a story from the current selection's union bounds (button + `S`). No-op with no
+   * selection. Auto number = max existing + 1, default title "Story N". Opens the management
+   * strip and focuses the new title input so the user can name it immediately. Story
+   * create/edit/delete is deliberately OFF the cut undo stack — a simple in-place edit.
+   */
+  markStoryFromSelection(): void {
+    const bounds = this.currentSelectionOriginalBounds();
+    if (!bounds) return;   // no selection — a subtle no-op (the button is also disabled)
+    const number = this.stories.reduce((mx, s) => Math.max(mx, s.number), 0) + 1;
+    const story: Story = {
+      id: `story-${++this.storyIdCounter}`,
+      number,
+      title: `Story ${number}`,
+      start: bounds.start,
+      end: bounds.end,
+    };
+    this.stories = [...this.stories, story];
+    this.storiesPanelOpen = true;
+    this.requestRender();
+    this.cdr.detectChanges();
+    // Focus + select the inline title editor for the just-created row.
+    setTimeout(() => {
+      const el = document.getElementById(`story-title-${story.id}`) as HTMLInputElement | null;
+      if (el) { el.focus(); el.select(); }
+    }, 0);
+  }
+
+  /** Inline title edit (immediate). Redraws so the ribbon label tracks the new title. */
+  onStoryTitleInput(story: Story, value: string): void {
+    story.title = value;
+    this.requestRender();
+  }
+
+  /** Inline number edit (immediate). Positive integers only; reorders export + ribbon color. */
+  onStoryNumberInput(story: Story, value: string): void {
+    const n = parseInt(value, 10);
+    if (Number.isFinite(n) && n > 0) {
+      story.number = n;
+      this.requestRender();
+    }
+  }
+
+  /** Delete a story (immediate, off the undo stack). */
+  deleteStory(story: Story): void {
+    this.stories = this.stories.filter(s => s.id !== story.id);
+    this.requestRender();
+  }
+
+  /** Enter in an inline story field commits by blurring it. */
+  blurStoryInput(ev: Event): void {
+    (ev.target as HTMLElement | null)?.blur();
+  }
+
+  /** EDITED-seconds timecode range for a story's ORIGINAL span (tracks cuts via originalToEdited). */
+  storyTimecode(story: Story): string {
+    const a = this.formatTimecode(this.originalToEdited(story.start));
+    const b = this.formatTimecode(this.originalToEdited(story.end));
+    return `${a} – ${b}`;
+  }
+
+  /** The resolved story (from resolveStoryRegions) whose region contains edited time `t`, or null.
+   *  Resolved regions across stories are disjoint (last-writer-wins), so the hit is unambiguous. */
+  private ribbonStoryAt(t: number): { number: number; title: string; regions: { start: number; end: number }[] } | null {
+    for (const s of this.resolveStoryRegions()) {
+      for (const r of s.regions) {
+        const lo = this.originalToEdited(r.start);
+        const hi = this.originalToEdited(r.end);
+        if (hi - lo > this.EPS && t >= lo - this.EPS && t <= hi + this.EPS) return s;
+      }
+    }
+    return null;
+  }
+
+  /** Reflect a resolved story's region(s) into the timeline selection and scroll into view. */
+  private selectResolvedStory(s: { regions: { start: number; end: number }[] }): void {
+    const ranges: { start: number; end: number }[] = [];
+    for (const r of s.regions) {
+      const lo = this.originalToEdited(r.start);
+      const hi = this.originalToEdited(r.end);
+      if (hi - lo > this.EPS) ranges.push({ start: lo, end: hi });
+    }
+    this.selStart = null;
+    this.selEnd = null;
+    this.selectedGroupStart = null;
+    this.selectedGroupEnd = null;
+    this.selectedRanges = ranges;
+    this.ensureRangesVisible(ranges);
+  }
+
+  /** Scroll so the earliest of `ranges` is on screen (reuses clampScroll). No-op if empty. */
+  private ensureRangesVisible(ranges: { start: number; end: number }[]): void {
+    if (ranges.length === 0) return;
+    let lo = Infinity, hi = -Infinity;
+    for (const r of ranges) { if (r.start < lo) lo = r.start; if (r.end > hi) hi = r.end; }
+    const left = this.scrollOffset;
+    const right = this.scrollOffset + this.viewportSec;
+    if (lo < left || hi > right) {
+      this.scrollOffset = this.clampScroll(lo - this.viewportSec * 0.1);
+    }
   }
 
   // ── Top-bar File menu ────────────────────────────────────────────────────────
