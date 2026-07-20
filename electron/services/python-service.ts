@@ -752,7 +752,7 @@ export class PythonService {
     jobId: string,
     zipPath: string,
     callbacks: {
-      onProgress?: (progress: number, message: string) => void;
+      onProgress?: (progress: number, message: string, etaSeconds: number | null) => void;
       onComplete?: (code: number, result: any, errorMessage: string | null) => void;
     }
   ): Promise<void> {
@@ -816,7 +816,8 @@ export class PythonService {
         }
         if (message.type === 'progress') {
           if (callbacks.onProgress) {
-            callbacks.onProgress(message.progress, message.message);
+            const eta = typeof message.etaSeconds === 'number' ? message.etaSeconds : null;
+            callbacks.onProgress(message.progress, message.message, eta);
           }
         } else if (message.type === 'success') {
           finalResult = message.result;

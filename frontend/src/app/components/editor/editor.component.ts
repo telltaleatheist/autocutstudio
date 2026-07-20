@@ -219,6 +219,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private transcribeJobId: string | null = null;
   transcribeProgress = 0;                     // 0-100 int
   transcribeMessage = '';
+  transcribeEtaSeconds: number | null = null; // measured time-remaining; null = still estimating
 
   // ── Rendering ───────────────────────────────────────────────────────────────
   private renderScheduled = false;
@@ -395,6 +396,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.transcribeJobId = null;
     this.transcribeProgress = 0;
     this.transcribeMessage = '';
+    this.transcribeEtaSeconds = null;
   }
 
   /** Validate and index the manifest. Fails loud on anything structurally wrong. */
@@ -1523,6 +1525,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.transcriptState = 'running';
     this.transcribeProgress = 0;
     this.transcribeMessage = 'Starting…';
+    this.transcribeEtaSeconds = null;
     this.transcriptError = '';
     this.transcribeJobId = null;
     this.cdr.detectChanges();
@@ -1544,12 +1547,23 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   /** Progress event: ignore anything not from the current job (stale/superseded session). */
-  private onTranscribeProgress(d: { jobId: string; progress: number; message: string }): void {
+  private onTranscribeProgress(d: { jobId: string; progress: number; message: string; etaSeconds?: number | null }): void {
     if (!d || d.jobId !== this.transcribeJobId) return;
     if (this.transcriptState !== 'running') return;
     this.transcribeProgress = Math.max(0, Math.min(100, Math.round(d.progress)));
     this.transcribeMessage = d.message || '';
+    this.transcribeEtaSeconds = (typeof d.etaSeconds === 'number' && d.etaSeconds >= 0) ? d.etaSeconds : null;
     this.cdr.detectChanges();
+  }
+
+  /** Human "about N min / N sec left" from the measured ETA, or "estimating…" before it's known. */
+  get transcribeEtaLabel(): string {
+    const s = this.transcribeEtaSeconds;
+    if (s === null) return 'estimating time remaining…';
+    if (s <= 0) return 'finishing up…';
+    if (s < 60) return `about ${s} sec left`;
+    const m = Math.round(s / 60);
+    return `about ${m} min left`;
   }
 
   /**

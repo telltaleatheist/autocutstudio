@@ -175,9 +175,9 @@ function setupEditorHandlers(windowService: WindowService): void {
     const sender = event.sender;
 
     pythonService.transcribe(jobId, zipPath, {
-      onProgress: (progress, message) => {
+      onProgress: (progress, message, etaSeconds) => {
         if (sender.isDestroyed()) return;
-        sender.send('transcribe-progress', { jobId, progress, message });
+        sender.send('transcribe-progress', { jobId, progress, message, etaSeconds });
       },
       onComplete: (code, result, errorMessage) => {
         if (sender.isDestroyed()) return;

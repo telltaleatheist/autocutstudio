@@ -42,6 +42,7 @@ import string
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from collections import deque
 from pathlib import Path
@@ -379,6 +380,20 @@ def transcribe(zip_path, whisper_bin, whisper_model, ffmpeg, language, max_secon
     session, frame_seconds, tracks = discover_tracks(zip_path)
     n = len(tracks)
 
+    # ETA is MEASURED, not guessed: whisper throughput is ~constant, so the remaining
+    # time is (elapsed) * (work left / work done) using the real overall progress
+    # fraction. Withheld until progress >= 2% (before that the ratio is too noisy to be
+    # honest — the UI shows "estimating" instead). The tracks are equal-duration and the
+    # per-track bands split the work evenly, so overall progress tracks real work well.
+    start_mono = time.monotonic()
+
+    def emit_progress(pct, message):
+        obj = {'type': 'progress', 'progress': int(pct), 'message': message}
+        if pct >= 2:
+            elapsed = time.monotonic() - start_mono
+            obj['etaSeconds'] = int(round(elapsed * (100.0 - pct) / pct))
+        _emit(obj)
+
     _temp_dir = tempfile.mkdtemp(prefix='transcribe_')
     all_words = []
     try:
@@ -387,21 +402,18 @@ def transcribe(zip_path, whisper_bin, whisper_model, ffmpeg, language, max_secon
             band_w = 100.0 / n
             label = track['label']
 
-            _emit({'type': 'progress', 'progress': int(band_lo),
-                   'message': f"Extracting {label} ({i + 1}/{n})..."})
+            emit_progress(band_lo, f"Extracting {label} ({i + 1}/{n})...")
 
             wav = os.path.join(_temp_dir, f"track{i}.wav")
             extract_wav(ffmpeg, track['file'], wav, max_seconds)
 
             # Extraction owns the first 10% of the band.
             extract_end = band_lo + 0.10 * band_w
-            _emit({'type': 'progress', 'progress': int(extract_end),
-                   'message': f"Transcribing {label} ({i + 1}/{n})..."})
+            emit_progress(extract_end, f"Transcribing {label} ({i + 1}/{n})...")
 
             def on_progress(pct, _lo=extract_end, _w=band_w, _label=label, _i=i):
                 overall = _lo + (pct / 100.0) * (0.90 * _w)
-                _emit({'type': 'progress', 'progress': int(overall),
-                       'message': f"Transcribing {_label} ({_i + 1}/{n})..."})
+                emit_progress(overall, f"Transcribing {_label} ({_i + 1}/{n})...")
 
             out_prefix = os.path.join(_temp_dir, f"track{i}")
             json_path = run_whisper(whisper_bin, whisper_model, wav, out_prefix,
@@ -417,6 +429,7 @@ def transcribe(zip_path, whisper_bin, whisper_model, ffmpeg, language, max_secon
         track_order = {t['id']: i for i, t in enumerate(tracks)}
         all_words.sort(key=lambda w: (track_order[w['track']], w['fileStart']))
 
+        # (final 100% progress emitted after the atomic write below)
         sidecar = {
             'schemaVersion': 1,
             'session': session,
@@ -430,8 +443,7 @@ def transcribe(zip_path, whisper_bin, whisper_model, ffmpeg, language, max_secon
 
         out_path = str(Path(zip_path).parent / f"{session}_transcript.json")
         _atomic_write_json(out_path, sidecar)
-        _emit({'type': 'progress', 'progress': 100,
-               'message': 'Transcription complete'})
+        emit_progress(100, 'Transcription complete')
         _emit({'type': 'success', 'result': {
             'transcriptPath': out_path, 'wordCount': len(all_words), 'tracks': n}})
         return 0
