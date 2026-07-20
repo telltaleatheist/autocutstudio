@@ -178,25 +178,42 @@ export class BinaryResolver {
     return null;
   }
 
+  // Resolved-path caches: resolution validates the binary by SPAWNING it
+  // (`-version`), so re-resolving on every call (e.g. once per waveform peak
+  // extraction) both spams the log and doubles the process spawns. A successful
+  // resolution is stable for the process lifetime; the not-found fallback is NOT
+  // cached so an install completed mid-session gets picked up.
+  private cachedFfmpegPath: string | null = null;
+  private cachedFfprobePath: string | null = null;
+
   /**
    * Get the path to ffmpeg binary
    * Prefers bundled version, falls back to system binary
    */
   getFfmpegPath(): string {
+    if (this.cachedFfmpegPath) return this.cachedFfmpegPath;
+
     // 1. Managed shared download (cross-app OwenMorgan location), validated.
     const managed = assetManager.resolveBinary('ffmpeg-tools', 'ffmpeg');
     if (managed && this.binaryWorks(managed, ['-version'])) {
       log.info(`Using managed ffmpeg: ${managed}`);
+      this.cachedFfmpegPath = managed;
       return managed;
     }
 
     // 2. Bundled binary — but only if it actually runs.
     const bundled = this.findBundledBinary('ffmpeg');
-    if (bundled && this.binaryWorks(bundled, ['-version'])) return bundled;
+    if (bundled && this.binaryWorks(bundled, ['-version'])) {
+      this.cachedFfmpegPath = bundled;
+      return bundled;
+    }
 
     // 3. System binary.
     const system = this.findSystemBinary('ffmpeg');
-    if (system) return system;
+    if (system) {
+      this.cachedFfmpegPath = system;
+      return system;
+    }
 
     // Final fallback - just return 'ffmpeg' and hope it's in PATH
     log.warn('ffmpeg not found in managed, bundled, or system, returning "ffmpeg"');
@@ -208,20 +225,29 @@ export class BinaryResolver {
    * Prefers bundled version, falls back to system binary
    */
   getFfprobePath(): string {
+    if (this.cachedFfprobePath) return this.cachedFfprobePath;
+
     // 1. Managed shared download (cross-app OwenMorgan location), validated.
     const managed = assetManager.resolveBinary('ffmpeg-tools', 'ffprobe');
     if (managed && this.binaryWorks(managed, ['-version'])) {
       log.info(`Using managed ffprobe: ${managed}`);
+      this.cachedFfprobePath = managed;
       return managed;
     }
 
     // 2. Bundled binary — but only if it actually runs.
     const bundled = this.findBundledBinary('ffprobe');
-    if (bundled && this.binaryWorks(bundled, ['-version'])) return bundled;
+    if (bundled && this.binaryWorks(bundled, ['-version'])) {
+      this.cachedFfprobePath = bundled;
+      return bundled;
+    }
 
     // 3. System binary.
     const system = this.findSystemBinary('ffprobe');
-    if (system) return system;
+    if (system) {
+      this.cachedFfprobePath = system;
+      return system;
+    }
 
     log.warn('ffprobe not found in managed, bundled, or system, returning "ffprobe"');
     return 'ffprobe';
