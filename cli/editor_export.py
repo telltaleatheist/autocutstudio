@@ -525,12 +525,11 @@ def _validate_stories(stories_raw, frame_seconds, total_declared):
     return out
 
 
-def _build_story_project(story, kept, parts, frame_seconds, check_align, seq_template, entry_name):
-    """Build one <project> for a story from its kept global intervals. Returns the <project>
-    Element and the collapsed duration (Fraction), or (None, 0) if the story keeps nothing."""
+def _build_story_project(story, kept, collapse, total, parts, frame_seconds, check_align, seq_template, entry_name):
+    """Build one <project> for a story from its kept global intervals, using the story's
+    pre-built collapse ripple. Returns the <project> Element, or None if it keeps nothing."""
     if not kept:
-        return None, Fraction(0)
-    collapse, total = _make_collapse(kept)
+        return None
 
     new_children = []
     base = Fraction(0)
@@ -592,13 +591,125 @@ def _build_story_project(story, kept, parts, frame_seconds, check_align, seq_tem
         raise ManifestError(
             f"{entry_name}: story {story['title']!r}: collapsed content ends at "
             f"{format_time(cursor)} beyond the kept total {format_time(total)}")
-    return project, total
+    return project
 
 
-def apply_stories(tree, entry_name, cuts_raw, stories_raw):
+# ---------------------------------------------------------------------------
+# Per-story transcript export (Content Studio import format)
+# ---------------------------------------------------------------------------
+# When a <session>_transcript.json sidecar sits next to the zip, each emitted story also
+# gets a Content Studio import file. The sidecar's word times (timelineStart/End) live in
+# the SAME declared-concatenated timeline as the story regions/cuts, so the very same
+# collapse ripple that rebases the FCPXML rebases the words — guaranteeing the split video
+# and its transcript stay in lock-step. Format contract: ContentStudio/electron/services/
+# metadata/TRANSCRIPT-IMPORT-FORMAT.md (timebase:"story", 0-based, semantic speaker ids).
+
+def _load_transcript_sidecar(zip_path, frame_seconds):
+    """Load <session>_transcript.json next to the zip, or None if absent. Fails loud if it
+    exists but is malformed or disagrees with the hybrid's frame duration (a real mismatch,
+    never silently skipped)."""
+    p = Path(zip_path).parent / f"{_session_name(zip_path)}_transcript.json"
+    if not p.is_file():
+        return None
+    try:
+        with open(p) as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError) as e:
+        raise ManifestError(f"transcript sidecar {p.name}: cannot read/parse: {e}")
+    if not isinstance(data.get('tracks'), list) or not data['tracks']:
+        raise ManifestError(f"transcript sidecar {p.name}: missing 'tracks'")
+    if not isinstance(data.get('words'), list):
+        raise ManifestError(f"transcript sidecar {p.name}: missing 'words'")
+    fs = data.get('frameSeconds')
+    if not isinstance(fs, (int, float)) or abs(float(fs) - float(frame_seconds)) > 1e-9:
+        raise ManifestError(
+            f"transcript sidecar {p.name}: frameSeconds {fs} disagrees with the hybrid's "
+            f"{float(frame_seconds)} — sidecar and project are from different sources")
+    print(f"[editor_export] transcript sidecar: {p.name} ({len(data['words'])} words)", file=sys.stderr)
+    return data
+
+
+def _speaker_map(tracks):
+    """Map sidecar track ids -> (semantic_id, label) for Content Studio. A track whose label
+    or filename mentions 'screen' becomes 'screen'; the rest are mic, mic2, mic3... in track
+    order. CS infers 'screen' the same way, so these ids round-trip cleanly."""
+    out = {}
+    mic_n = 0
+    for t in tracks:
+        blob = f"{t.get('label') or ''} {t.get('file') or ''}".lower()
+        if 'screen' in blob:
+            out[t['id']] = ('screen', 'Screen audio')
+        else:
+            mic_n += 1
+            out[t['id']] = ('mic', 'Mic') if mic_n == 1 else (f'mic{mic_n}', f'Mic {mic_n}')
+    return out
+
+
+def _build_story_transcript(story, kept, total, sidecar, speaker_map):
+    """Build the Content Studio import doc for one story: keep every word whose MIDPOINT lands
+    in a kept interval (the sidecar's own cut convention) and rebase its times to the story's
+    0-based collapsed timeline by that interval's constant collapse shift."""
+    import bisect
+    starts = [float(s) for (s, _e) in kept]
+    ends = [float(e) for (_s, e) in kept]
+    cum = []
+    acc = Fraction(0)
+    for (s, e) in kept:
+        cum.append(acc)
+        acc += (e - s)
+    shifts = [float(cum[i] - kept[i][0]) for i in range(len(kept))]  # constant per interval
+    total_f = float(total)
+
+    words = []
+    used = {}
+    for w in sidecar['words']:
+        ts = w['timelineStart']
+        te = w['timelineEnd']
+        mid = (ts + te) / 2.0
+        i = bisect.bisect_right(starts, mid) - 1
+        if i < 0 or mid > ends[i]:
+            continue                       # midpoint fell in a cut / outside the story
+        sid, lab = speaker_map[w['track']]
+        used[sid] = lab
+        start = ts + shifts[i]
+        end = te + shifts[i]
+        if start < 0.0:
+            start = 0.0
+        if end > total_f:
+            end = total_f
+        word = {'speaker': sid, 'text': w['text'], 'start': start, 'end': end}
+        if 'prob' in w:
+            word['confidence'] = w['prob']
+        words.append(word)
+    words.sort(key=lambda x: (x['start'], x['end']))
+
+    # speakers in track order, only those that actually appear
+    speakers = []
+    seen = set()
+    for _tid, (sid, lab) in speaker_map.items():
+        if sid in used and sid not in seen:
+            speakers.append({'id': sid, 'label': lab})
+            seen.add(sid)
+
+    return {
+        'formatVersion': 1,
+        'producer': 'AutoCutStudio',
+        'sourceSession': sidecar.get('session'),
+        'story': {'number': story['number'], 'title': story['title'], 'slug': story['slug'],
+                  'startSeconds': float(kept[0][0])},
+        'language': 'en',
+        'durationSeconds': total_f,
+        'timebase': 'story',
+        'speakers': speakers,
+        'words': words,
+    }
+
+
+def apply_stories(tree, entry_name, cuts_raw, stories_raw, sidecar=None):
     """Mutate `tree` in place: replace the part <project>s under <event> with one <project>
     per story (regions minus cuts, collapsed to 0, named by title, ordered by number).
-    Returns a list of per-story result dicts."""
+    Returns a list of per-story result dicts; each carries its Content Studio transcript doc
+    under 'transcript' when a sidecar was supplied and the story kept content."""
     root = tree.getroot()
     parts, frame_seconds, total_declared = _collect_parts(root, entry_name)
     cuts = _validate_cuts(cuts_raw, frame_seconds, total_declared, allow_empty=True)
@@ -610,6 +721,7 @@ def apply_stories(tree, entry_name, cuts_raw, stories_raw):
 
     global_cuts = [(cs, ce) for (_sf, _ef, cs, ce) in cuts]
     seq_template = parts[0]['sequence']
+    speaker_map = _speaker_map(sidecar['tracks']) if sidecar else None
 
     projects = []
     results = []
@@ -620,8 +732,7 @@ def apply_stories(tree, entry_name, cuts_raw, stories_raw):
         for (rs, re) in story['regions']:
             kept.extend(subtract_cuts(rs, re, global_cuts))
         kept.sort()
-        project, total = _build_story_project(
-            story, kept, parts, frame_seconds, check_align, seq_template, entry_name)
+        # Slug is assigned even for empty stories so numbering/keys stay stable.
         slug = story['slug']
         if slug in seen_slugs:
             n = 2
@@ -629,16 +740,25 @@ def apply_stories(tree, entry_name, cuts_raw, stories_raw):
                 n += 1
             slug = f"{slug}-{n}"
         seen_slugs.add(slug)
-        emitted = project is not None
-        if emitted:
+        story = {**story, 'slug': slug}
+
+        if kept:
+            collapse, total = _make_collapse(kept)
+            project = _build_story_project(
+                story, kept, collapse, total, parts, frame_seconds, check_align, seq_template, entry_name)
             projects.append((story['number'], project))
         else:
+            total = Fraction(0)
             print(f"[editor_export] story {story['title']!r} keeps no content (fully overlapped "
                   f"or entirely cut) — not emitted", file=sys.stderr)
-        results.append({
+
+        result = {
             'number': story['number'], 'title': story['title'], 'slug': slug,
-            'durationSeconds': float(total), 'emitted': emitted,
-        })
+            'durationSeconds': float(total), 'emitted': bool(kept),
+        }
+        if kept and sidecar is not None:
+            result['transcript'] = _build_story_transcript(story, kept, total, sidecar, speaker_map)
+        results.append(result)
 
     if not projects:
         raise ManifestError("no story keeps any content: nothing to export")
@@ -671,7 +791,12 @@ def export_stories(zip_path, cuts_raw, stories_raw):
             except ET.ParseError as e:
                 raise ManifestError(f"{entry}: XML parse error: {e}")
 
-    results = apply_stories(tree, entry, cuts_raw, stories_raw)
+    # frame_seconds is needed to validate the sidecar; recover it the same way apply_stories
+    # does (cheap — _collect_parts is pure and side-effect-free on the tree).
+    _parts, frame_seconds, _td = _collect_parts(tree.getroot(), entry)
+    sidecar = _load_transcript_sidecar(zip_path, frame_seconds)
+
+    results = apply_stories(tree, entry, cuts_raw, stories_raw, sidecar)
 
     out_path = zp.parent / f"{_session_name(zip_path)}_HYBRID_stories.fcpxml"
     if out_path.exists():
@@ -680,11 +805,28 @@ def export_stories(zip_path, cuts_raw, stories_raw):
     emitted = sum(1 for r in results if r['emitted'])
     print(f"[editor_export] wrote {out_path} ({emitted}/{len(results)} stories emitted)", file=sys.stderr)
 
+    # Per-story transcript files (Content Studio import format), grouped in a sibling folder.
+    tx_dir = zp.parent / f"{_session_name(zip_path)}_stories_transcripts"
+    for r in results:
+        doc = r.pop('transcript', None)
+        if doc is None:
+            continue
+        tx_dir.mkdir(exist_ok=True)
+        tx_path = tx_dir / f"{r['number']:02d}-{r['slug']}.json"
+        tmp = tx_path.with_suffix('.json.tmp')
+        with open(tmp, 'w') as fh:
+            json.dump(doc, fh, ensure_ascii=False, indent=2)
+        tmp.replace(tx_path)
+        r['transcriptPath'] = str(tx_path)
+        r['wordCount'] = len(doc['words'])
+        print(f"[editor_export] wrote transcript {tx_path.name} ({len(doc['words'])} words)", file=sys.stderr)
+
     return {
         'type': 'story_export_result',
         'path': str(out_path),
         'storiesEmitted': emitted,
         'stories': results,
+        'transcriptsDir': str(tx_dir) if any('transcriptPath' in r for r in results) else None,
     }
 
 
