@@ -255,6 +255,15 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // canonicalized (merged) at grab time so regionIndex addresses story.regions directly.
   private draggingStoryEdge: { storyId: string; regionIndex: number; edge: 'start' | 'end' } | null = null;
 
+  // ── Snapping (story edges + range highlighting stick to cut boundaries) ──────
+  // Snap radius in CSS px (converted to seconds at the current zoom in snapEdited).
+  private readonly SNAP_PX = 8;
+  // Sorted, deduped snap targets in EDITED seconds: video-track clip edges (auto-editor
+  // cuts; segments split at kept boundaries so user-cut seams are edges too), the kept
+  // seams themselves (covers seams inside clip gaps), and the timeline ends. Rebuilt with
+  // the edit model; blade boundaries are folded in live (they mutate independently).
+  private snapPoints: number[] = [];
+
   // ── Tools + blade (FCPX Arrow / Blade) ──────────────────────────────────────
   // The active pointer tool. Blade drops boundaries that subdivide the timeline into
   // sections; clicking a section (either tool) selects it for a ripple delete.
@@ -622,9 +631,54 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       // Output is already sorted (segs sorted, kept sorted, non-overlapping).
       this.segsByTrack.set(trackId, out);
     }
+    this.rebuildSnapPoints();
     // Transcript group visibility + edited timecodes depend on the cut model — re-derive
     // them here so they stay in lockstep with every cut/undo/redo (no-op before load).
     this.recomputeVisibleGroups();
+  }
+
+  /** Rebuild the sorted/deduped snap-target list (see snapPoints). */
+  private rebuildSnapPoints(): void {
+    const pts: number[] = [0, this.editedDuration];
+    const videoTrack = this.manifest?.tracks.find(tr => tr.kind === 'video');
+    const segs = videoTrack ? this.segsByTrack.get(videoTrack.id) : undefined;
+    if (segs) {
+      for (const s of segs) { pts.push(s.timelineStart, s.timelineStart + s.duration); }
+    }
+    for (const iv of this.keptIntervals) { pts.push(iv.es, iv.ee); }
+    pts.sort((a, b) => a - b);
+    const out: number[] = [];
+    for (const p of pts) {
+      if (out.length === 0 || p - out[out.length - 1] > this.EPS) out.push(p);
+    }
+    this.snapPoints = out;
+  }
+
+  /**
+   * Snap an EDITED-seconds time to the nearest cut boundary (clip edge / cut seam / blade)
+   * within SNAP_PX at the current zoom. `bypass` (the Option key during a drag) disables it.
+   */
+  private snapEdited(t: number, bypass = false): number {
+    if (bypass) return t;
+    let best = t;
+    let bestD = this.SNAP_PX / this.pxPerSec;
+    const pts = this.snapPoints;
+    if (pts.length > 0) {
+      // Binary-search the insertion point, then only its neighbors can be nearest.
+      let lo = 0, hi = pts.length - 1;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (pts[mid] < t) lo = mid + 1; else hi = mid; }
+      for (const i of [lo - 1, lo, lo + 1]) {
+        if (i < 0 || i >= pts.length) continue;
+        const d = Math.abs(pts[i] - t);
+        if (d < bestD) { bestD = d; best = pts[i]; }
+      }
+    }
+    for (const b of this.bladeBoundaries) {          // few — linear is fine
+      const e = this.originalToEdited(b);
+      const d = Math.abs(e - t);
+      if (d < bestD) { bestD = d; best = e; }
+    }
+    return best;
   }
 
   /** EDITED seconds → ORIGINAL seconds (piecewise, binary-searched over keptIntervals). */
@@ -1420,8 +1474,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       // Shift+drag paints a single free range (edited seconds) instead of scrubbing — a manual
       // range that replaces any marquee selection, so a group highlight no longer applies.
       this.selectedRanges = [];
-      this.selStart = t;
-      this.selEnd = t;
+      this.selStart = this.snapEdited(t, ev.altKey);
+      this.selEnd = this.selStart;
       this.selectedGroupStart = null;
       this.selectedGroupEnd = null;
       this.draggingSelection = true;
@@ -1453,8 +1507,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.marqueeActive = true;
       this.marqueeMoved = false;
       this.marqueeForStory = true;
-      this.marqueeStartTime = t;
-      this.marqueeEndTime = t;
+      this.marqueeStartTime = this.snapEdited(t, ev.altKey);
+      this.marqueeEndTime = this.marqueeStartTime;
       window.addEventListener('mousemove', this.onWindowMouseMove);
       window.addEventListener('mouseup', this.onWindowMouseUp);
       this.requestRender();
@@ -1480,8 +1534,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       }
       this.marqueeActive = true;
       this.marqueeMoved = false;
-      this.marqueeStartTime = t;
-      this.marqueeEndTime = t;
+      this.marqueeStartTime = this.snapEdited(t, ev.altKey);
+      this.marqueeEndTime = this.marqueeStartTime;
       window.addEventListener('mousemove', this.onWindowMouseMove);
       window.addEventListener('mouseup', this.onWindowMouseUp);
       this.requestRender();
@@ -1604,9 +1658,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private onWindowMouseMove = (ev: MouseEvent): void => {
     if (this.draggingStoryEdge) { this.updateStoryEdgeDrag(ev); }
-    else if (this.draggingSelection) { this.selEnd = this.canvasEventTime(ev); this.requestRender(); }
+    else if (this.draggingSelection) { this.selEnd = this.snapEdited(this.canvasEventTime(ev), ev.altKey); this.requestRender(); }
     else if (this.marqueeActive) {
-      this.marqueeEndTime = this.canvasEventTime(ev);
+      this.marqueeEndTime = this.snapEdited(this.canvasEventTime(ev), ev.altKey);
       // Promote to a real marquee only past a small pixel threshold, so a jittery click stays
       // a click (section select) instead of collapsing the selection to a hairline range.
       if (Math.abs(this.timeToX(this.marqueeEndTime) - this.timeToX(this.marqueeStartTime)) > 3) {
@@ -2331,8 +2385,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return null;
   }
 
-  /** Live update of a grabbed story-region edge: pointer time (mapped to ORIGINAL seconds),
-   *  clamped to the timeline and to one frame of minimum region width. */
+  /** Live update of a grabbed story-region edge: pointer time SNAPPED to the nearest cut
+   *  boundary (Option bypasses), mapped to ORIGINAL seconds, clamped to the timeline and to
+   *  one frame of minimum region width. */
   private updateStoryEdgeDrag(ev: MouseEvent): void {
     const drag = this.draggingStoryEdge!;
     const story = this.stories.find(s => s.id === drag.storyId);
@@ -2340,7 +2395,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!story || !region) { this.draggingStoryEdge = null; return; }
     const fs = this.manifest?.frameSeconds || (1001 / 30000);
     const durOrig = this.manifest?.timelineDuration || 0;
-    const t = Math.min(durOrig, Math.max(0, this.editedToOriginal(this.canvasEventTime(ev))));
+    const tEdited = this.snapEdited(this.canvasEventTime(ev), ev.altKey);
+    const t = Math.min(durOrig, Math.max(0, this.editedToOriginal(tEdited)));
     if (drag.edge === 'start') {
       region.start = Math.max(0, Math.min(t, region.end - fs));
     } else {
