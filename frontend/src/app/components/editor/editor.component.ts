@@ -65,6 +65,8 @@ interface TranscriptGroupView {
   text: string;
   originalStart: number;   // min word timelineStart (ORIGINAL seconds) — selection lo + seek target
   originalEnd: number;     // max word timelineEnd (ORIGINAL seconds) — selection hi
+  editedStart: number;     // originalStart mapped through cuts (EDITED seconds) — karaoke follow
+  editedEnd: number;       // originalEnd mapped through cuts (EDITED seconds)
   timecode: string;
 }
 /** Transcript pane lifecycle: button / progress+cancel / preview / verbatim error. */
@@ -154,6 +156,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   @ViewChild('timelineCanvas') canvasRef!: ElementRef<HTMLCanvasElement>;
   @ViewChild('viewerVideo') viewerVideoRef!: ElementRef<HTMLVideoElement>;
   @ViewChild('topRegion') topRegionRef?: ElementRef<HTMLElement>;
+  @ViewChild('txGroupsEl') txGroupsRef?: ElementRef<HTMLElement>;
 
   // ── Resizable layout (FCPX-style panes) ─────────────────────────────────────
   // splitV: fraction of the top region's WIDTH given to the transcript (left) pane.
@@ -321,6 +324,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // cut-aware, timecoded projection the template renders — recomputed whenever cuts change.
   private transcriptGroups: TranscriptGroup[] = [];
   visibleGroups: TranscriptGroupView[] = [];
+  // Index into visibleGroups of the line the playhead currently sits in (-1 = before the
+  // first line). Drives the karaoke highlight and the auto-scroll while playing.
+  activeGroupIdx = -1;
+  private lastScrolledGroupIdx = -1;
   transcriptWordCount = 0;
   transcriptError = '';                       // verbatim failure message (Python's or a parse error)
   // Running-job UI + the id used to filter progress/complete events against stale sessions.
@@ -349,6 +356,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private peaksInFlight = new Set<string>();
   private peaksActive = 0;
   private peaksQueue: Array<() => Promise<void>> = [];
+  // Determinate progress for the current extraction burst (surfaced in the Activity window).
+  // A burst starts when work is requested with nothing outstanding; done/total climb as
+  // ffmpeg extractions land. New clips scrolling into a live burst extend `total`.
+  peaksBurstTotal = 0;
+  peaksBurstDone = 0;
+
+  // ── Activity window (FCPX-style background-task HUD) ─────────────────────────
+  activityOpen = false;
 
   // ── Playback ────────────────────────────────────────────────────────────────
   isPlaying = false;
@@ -500,6 +515,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.peaksCache.clear();
     this.peaksInFlight.clear();
     this.peaksQueue = [];   // queued (not yet started) extractions for the old session
+    this.peaksBurstTotal = 0;
+    this.peaksBurstDone = 0;
+    this.activeGroupIdx = -1;
+    this.lastScrolledGroupIdx = -1;
+    this.activityOpen = false;
     this.playheadTime = 0;
     this.scrollOffset = 0;
     this.errorMessage = '';
@@ -1270,6 +1290,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const cached = this.peaksCache.get(key);
     if (cached) return cached;
     if (!this.peaksInFlight.has(key)) {
+      // Fresh burst? (nothing running or queued) — restart the progress counters so the
+      // Activity window shows this batch from 0, not a stale carry-over.
+      if (this.peaksActive === 0 && this.peaksQueue.length === 0) {
+        this.peaksBurstTotal = 0;
+        this.peaksBurstDone = 0;
+      }
+      this.peaksBurstTotal++;
       this.peaksInFlight.add(key);
       this.peaksQueue.push(async () => {
         try {
@@ -1288,6 +1315,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
           console.error(`Peak extraction failed for ${seg.file} [${seg.sourceStart}s +${seg.duration}s]:`, err?.message || err);
         } finally {
           this.peaksInFlight.delete(key);
+          this.peaksBurstDone++;
         }
       });
       this.pumpPeaksQueue();
@@ -1848,6 +1876,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     } else {
       this.seekViewerToPlayhead();
     }
+    this.updateActiveGroup(true);   // keep the transcript highlight under the playhead
     this.requestRender();
   }
 
@@ -2793,10 +2822,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         text: g.text,
         originalStart: g.originalStart,
         originalEnd: g.originalEnd,
+        editedStart,
+        editedEnd: this.originalToEdited(g.originalEnd),
         timecode: this.formatTimecode(editedStart),
       });
     }
     this.visibleGroups = out;
+    // The list (and its indices) just changed — re-resolve which line the playhead sits in.
+    this.updateActiveGroup(false);
   }
 
   /** Filter-chip select: switch the shown source track (or 'merged') and recompute. */
@@ -2947,6 +2980,64 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return this.visibleGroups.length;
   }
 
+  /**
+   * Resolve which transcript line the playhead sits in and, while playing, keep it scrolled
+   * into view (karaoke follow). visibleGroups is in ascending edited-time order, so the active
+   * line is the last one whose editedStart is at/before the playhead. `allowScroll` is false for
+   * pure re-index passes (e.g. a filter change) so we never yank the list while the user reads.
+   */
+  private updateActiveGroup(allowScroll: boolean): void {
+    const t = this.playheadTime;
+    let idx = -1;
+    const groups = this.visibleGroups;
+    for (let i = 0; i < groups.length; i++) {
+      if (groups[i].editedStart <= t + this.EPS) idx = i;
+      else break;
+    }
+    if (idx !== this.activeGroupIdx) {
+      this.activeGroupIdx = idx;
+    }
+    // Only chase the highlight down the list during playback, and only when it actually moved.
+    if (allowScroll && this.isPlaying && idx >= 0 && idx !== this.lastScrolledGroupIdx) {
+      this.lastScrolledGroupIdx = idx;
+      this.scrollActiveGroupIntoView(idx);
+    }
+  }
+
+  /** Scroll the transcript list so line `idx` sits ~a third from the top (only its container). */
+  private scrollActiveGroupIntoView(idx: number): void {
+    const cont = this.txGroupsRef?.nativeElement;
+    if (!cont) return;
+    const child = cont.children[idx] as HTMLElement | undefined;
+    if (!child) return;
+    const top = child.offsetTop;
+    const bottom = top + child.offsetHeight;
+    if (top < cont.scrollTop || bottom > cont.scrollTop + cont.clientHeight) {
+      cont.scrollTop = Math.max(0, top - cont.clientHeight * 0.35);
+    }
+  }
+
+  // ── Activity window (background-task HUD) ───────────────────────────────────
+  /** Waveform peaks are still being extracted (queued or running ffmpeg). */
+  get waveformActive(): boolean {
+    return this.peaksActive > 0 || this.peaksQueue.length > 0;
+  }
+
+  /** Determinate % for the current waveform-extraction burst (0 when idle). */
+  get waveformPct(): number {
+    if (this.peaksBurstTotal <= 0) return 0;
+    return Math.min(100, Math.round((this.peaksBurstDone / this.peaksBurstTotal) * 100));
+  }
+
+  /** Anything worth a spinner: transcription, export, or waveform analysis in flight. */
+  get hasBackgroundActivity(): boolean {
+    return this.transcriptState === 'running' || this.exporting || this.waveformActive;
+  }
+
+  toggleActivity(): void {
+    this.activityOpen = !this.activityOpen;
+  }
+
   // ── Playback (element-based jump-cuts) ──────────────────────────────────────
   // Variable-speed transport (FCPX-style JKL). L steps the speed UP through L_SPEEDS,
   // J steps it DOWN (slow) through J_SPEEDS, K/Space toggle play/pause. Pausing resets
@@ -3041,6 +3132,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
     this.playheadTime = t;
     this.syncElements(t, true);
+    this.updateActiveGroup(true);   // karaoke: advance + scroll the transcript highlight
     this.requestRender();
     this.rafId = requestAnimationFrame(this.tick);
   };

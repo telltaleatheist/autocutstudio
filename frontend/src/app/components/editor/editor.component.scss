@@ -130,43 +130,6 @@
     &.open { background: #2f2f34; }
   }
 
-  // Story Mode toggle: deliberately BIGGER than the other top-bar controls, with a status
-  // dot — it changes what every timeline drag does, so it must read at a glance.
-  .story-mode-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    font-size: 13px;
-    font-weight: 700;
-    letter-spacing: 0.02em;
-    color: #d8d8dc;
-    background: #3a3a40;
-    border: 1px solid #0d0d0e;
-    border-radius: 6px;
-    padding: 7px 16px;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: background 0.12s ease, color 0.12s ease;
-
-    .smb-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: #6f6f77;
-      transition: background 0.12s ease, box-shadow 0.12s ease;
-    }
-
-    &:hover { background: #47474e; }
-
-    &.on {
-      background: #e8a33d;
-      color: #201704;
-      border-color: #b57e26;
-      .smb-dot { background: #201704; box-shadow: 0 0 6px rgba(32, 23, 4, 0.5); }
-      &:hover { background: #eeb051; }
-    }
-  }
-
   .menu-dropdown {
     position: absolute;
     top: calc(100% + 5px);
@@ -533,6 +496,7 @@
   .pane-tabs {
     flex: 0 0 auto;
     display: flex;
+    align-items: stretch;
     background: #1b1b1e;
     border-bottom: 1px solid #0d0d0e;
 
@@ -551,6 +515,43 @@
 
       &:hover { color: #c8c8cd; }
       &.active { color: #e8a33d; border-bottom-color: #e8a33d; }
+    }
+
+    /* Background-activity button — opens the HUD. Pulses while work is in flight. */
+    .pane-activity-btn {
+      position: relative;
+      flex: 0 0 auto;
+      width: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: #8f8f97;
+      cursor: pointer;
+      transition: color 0.12s ease;
+
+      &:hover { color: #c8c8cd; }
+      &.on { color: #e8a33d; border-bottom-color: #e8a33d; }
+
+      .activity-ico { font-size: 14px; line-height: 1; }
+
+      &.busy .activity-ico {
+        color: #4a9eff;
+        animation: activity-spin 1.6s linear infinite;
+      }
+
+      .activity-dot {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #4a9eff;
+        box-shadow: 0 0 5px rgba(74, 158, 255, 0.8);
+      }
     }
   }
 
@@ -797,39 +798,62 @@
     }
 
     .tx-groups {
+      position: relative;   /* offsetTop base for karaoke auto-scroll */
       flex: 1 1 auto;
       min-height: 0;
       overflow-y: auto;
       overflow-x: hidden;
-      padding: 6px 8px;
+      padding: 10px 10px 24px;
+      scroll-behavior: smooth;
 
       .tx-group {
-        padding: 9px 12px;
-        margin: 0;
+        position: relative;
+        padding: 10px 14px 11px 16px;
+        margin: 0 0 6px;
         cursor: pointer;
-        border-radius: 6px;
+        border-radius: 8px;
         border: 1px solid transparent;
-        transition: background 0.1s ease, border-color 0.1s ease;
+        /* Left accent rail — colored by speaker, revealed on hover/active. */
+        transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
 
-        & + .tx-group { margin-top: 2px; }
-
-        /* Hairline separators between cards (skipped for the selected/hover state). */
-        &:not(.selected):not(:hover) + .tx-group:not(.selected):not(:hover) {
-          border-top-color: #2a2a2e;
+        &::before {
+          content: '';
+          position: absolute;
+          left: 0;
+          top: 8px;
+          bottom: 8px;
+          width: 3px;
+          border-radius: 2px;
+          background: transparent;
+          transition: background 0.12s ease;
         }
 
-        &:hover { background: #2a2a2f; }
+        &:hover {
+          background: #2a2a30;
+          &::before { background: #45454c; }
+        }
 
         &.selected {
           background: rgba(245, 197, 24, 0.10);
-          border-color: rgba(245, 197, 24, 0.55);
+          border-color: rgba(245, 197, 24, 0.45);
+        }
+
+        /* Karaoke: the line under the playhead while listening. Warm wash + glowing rail. */
+        &.now-playing {
+          background: rgba(74, 158, 255, 0.14);
+          border-color: rgba(74, 158, 255, 0.5);
+          box-shadow: 0 0 0 1px rgba(74, 158, 255, 0.15);
+          &::before { background: #4a9eff; box-shadow: 0 0 8px rgba(74, 158, 255, 0.7); }
+
+          .tx-group-text { color: #f4f4f7; }
+          .tx-speaker { color: #cfe4ff; }
         }
 
         .tx-group-head {
           display: flex;
           align-items: center;
-          gap: 7px;
-          margin-bottom: 4px;
+          gap: 8px;
+          margin-bottom: 5px;
 
           .tx-dot {
             flex: 0 0 auto;
@@ -838,24 +862,26 @@
             border-radius: 50%;
           }
           .tx-speaker {
-            font-size: 11px;
-            font-weight: 600;
-            color: #b8b8be;
-            letter-spacing: 0.01em;
+            font-size: 10.5px;
+            font-weight: 700;
+            text-transform: uppercase;
+            color: #9a9aa2;
+            letter-spacing: 0.06em;
           }
           .tx-tc {
             margin-left: auto;
-            font-size: 10px;
+            font-size: 10.5px;
             font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
-            color: #7a7a80;
+            font-variant-numeric: tabular-nums;
+            color: #74747a;
             letter-spacing: 0.02em;
           }
         }
         .tx-group-text {
-          font-size: 13.5px;
-          line-height: 1.5;
-          color: #dcdce0;
-          max-width: 62ch;
+          font-size: 14px;
+          line-height: 1.62;
+          color: #d2d2d8;
+          max-width: 68ch;
           word-break: break-word;
           white-space: normal;
         }
@@ -915,6 +941,35 @@
   background: #000;
 }
 
+/* Transport row under the viewer: play/pause + timecode, centered together. */
+.transport-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+
+  .play-btn {
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: #2c2c30;
+    border: 1px solid #3a3a40;
+    color: #e6e6ea;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease, transform 0.05s ease;
+
+    &:hover { background: #37373d; border-color: #4a4a52; }
+    &:active { transform: scale(0.94); }
+
+    .play-ico { font-size: 15px; line-height: 1; }
+  }
+}
+
 .timecode {
   flex: 0 0 auto;
   font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
@@ -947,6 +1002,50 @@
   flex-direction: column;
   background: #232326;
   border-top: 1px solid #0d0d0e;
+}
+
+/* Toolbar strip above the ruler: Select / Blade tools live here now (was the footer). */
+.timeline-toolbar {
+  flex: 0 0 auto;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  background: #202022;
+  border-bottom: 1px solid #0d0d0e;
+
+  /* Cursor / Blade tool toggle (A / B). */
+  .tool-toggle {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 2px;
+
+    .tool-btn {
+      width: 30px;
+      height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #2c2c30;
+      border: 1px solid #3a3a40;
+      color: #b0b0b6;
+      cursor: pointer;
+      padding: 0;
+      transition: background 0.1s ease, color 0.1s ease, border-color 0.1s ease;
+
+      &:first-child { border-radius: 4px 0 0 4px; }
+      &:last-child { border-radius: 0 4px 4px 0; border-left: none; }
+
+      &:hover { background: #37373d; color: #d8d8dc; }
+      &.active {
+        background: #3fd6e0;
+        border-color: #3fd6e0;
+        color: #04252a;
+      }
+
+      .tool-ico { font-size: 13px; line-height: 1; }
+    }
+  }
 }
 
 .timeline-body {
@@ -1039,39 +1138,6 @@
   background: #202022;
   border-top: 1px solid #0d0d0e;
 
-  /* Cursor / Blade tool toggle (A / B). */
-  .tool-toggle {
-    flex: 0 0 auto;
-    display: flex;
-    gap: 2px;
-
-    .tool-btn {
-      width: 24px;
-      height: 18px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: #2c2c30;
-      border: 1px solid #3a3a40;
-      color: #b0b0b6;
-      cursor: pointer;
-      padding: 0;
-      transition: background 0.1s ease, color 0.1s ease, border-color 0.1s ease;
-
-      &:first-child { border-radius: 4px 0 0 4px; }
-      &:last-child { border-radius: 0 4px 4px 0; border-left: none; }
-
-      &:hover { background: #37373d; color: #d8d8dc; }
-      &.active {
-        background: #3fd6e0;
-        border-color: #3fd6e0;
-        color: #04252a;
-      }
-
-      .tool-ico { font-size: 11px; line-height: 1; }
-    }
-  }
-
   .scrollbar-track {
     position: relative;
     flex: 1 1 auto;
@@ -1107,4 +1173,124 @@
       cursor: pointer;
     }
   }
+}
+
+/* ── Background-activity HUD (FCPX-style) ─────────────────────────────────────── */
+@keyframes activity-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Transparent full-window catcher so an outside click closes the HUD. */
+.activity-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 190;
+}
+
+.activity-window {
+  position: fixed;
+  top: 78px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+  width: min(360px, 92vw);
+  background: #1f1f23;
+  border: 1px solid #0d0d0e;
+  border-radius: 10px;
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+
+  .activity-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 9px 10px 9px 14px;
+    background: #26262a;
+    border-bottom: 1px solid #0d0d0e;
+
+    .activity-title {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      color: #d8d8dc;
+    }
+    .activity-close {
+      font-size: 16px;
+      line-height: 1;
+      padding: 2px 6px;
+      color: #7a7a80;
+      background: none;
+      border: none;
+      cursor: pointer;
+      &:hover { color: #e8e8ea; }
+    }
+  }
+
+  .activity-body {
+    padding: 12px 14px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .activity-task {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+
+    .activity-task-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+    }
+    .activity-task-name {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: #dcdce0;
+    }
+    .activity-task-pct {
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      color: #8f8f97;
+    }
+    .activity-task-sub {
+      font-size: 11px;
+      color: #82828a;
+      line-height: 1.4;
+    }
+  }
+
+  .activity-bar {
+    height: 6px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+
+    .activity-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #4a9eff, #6fb4ff);
+      border-radius: 4px;
+      transition: width 0.25s ease;
+    }
+
+    /* Export has no measurable %, so run an indeterminate sweep. */
+    &.indeterminate .activity-bar-fill {
+      width: 40%;
+      animation: activity-sweep 1.1s ease-in-out infinite;
+    }
+  }
+
+  .activity-idle {
+    font-size: 12px;
+    color: #6c6c72;
+    text-align: center;
+    padding: 6px 0 2px;
+  }
+}
+
+@keyframes activity-sweep {
+  0% { margin-left: -40%; }
+  100% { margin-left: 100%; }
 }

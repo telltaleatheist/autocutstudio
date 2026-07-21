@@ -36,10 +36,6 @@
       {{ cuts.length }} {{ cuts.length === 1 ? 'cut' : 'cuts' }} · {{ removedLabel }} removed
     </span>
     <span class="topbar-spacer"></span>
-    <button class="story-mode-btn" [class.on]="storyMode" (click)="toggleStoryMode()"
-            [title]="storyMode ? 'Exit story mode (S)' : 'Enter story mode — drag to mark stories (S)'">
-      <span class="smb-dot"></span> Story Mode
-    </button>
   </header>
 
   <!-- Invisible backdrop: an outside click closes the File menu. -->
@@ -101,6 +97,48 @@
     </div>
   </div>
 
+  <!-- Background activity HUD (FCPX-style). Opened from the button in the Edit/Stories tab row;
+       an outside click dismisses it. Lists whatever is running: transcription, export, waveform
+       analysis — or nothing. -->
+  <div class="activity-backdrop" *ngIf="activityOpen" (click)="activityOpen = false"></div>
+  <div class="activity-window" *ngIf="activityOpen">
+    <div class="activity-head">
+      <span class="activity-title">Background Activity</span>
+      <button class="activity-close" (click)="activityOpen = false" title="Close">×</button>
+    </div>
+    <div class="activity-body">
+      <!-- Transcription. -->
+      <div class="activity-task" *ngIf="transcriptState === 'running'">
+        <div class="activity-task-row">
+          <span class="activity-task-name">Transcribing</span>
+          <span class="activity-task-pct">{{ transcribeProgress }}%</span>
+        </div>
+        <div class="activity-bar"><div class="activity-bar-fill" [style.width.%]="transcribeProgress"></div></div>
+        <div class="activity-task-sub">{{ transcribeMessage }}<span *ngIf="transcribeEtaLabel"> · {{ transcribeEtaLabel }}</span></div>
+      </div>
+
+      <!-- Export. -->
+      <div class="activity-task" *ngIf="exporting">
+        <div class="activity-task-row">
+          <span class="activity-task-name">Exporting</span>
+        </div>
+        <div class="activity-bar indeterminate"><div class="activity-bar-fill"></div></div>
+      </div>
+
+      <!-- Waveform analysis. -->
+      <div class="activity-task" *ngIf="waveformActive">
+        <div class="activity-task-row">
+          <span class="activity-task-name">Analyzing waveforms</span>
+          <span class="activity-task-pct">{{ waveformPct }}%</span>
+        </div>
+        <div class="activity-bar"><div class="activity-bar-fill" [style.width.%]="waveformPct"></div></div>
+        <div class="activity-task-sub">{{ peaksBurstDone }} / {{ peaksBurstTotal }} clips</div>
+      </div>
+
+      <div class="activity-idle" *ngIf="!hasBackgroundActivity">No background activity.</div>
+    </div>
+  </div>
+
   <!-- Top region: project picker | transcript | viewer, with two vertical splitters. -->
   <section class="top-region" #topRegion>
     <!-- Project picker (far-left FCPX-libraries column). Shares 'editor.recentSessions'
@@ -132,6 +170,12 @@
         <button class="pane-tab" [class.active]="!storyMode" (click)="setStoryMode(false)">Edit</button>
         <button class="pane-tab" [class.active]="storyMode" (click)="setStoryMode(true)">
           Stories<ng-container *ngIf="hasStories()"> ({{ stories.length }})</ng-container>
+        </button>
+        <button class="pane-activity-btn" [class.busy]="hasBackgroundActivity"
+                [class.on]="activityOpen" (click)="toggleActivity()"
+                title="Background activity — transcription, export, waveform analysis">
+          <span class="activity-ico">◴</span>
+          <span class="activity-dot" *ngIf="hasBackgroundActivity"></span>
         </button>
       </div>
 
@@ -212,9 +256,10 @@
             <button class="tx-retranscribe" (click)="startTranscription()">re-transcribe</button>
           </div>
         </div>
-        <div class="tx-groups">
-          <div class="tx-group" *ngFor="let g of visibleGroups"
+        <div class="tx-groups" #txGroupsEl>
+          <div class="tx-group" *ngFor="let g of visibleGroups; let i = index"
                [class.selected]="isGroupSelected(g)"
+               [class.now-playing]="i === activeGroupIdx"
                (click)="selectGroup(g)" title="Select on timeline">
             <div class="tx-group-head">
               <span class="tx-dot" [style.background]="g.color"></span>
@@ -237,7 +282,14 @@
       <div class="viewer-box">
         <video #viewerVideo class="viewer-video" muted playsinline></video>
       </div>
-      <div class="timecode">{{ timecode }}<span class="speed-badge" *ngIf="isPlaying && playbackRate !== 1"> · {{ playbackRate }}×</span></div>
+      <div class="transport-bar">
+        <button class="play-btn" (click)="togglePlayback()"
+                [title]="isPlaying ? 'Pause (Space)' : 'Play (Space)'"
+                [attr.aria-label]="isPlaying ? 'Pause' : 'Play'">
+          <span class="play-ico">{{ isPlaying ? '⏸' : '▶' }}</span>
+        </button>
+        <div class="timecode">{{ timecode }}<span class="speed-badge" *ngIf="isPlaying && playbackRate !== 1"> · {{ playbackRate }}×</span></div>
+      </div>
       <div class="transport-error" *ngIf="transportError">{{ transportError }}</div>
     </section>
   </section>
@@ -248,6 +300,19 @@
 
   <!-- Timeline pane. -->
   <section class="timeline-pane" [style.flexBasis.%]="splitH * 100">
+    <!-- Toolbar strip above the ruler: Select / Blade tools. -->
+    <div class="timeline-toolbar">
+      <div class="tool-toggle">
+        <button class="tool-btn" [class.active]="toolMode === 'select'"
+                (click)="setTool('select')" title="Select (A)" aria-label="Select tool">
+          <span class="tool-ico">⌖</span>
+        </button>
+        <button class="tool-btn" [class.active]="toolMode === 'blade'"
+                (click)="setTool('blade')" title="Blade (B)" aria-label="Blade tool">
+          <span class="tool-ico">▮</span>
+        </button>
+      </div>
+    </div>
     <div class="timeline-body">
       <!-- Track-header gutter. -->
       <div class="track-gutter" [style.width.px]="GUTTER_W">
@@ -276,18 +341,8 @@
       </div>
     </div>
 
-    <!-- Footer: tool toggle (left) + scrollbar + zoom (right). -->
+    <!-- Footer: scrollbar + zoom. -->
     <div class="timeline-footer">
-      <div class="tool-toggle">
-        <button class="tool-btn" [class.active]="toolMode === 'select'"
-                (click)="setTool('select')" title="Select (A)" aria-label="Select tool">
-          <span class="tool-ico">⌖</span>
-        </button>
-        <button class="tool-btn" [class.active]="toolMode === 'blade'"
-                (click)="setTool('blade')" title="Blade (B)" aria-label="Blade tool">
-          <span class="tool-ico">▮</span>
-        </button>
-      </div>
       <div class="scrollbar-track">
         <div class="scrollbar-thumb"
              [style.left.%]="scrollbarThumb.left"
