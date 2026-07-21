@@ -42,8 +42,9 @@ export class WorkflowComponent implements OnInit, OnDestroy {
   // Voice isolation (audio-separator) — isolate the speaker's voice on mic1/mic2
   // before alignment. Install-gated: the toggle only appears once the optional
   // 'voice-separator-env' component is installed; until then we show an Install
-  // affordance. Defaults CHECKED so it's on by default once available.
-  denoiseMics = true;
+  // affordance. Defaults UNCHECKED: the isolation pass needs more work before it
+  // is ready to run by default (opt in per run for now).
+  denoiseMics = false;
   separatorInstalled = false;
   separatorStatus: any = null;        // ComponentStatus for size/state
   separatorInstalling = false;
