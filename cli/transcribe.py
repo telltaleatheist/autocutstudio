@@ -525,14 +525,45 @@ def extract_wav(ffmpeg, src_file, dst_wav, max_seconds):
         raise TranscribeError(f"ffmpeg produced no wav for {src_file}")
 
 
+def _warn_repetition_loops(track_id, label, words, min_reps=10):
+    """Post-transcription tripwire: scan a track's mapped words for a phrase (2..15 words)
+    repeated >= min_reps times CONSECUTIVELY — the signature of a whisper hallucination
+    loop. Real speech repeats a few times; ten identical consecutive phrases is decoding
+    pathology. WARNS loudly on stderr (never silently ships a poisoned transcript); it is
+    not an error because chants/song choruses can legitimately trip it."""
+    texts = [w['text'].strip().lower() for w in words]
+    for n in range(2, 16):
+        i = 0
+        while i + 2 * n <= len(texts):
+            reps = 1
+            while i + (reps + 1) * n <= len(texts) and texts[i:i + n] == texts[i + reps * n:i + (reps + 1) * n]:
+                reps += 1
+            if reps >= min_reps:
+                phrase = ' '.join(texts[i:i + n])
+                at = words[i]['fileStart']
+                print(f"[transcribe] WARNING: track {track_id} ({label}) repeats "
+                      f"{phrase!r} {reps}x consecutively starting at file {at:.1f}s — "
+                      f"possible whisper hallucination loop; review this region",
+                      file=sys.stderr)
+                i += reps * n
+            else:
+                i += 1
+
+
 def run_whisper(whisper_bin, model, wav, out_prefix, language, on_progress):
     """Run whisper-cli producing <out_prefix>.json. Streams stderr, calling
     on_progress(pct) as whisper reports 'progress = NN%'. Returns the JSON path."""
     global _current_proc
     # -ojf (full JSON) INSTEAD of -oj: same <out_prefix>.json output plus per-word token
     # 'p' probabilities. Exact Metal-binary arg string, probed once (see module header).
+    # -mc 0 (--max-context 0): do NOT condition each 30s window on the previous window's
+    # text. Conditioning is whisper's repetition-loop vector: one real utterance ("and
+    # we're seeing the same thing in the UK") seeded a self-reinforcing loop that repeated
+    # 600+ times across ~25 minutes of the screen track, steamrolling real speech.
+    # Verified on the exact production compact wav: 678 loop phrases -> 2 (the real
+    # utterance), while NET real words INCREASED (the loop had been replacing dialogue).
     cmd = [whisper_bin, '-m', model, '-f', wav, '-ml', '1', '-sow',
-           '-ojf', '-of', out_prefix, '-np', '-l', language, '-pp']
+           '-ojf', '-of', out_prefix, '-np', '-l', language, '-pp', '-mc', '0']
     tail = deque(maxlen=60)
     proc = subprocess.Popen(
         cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
@@ -631,6 +662,7 @@ def transcribe(zip_path, whisper_bin, whisper_model, ffmpeg, language, max_secon
                 if not mapped:
                     print(f"[transcribe] track {track['id']} ({label}) contributed 0 words",
                           file=sys.stderr)
+                _warn_repetition_loops(track['id'], label, mapped)
                 all_words.extend(mapped)
             finally:
                 _safe_remove(wav)
