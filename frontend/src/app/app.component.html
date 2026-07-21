@@ -5,7 +5,9 @@
 </div>
 
 <!-- First-run setup overlay (asset downloads). Gates the app until ready. -->
-<app-setup *ngIf="!setupReady && !isChromeless" (complete)="onSetupComplete()"></app-setup>
+<!-- Stays mounted while the app runs: after approval it renders only the floating
+     download dock (or nothing), never a blocking overlay. -->
+<app-setup *ngIf="!isChromeless" (complete)="onSetupComplete()"></app-setup>
 
 <!-- App Layout with Top Header -->
 <div class="app-layout" *ngIf="setupReady && !isChromeless">
