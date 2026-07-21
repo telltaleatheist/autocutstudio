@@ -1166,7 +1166,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
     ctx.save();
     this.roundRectPath(ctx, x0, top, w, h, this.CLIP_RADIUS);
-    ctx.fillStyle = '#5a6b8c';
+    ctx.fillStyle = '#6257c9';   // bold indigo-violet (was pale slate #5a6b8c)
     ctx.fill();
     // Subtle top highlight.
     ctx.clip();
@@ -1177,12 +1177,12 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // 1px darker border.
     ctx.save();
     this.roundRectPath(ctx, x0 + 0.5, top + 0.5, w - 1, h - 1, this.CLIP_RADIUS);
-    ctx.strokeStyle = '#47566f';
+    ctx.strokeStyle = '#4237a6';
     ctx.lineWidth = 1;
     ctx.stroke();
     ctx.restore();
 
-    this.drawClipLabel(ctx, seg.label, x0, top, w, h, '#dfe6f2');
+    this.drawClipLabel(ctx, seg.label, x0, top, w, h, '#e7e3fb');
   }
 
   private drawAudioClip(ctx: CanvasRenderingContext2D, seg: EditorSegment,
@@ -1193,24 +1193,24 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
     ctx.save();
     this.roundRectPath(ctx, x0, top, w, h, this.CLIP_RADIUS);
-    ctx.fillStyle = '#3f7a52';
+    ctx.fillStyle = '#2f9e56';   // bold green (was muted #3f7a52)
     ctx.fill();
     ctx.clip();
     ctx.fillStyle = 'rgba(255,255,255,0.08)';
     ctx.fillRect(x0, top, w, Math.min(8, h / 2));
 
-    // Waveform inside the clip, clipped to its rounded rect. Lighter FCP green.
+    // Waveform inside the clip, clipped to its rounded rect. Bold FCP green.
     this.drawWaveInside(ctx, seg, x0, x1, top, h, W);
     ctx.restore();
 
     ctx.save();
     this.roundRectPath(ctx, x0 + 0.5, top + 0.5, w - 1, h - 1, this.CLIP_RADIUS);
-    ctx.strokeStyle = '#2f5e3f';
+    ctx.strokeStyle = '#1f7a40';
     ctx.lineWidth = 1;
     ctx.stroke();
     ctx.restore();
 
-    this.drawClipLabel(ctx, seg.label, x0, top, w, h, '#d3f0dd');
+    this.drawClipLabel(ctx, seg.label, x0, top, w, h, '#dcf7e6');
   }
 
   private drawClipLabel(ctx: CanvasRenderingContext2D, label: string,
@@ -1246,7 +1246,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const peaks = this.getOrRequestPeaks(seg, onScreenW);
     if (!peaks) {
       // Placeholder: a thin center line so the clip doesn't look empty.
-      ctx.strokeStyle = '#8fd6a8';
+      ctx.strokeStyle = '#6fe895';
       ctx.globalAlpha = 0.4;
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -1259,7 +1259,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
     const n = peaks.min.length;
     if (n === 0) return;
-    ctx.fillStyle = '#8fd6a8';
+    ctx.fillStyle = '#6fe895';
     ctx.globalAlpha = 0.9;
     ctx.beginPath();
     let started = false;
