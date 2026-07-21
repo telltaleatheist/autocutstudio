@@ -58,6 +58,8 @@ export interface ElectronAPI {
   getEditorPayload: () => Promise<{ zipPath: string }>;
   getEditorManifest: (zipPath: string) => Promise<any>;
   exportEditorCuts: (payload: { zipPath: string; cuts: Array<{ startFrame: number; endFrame: number }>; stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }>; output?: 'fcpxml' | 'transcripts' }) => Promise<any>;
+  loadEditorEdits: (payload: { zipPath: string }) => Promise<any | null>;
+  saveEditorEdits: (payload: { zipPath: string; edits: any }) => Promise<{ path: string }>;
   onEditorPayload: (callback: (payload: any) => void) => void;
   removeEditorListeners: () => void;
 
@@ -157,6 +159,8 @@ const electronAPI: ElectronAPI = {
   getEditorPayload: () => ipcRenderer.invoke('editor:get-payload'),
   getEditorManifest: (zipPath) => ipcRenderer.invoke('editor:manifest', { zipPath }),
   exportEditorCuts: (payload) => ipcRenderer.invoke('editor:export', payload),
+  loadEditorEdits: (payload) => ipcRenderer.invoke('editor:load-edits', payload),
+  saveEditorEdits: (payload) => ipcRenderer.invoke('editor:save-edits', payload),
   onEditorPayload: (callback) => {
     ipcRenderer.on('editor-payload', (_event, payload) => callback(payload));
   },

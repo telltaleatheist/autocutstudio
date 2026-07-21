@@ -171,15 +171,32 @@ def detect_framerate(video_path):
         print(f"Warning: Could not detect framerate, defaulting to 29.97: {e}", file=sys.stderr)
         return "29.97"
 
+def zip_arcname(clean_name, filename):
+    """Zip-internal entry name for one generated XML. USER-FACING layout: the two files a
+    user actually imports sit at the top level with friendly names; every intermediate
+    (_ALTERED* compounds, and the deprecated _SOLO) is tucked into an assets/ subfolder so
+    an unzip shows two files + one folder instead of twenty siblings.
+
+        <clean_name>/<clean_name> master.fcpxml   (was *_HYBRID.fcpxml)
+        <clean_name>/<clean_name> shorts.fcpxml   (was *_SHORTS.fcpxml)
+        <clean_name>/assets/<original name>       (everything else)
+    """
+    if filename.endswith('_HYBRID.fcpxml'):
+        return f"{clean_name}/{clean_name} master.fcpxml"
+    if filename.endswith('_SHORTS.fcpxml'):
+        return f"{clean_name}/{clean_name} shorts.fcpxml"
+    return f"{clean_name}/assets/{filename}"
+
+
 def create_xml_zip(xml_files, output_dir, session_name):
-    """Create a zip file containing all XML files."""
+    """Create a zip file containing all XML files (layout per zip_arcname)."""
     clean_name = session_name.replace(' ', '_')
     zip_path = Path(output_dir) / f"{clean_name}_compounds.zip"
 
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
         for xml_path in xml_files:
             if xml_path and Path(xml_path).exists():
-                arcname = f"{clean_name}/{Path(xml_path).name}"
+                arcname = zip_arcname(clean_name, Path(xml_path).name)
                 zipf.write(xml_path, arcname)
 
     # Clean up XML files
@@ -1817,7 +1834,7 @@ def main():
         for clip in generated_clips:
             clip_path = clip.get('path')
             if clip_path and Path(clip_path).exists():
-                clip['path'] = f"{clean_name}/{Path(clip_path).name}"
+                clip['path'] = zip_arcname(clean_name, Path(clip_path).name)
             else:
                 clip['path'] = None
 

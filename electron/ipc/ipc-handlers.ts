@@ -193,6 +193,51 @@ function setupEditorHandlers(windowService: WindowService): void {
       zipPath, cuts, isStoryExport ? stories : undefined, isStoryExport ? output : undefined);
   });
 
+  // ── Editor edit-state sidecar (<session>_edits.json next to the zip) ──────────
+  // The zip is the IMMUTABLE generated artifact; mutable session state (cuts, blades,
+  // stories, undo/redo) lives in a sidecar beside it — the same pattern as the
+  // _transcript.json and _alignment.json sidecars. Missing file -> null (defined
+  // "never edited" state); a file that exists but cannot be parsed is a REAL error
+  // and propagates verbatim, never silently treated as fresh.
+  const editsSidecarPath = (zipPath: string): string => {
+    const dir = path.dirname(zipPath);
+    const stem = path.basename(zipPath, '.zip');
+    const session = stem.endsWith('_compounds') ? stem.slice(0, -'_compounds'.length) : stem;
+    return path.join(dir, `${session}_edits.json`);
+  };
+
+  ipcMain.handle('editor:load-edits', async (_event, payload: { zipPath: string }) => {
+    const zipPath = payload?.zipPath;
+    if (typeof zipPath !== 'string' || zipPath.trim() === '') {
+      throw new Error('editor:load-edits requires a non-empty zipPath string');
+    }
+    const p = editsSidecarPath(zipPath);
+    if (!fs.existsSync(p)) return null;
+    const raw = fs.readFileSync(p, 'utf8');
+    try {
+      return JSON.parse(raw);
+    } catch (e: any) {
+      throw new Error(`edit-state sidecar ${path.basename(p)} is not valid JSON: ${e.message} ` +
+        `— fix or delete the file to continue`);
+    }
+  });
+
+  ipcMain.handle('editor:save-edits', async (_event, payload: { zipPath: string; edits: any }) => {
+    const zipPath = payload?.zipPath;
+    if (typeof zipPath !== 'string' || zipPath.trim() === '') {
+      throw new Error('editor:save-edits requires a non-empty zipPath string');
+    }
+    if (!payload?.edits || typeof payload.edits !== 'object') {
+      throw new Error('editor:save-edits requires an edits object');
+    }
+    const p = editsSidecarPath(zipPath);
+    // Atomic write: tmp + rename, so a crash mid-write can never corrupt the sidecar.
+    const tmp = `${p}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(payload.edits), 'utf8');
+    fs.renameSync(tmp, p);
+    return { path: p };
+  });
+
   // Whisper-transcribe the session's source audio tracks. Returns { jobId }
   // IMMEDIATELY; progress and completion are pushed to the WINDOW THAT INVOKED
   // this (event.sender), matching execute-workflow. On completion the renderer

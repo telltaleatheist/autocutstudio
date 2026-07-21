@@ -147,6 +147,18 @@ export class ElectronService {
     return this.bridge.exportEditorCuts(payload);
   }
 
+  /** Load the editor edit-state sidecar (<session>_edits.json), or null if never edited. */
+  async loadEditorEdits(payload: { zipPath: string }): Promise<any | null> {
+    if (!this.isElectron()) throw new Error('Not running in Electron');
+    return this.bridge.loadEditorEdits(payload);
+  }
+
+  /** Persist the editor edit-state sidecar (atomic write next to the zip). */
+  async saveEditorEdits(payload: { zipPath: string; edits: any }): Promise<{ path: string }> {
+    if (!this.isElectron()) throw new Error('Not running in Electron');
+    return this.bridge.saveEditorEdits(payload);
+  }
+
   /** (Editor window) Push half of the race-free payload pull. */
   onEditorPayload(callback: (payload: { zipPath: string }) => void): void {
     if (this.isElectron()) {

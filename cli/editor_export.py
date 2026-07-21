@@ -840,10 +840,10 @@ def export_stories(zip_path, cuts_raw, stories_raw):
     event = tree.getroot().find('.//event')
     event.set('name', f"{_session_name(zip_path)} Stories")
 
-    # DISTINCT filename from the cuts-only export. Sharing '_HYBRID_edited.fcpxml' proved
-    # actively harmful in the field: a stale import of the cuts version (dc part 1/2/3)
-    # sat in the FCP library looking exactly like "the story export didn't work".
-    out_path = zp.parent / f"{_session_name(zip_path)}_HYBRID_stories.fcpxml"
+    # ONE consolidated edited artifact for the session (same name as the cuts-only path):
+    # with stories it holds the story projects + Scrap; without, the cut parts. The
+    # distinctly named event (above) keeps FCP imports from blurring into older ones.
+    out_path = zp.parent / f"{_session_name(zip_path)} master edited.fcpxml"
     if out_path.exists():
         print(f"[editor_export] overwriting existing derived artifact: {out_path}", file=sys.stderr)
     FCPXMLUtils.save_fcpxml(tree, str(out_path))
@@ -930,7 +930,7 @@ def export(zip_path, cuts_raw):
 
     new_total, cuts_applied = apply_cuts(tree, entry, cuts_raw)
 
-    out_path = zp.parent / f"{_session_name(zip_path)}_HYBRID_edited.fcpxml"
+    out_path = zp.parent / f"{_session_name(zip_path)} master edited.fcpxml"
     if out_path.exists():
         print(f"[editor_export] overwriting existing derived artifact: {out_path}", file=sys.stderr)
     FCPXMLUtils.save_fcpxml(tree, str(out_path))

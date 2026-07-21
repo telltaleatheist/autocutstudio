@@ -255,6 +255,16 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // canonicalized (merged) at grab time so regionIndex addresses story.regions directly.
   private draggingStoryEdge: { storyId: string; regionIndex: number; edge: 'start' | 'end' } | null = null;
 
+  // ── Edit-state persistence (<session>_edits.json sidecar) ────────────────────
+  // Everything the user builds in the editor — cuts, blades, stories, and the undo/redo
+  // stacks — persists across sessions in a sidecar next to the zip (same pattern as the
+  // transcript/alignment sidecars; the zip itself stays immutable). Restored on load;
+  // saved debounced after every mutation. Suppressed during load/restore so ingest
+  // doesn't immediately re-write what it just read.
+  private editsSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  private suppressEditsSave = false;
+  private static readonly EDITS_SCHEMA_VERSION = 1;
+
   // ── Snapping (story edges + range highlighting stick to cut boundaries) ──────
   // Snap radius in CSS px (converted to seconds at the current zoom in snapEdited).
   private readonly SNAP_PX = 8;
@@ -440,6 +450,18 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.fail(err?.message || String(err));
       return;
     }
+    // Restore persisted edit state (cuts/blades/stories/undo/redo). No sidecar = a session
+    // never edited before -> fresh state. A sidecar that exists but cannot be read/parsed
+    // is a REAL error and fails the load loudly (fix or delete the file).
+    try {
+      const edits = await this.electron.loadEditorEdits({ zipPath });
+      if (generation !== this.bootstrapGeneration) return;
+      if (edits !== null) this.restoreEdits(edits);
+    } catch (err: any) {
+      if (generation !== this.bootstrapGeneration) return;
+      this.fail(err?.message || String(err));
+      return;
+    }
     this.loading = false;
     // Remember this session in the shared recents (updates lastOpened + re-sorts), so the
     // project picker always shows the currently-loaded one highlighted at the top.
@@ -511,6 +533,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.activeStoryId = null;
     this.marqueeForStory = false;
     this.draggingStoryEdge = null;
+    // A pending debounced save belongs to the PREVIOUS session — never let it fire
+    // across a switch (it would snapshot post-reset state).
+    if (this.editsSaveTimer !== null) { clearTimeout(this.editsSaveTimer); this.editsSaveTimer = null; }
     // Transcript: a re-init starts fresh. An in-flight job for the OLD session is
     // actively cancelled — a multi-hour whisper run must not keep burning CPU for a
     // session nobody is looking at (dropping the job id alone would only mute its
@@ -635,6 +660,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // Transcript group visibility + edited timecodes depend on the cut model — re-derive
     // them here so they stay in lockstep with every cut/undo/redo (no-op before load).
     this.recomputeVisibleGroups();
+    // Every cut-model change persists (debounced; suppressed during load/restore).
+    this.scheduleEditsSave();
   }
 
   /** Rebuild the sorted/deduped snap-target list (see snapPoints). */
@@ -1639,6 +1666,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.pushUndo();
     this.redoStack = [];
     this.bladeBoundaries = [...this.bladeBoundaries, t].sort((a, b) => a - b);
+    this.scheduleEditsSave();
     this.requestRender();
   }
 
@@ -1695,6 +1723,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       const story = this.stories.find(s => s.id === this.draggingStoryEdge!.storyId);
       if (story) story.regions = this.mergeRegions(story.regions);
       this.draggingStoryEdge = null;
+      this.scheduleEditsSave();
     }
     // A marquee that actually moved commits its section selection; a bare click leaves the
     // section-select outcome from mousedown untouched.
@@ -2152,6 +2181,63 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return `${m}:${this.pad2(s)}`;
   }
 
+  // ── Edit-state persistence ───────────────────────────────────────────────────
+  /**
+   * Restore edit state from the sidecar. Validates loudly: a sidecar with the wrong
+   * schema or a non-array field names exactly what is wrong rather than half-loading.
+   */
+  private restoreEdits(e: any): void {
+    if (e.schemaVersion !== EditorComponent.EDITS_SCHEMA_VERSION) {
+      throw new Error(`edit-state sidecar has schemaVersion ${e.schemaVersion}; ` +
+        `this build reads version ${EditorComponent.EDITS_SCHEMA_VERSION}`);
+    }
+    for (const key of ['cuts', 'bladeBoundaries', 'stories', 'undoStack', 'redoStack'] as const) {
+      if (!Array.isArray(e[key])) {
+        throw new Error(`edit-state sidecar field '${key}' is not an array — fix or delete the file`);
+      }
+    }
+    this.suppressEditsSave = true;
+    try {
+      this.cuts = e.cuts;
+      this.bladeBoundaries = e.bladeBoundaries;
+      this.stories = e.stories;
+      this.storyIdCounter = Number.isInteger(e.storyIdCounter) ? e.storyIdCounter : this.stories.length;
+      this.undoStack = e.undoStack;
+      this.redoStack = e.redoStack;
+      this.rebuildEditedModel();
+    } finally {
+      this.suppressEditsSave = false;
+    }
+    this.requestRender();
+  }
+
+  /** Debounced save of the edit-state sidecar. Call after EVERY edit mutation. */
+  private scheduleEditsSave(): void {
+    if (this.suppressEditsSave || this.loading || !this.currentZipPath) return;
+    if (this.editsSaveTimer !== null) clearTimeout(this.editsSaveTimer);
+    this.editsSaveTimer = setTimeout(() => {
+      this.editsSaveTimer = null;
+      const zipPath = this.currentZipPath;
+      if (!zipPath) return;
+      const edits = {
+        schemaVersion: EditorComponent.EDITS_SCHEMA_VERSION,
+        session: this.sessionName,
+        savedAt: new Date().toISOString(),
+        cuts: this.cuts,
+        bladeBoundaries: this.bladeBoundaries,
+        stories: this.stories,
+        storyIdCounter: this.storyIdCounter,
+        undoStack: this.undoStack,
+        redoStack: this.redoStack,
+      };
+      this.electron.saveEditorEdits({ zipPath, edits }).catch((err: any) => {
+        // Surface, don't swallow: a failing save means edits are NOT persisting.
+        this.transportError = `Failed to save edits: ${err?.message || err}`;
+        this.cdr.detectChanges();
+      });
+    }, 800);
+  }
+
   /** True when Export has something to do: at least one cut OR at least one marked story. */
   canExport(): boolean {
     return !this.exporting && !!this.currentZipPath && (this.cuts.length > 0 || this.hasStories());
@@ -2336,6 +2422,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       };
       this.stories = [...this.stories, story];
     }
+    this.scheduleEditsSave();
     this.requestRender();
     this.cdr.detectChanges();
   }
@@ -2343,6 +2430,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   /** Inline title edit (immediate). Redraws so the ribbon label tracks the new title. */
   onStoryTitleInput(story: Story, value: string): void {
     story.title = value;
+    this.scheduleEditsSave();
     this.requestRender();
   }
 
@@ -2351,6 +2439,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const n = parseInt(value, 10);
     if (Number.isFinite(n) && n > 0) {
       story.number = n;
+      this.scheduleEditsSave();
       this.requestRender();
     }
   }
@@ -2359,6 +2448,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   deleteStory(story: Story): void {
     this.stories = this.stories.filter(s => s.id !== story.id);
     if (this.activeStoryId === story.id) this.activeStoryId = null;
+    this.scheduleEditsSave();
     this.requestRender();
   }
 

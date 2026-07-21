@@ -514,21 +514,30 @@ def _find_master_hybrid_entry(zf, zip_path):
     "_DC.fcpxml", "_SHORTS.fcpxml" — so an exact "_HYBRID.fcpxml" basename suffix uniquely
     identifies the master hybrid PROJECT. We match on that suffix (no loose globbing).
     """
+    # Two naming generations, both explicit (no loose globbing):
+    #   NEW zips (electron_workflow.zip_arcname): the master project is the TOP-LEVEL
+    #     "<clean_name> master.fcpxml" entry; intermediates live under assets/.
+    #   OLD zips (pre-assets layout): "<name>_HYBRID.fcpxml" basename suffix, any level.
+    # A zip must match exactly one rule with exactly one entry — anything else fails loud.
     candidates = []
     for name in zf.namelist():
         if name.endswith('/'):
             continue
-        base = name.rsplit('/', 1)[-1]
-        if base.endswith('_HYBRID.fcpxml'):
+        parts = name.split('/')
+        base = parts[-1]
+        in_assets = 'assets' in parts[:-1]
+        if base.endswith(' master.fcpxml') and not in_assets:
+            candidates.append(name)
+        elif base.endswith('_HYBRID.fcpxml'):
             candidates.append(name)
     if not candidates:
         others = [n for n in zf.namelist() if not n.endswith('/')]
         raise ManifestError(
-            f"no master hybrid project (a '*_HYBRID.fcpxml' entry) found in {zip_path}. "
-            f"Zip entries: {others}")
+            f"no master project (a '* master.fcpxml' or '*_HYBRID.fcpxml' entry) found in "
+            f"{zip_path}. Zip entries: {others}")
     if len(candidates) > 1:
         raise ManifestError(
-            f"multiple '*_HYBRID.fcpxml' entries found in {zip_path}, cannot disambiguate: "
+            f"multiple master project entries found in {zip_path}, cannot disambiguate: "
             f"{candidates}")
     return candidates[0]
 
