@@ -309,15 +309,16 @@ export class BinaryResolver {
   getWhisperModelPath(): string {
     if (this.cachedWhisperModelPath) return this.cachedWhisperModelPath;
 
-    // The shipped model is MEDIUM, installed by the first-launch setup screen as a
+    // The shipped model is LARGE-V3, installed by the first-launch setup screen as a
     // REQUIRED asset (no model menu — the app picks). The preference chain below exists
     // for real transitional states, never as a silent substitute: a dev checkout with a
-    // smaller local model, or a machine that installed base under the old catalog and
-    // hasn't finished the medium download. Whichever is used is logged AND recorded in
-    // the transcript sidecar's 'model' field, so provenance is always visible.
+    // local model, or a machine that installed medium under the old catalog and hasn't
+    // finished the large-v3 download yet. Whichever is used is logged AND recorded in the
+    // transcript sidecar's 'model' field, so provenance is always visible.
     const candidates: Array<{ kind: 'managed' | 'bundled'; name: string; p: string | null }> = [];
+    candidates.push({ kind: 'managed', name: 'large-v3', p: assetManager.resolveEntry('whisper-large-v3') });
     candidates.push({ kind: 'managed', name: 'medium', p: assetManager.resolveEntry('whisper-medium') });
-    for (const size of ['medium', 'small', 'base']) {
+    for (const size of ['large-v3', 'medium', 'small', 'base']) {
       candidates.push({
         kind: 'bundled', name: size,
         p: path.join(AppConfig.resourcesPath, 'utilities', 'models', `ggml-${size}.bin`),

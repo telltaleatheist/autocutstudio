@@ -97,12 +97,13 @@
     </div>
   </div>
 
-  <!-- Background activity HUD (FCPX-style). Opened from the button in the Edit/Stories tab row;
-       an outside click dismisses it. Lists whatever is running: transcription, export, waveform
-       analysis — or nothing. -->
-  <div class="activity-backdrop" *ngIf="activityOpen" (click)="activityOpen = false"></div>
-  <div class="activity-window" *ngIf="activityOpen">
-    <div class="activity-head">
+  <!-- Background activity HUD (FCPX-style). A floating, draggable dock: opened from the button
+       in the Edit/Stories tab row and auto-opened when transcription starts; drag it by the
+       header to reposition; closed only with its ×. Lists whatever is running: transcription,
+       export, waveform analysis — or nothing. -->
+  <div class="activity-window" *ngIf="activityOpen"
+       [style.transform]="'translate(calc(-50% + ' + activityX + 'px), ' + activityY + 'px)'">
+    <div class="activity-head" (mousedown)="onActivityDragStart($event)">
       <span class="activity-title">Background Activity</span>
       <button class="activity-close" (click)="activityOpen = false" title="Close">×</button>
     </div>

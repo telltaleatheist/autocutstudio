@@ -1181,18 +1181,12 @@
   to { transform: rotate(360deg); }
 }
 
-/* Transparent full-window catcher so an outside click closes the HUD. */
-.activity-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 190;
-}
-
+/* Floating, draggable dock. Anchored top-center; the inline [style.transform] binding adds the
+   drag offset (translate(calc(-50% + Xpx), Ypx)). */
 .activity-window {
   position: fixed;
   top: 78px;
   left: 50%;
-  transform: translateX(-50%);
   z-index: 200;
   width: min(360px, 92vw);
   background: #1f1f23;
@@ -1208,6 +1202,10 @@
     padding: 9px 10px 9px 14px;
     background: #26262a;
     border-bottom: 1px solid #0d0d0e;
+    cursor: grab;
+    user-select: none;
+
+    &:active { cursor: grabbing; }
 
     .activity-title {
       font-size: 12px;

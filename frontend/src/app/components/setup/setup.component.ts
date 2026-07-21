@@ -181,7 +181,7 @@ export class SetupComponent implements OnInit, OnDestroy {
         id: c.id, name: c.name, description: c.description,
         pct: 0, phase: 'resolve', message: 'Waiting…', done: false,
       }));
-      this.hasModel = missing.some((c: any) => c.id === 'whisper-medium');
+      this.hasModel = missing.some((c: any) => c.id === 'whisper-large-v3');
       const bytes = missing.reduce((sum: number, c: any) => sum + (c.sizeBytes || 0), 0);
       this.totalLabel = bytes > 0 ? `${(bytes / 1e9).toFixed(1)} GB` : 'one-time download';
       this.state = 'approval';

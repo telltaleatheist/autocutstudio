@@ -363,7 +363,12 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   peaksBurstDone = 0;
 
   // ── Activity window (FCPX-style background-task HUD) ─────────────────────────
+  // A floating, draggable dock. Auto-opens when transcription starts; drag by its header
+  // to reposition (offsets from its default top-center anchor). Closed with its × only.
   activityOpen = false;
+  activityX = 0;
+  activityY = 0;
+  private activityDragBase: { x: number; y: number; dx: number; dy: number } | null = null;
 
   // ── Playback ────────────────────────────────────────────────────────────────
   isPlaying = false;
@@ -427,6 +432,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.stopPlayback();
     window.removeEventListener('mousemove', this.onWindowMouseMove);
     window.removeEventListener('mouseup', this.onWindowMouseUp);
+    window.removeEventListener('mousemove', this.onActivityDragMove);
+    window.removeEventListener('mouseup', this.onActivityDragEnd);
     document.body.style.userSelect = ''; // in case we're destroyed mid-splitter-drag
     if (this.rafId !== null) { cancelAnimationFrame(this.rafId); this.rafId = null; }
     for (const el of this.audioEls.values()) { try { el.pause(); el.src = ''; } catch { /* gone */ } }
@@ -520,6 +527,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.activeGroupIdx = -1;
     this.lastScrolledGroupIdx = -1;
     this.activityOpen = false;
+    this.activityX = 0;
+    this.activityY = 0;
     this.playheadTime = 0;
     this.scrollOffset = 0;
     this.errorMessage = '';
@@ -2872,6 +2881,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   async startTranscription(): Promise<void> {
     if (!this.currentZipPath) return;
     this.transcriptState = 'running';
+    this.activityOpen = true;   // surface the background dock so progress is visible
     this.transcribeProgress = 0;
     this.transcribeMessage = 'Starting…';
     this.transcribeEtaSeconds = null;
@@ -3037,6 +3047,25 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   toggleActivity(): void {
     this.activityOpen = !this.activityOpen;
   }
+
+  /** Begin dragging the Activity dock (grab its header; ignore clicks on the × button). */
+  onActivityDragStart(ev: MouseEvent): void {
+    if ((ev.target as HTMLElement)?.tagName === 'BUTTON') return;
+    ev.preventDefault();
+    this.activityDragBase = { x: ev.clientX, y: ev.clientY, dx: this.activityX, dy: this.activityY };
+    window.addEventListener('mousemove', this.onActivityDragMove);
+    window.addEventListener('mouseup', this.onActivityDragEnd);
+  }
+  private onActivityDragMove = (ev: MouseEvent): void => {
+    if (!this.activityDragBase) return;
+    this.activityX = this.activityDragBase.dx + (ev.clientX - this.activityDragBase.x);
+    this.activityY = this.activityDragBase.dy + (ev.clientY - this.activityDragBase.y);
+  };
+  private onActivityDragEnd = (): void => {
+    this.activityDragBase = null;
+    window.removeEventListener('mousemove', this.onActivityDragMove);
+    window.removeEventListener('mouseup', this.onActivityDragEnd);
+  };
 
   // ── Playback (element-based jump-cuts) ──────────────────────────────────────
   // Variable-speed transport (FCPX-style JKL). L steps the speed UP through L_SPEEDS,

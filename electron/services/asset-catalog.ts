@@ -148,19 +148,21 @@ const CATALOG: AssetComponent[] = [
     ],
   },
 
-  // ── Whisper medium model (REQUIRED; the app's one transcription model) ──────
+  // ── Whisper large-v3 model (REQUIRED; the app's one transcription model) ────
   // Installed by the first-launch setup screen — deliberately NOT a user choice of
-  // sizes. Medium was picked over base after base's hallucination-loop incident and
-  // an accuracy/speed review; the transcript sidecar records which model produced it.
+  // sizes. large-v3 was picked over medium for accuracy and, notably, verbatimness:
+  // it surfaces more disfluencies (um/uh) than medium, which the transcript feature
+  // wants. It uses 128 mel filterbanks (medium uses 80) — the bundled whisper-cli is
+  // new enough (verified it loads v3). The transcript sidecar records which model ran.
   {
-    id: 'whisper-medium',
+    id: 'whisper-large-v3',
     name: 'Whisper speech-recognition model',
     description: 'Speech-to-text model used for transcription and story transcripts.',
     category: 'models',
     required: true,
     installSubdir: 'whisper',
-    version: 'medium',
-    entry: 'ggml-medium.bin',
+    version: 'large-v3',
+    entry: 'ggml-large-v3.bin',
     artifacts: [
       // Cross-platform single file — same model on every OS. sha256/bytes verified
       // against the file downloaded from this exact URL.
@@ -169,10 +171,10 @@ const CATALOG: AssetComponent[] = [
           platform,
           arch,
           kind: 'file' as const,
-          url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin',
-          sha256: '6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208',
-          bytes: 1533763059,
-          fileName: 'ggml-medium.bin',
+          url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin',
+          sha256: '64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2',
+          bytes: 3095033483,
+          fileName: 'ggml-large-v3.bin',
         }))
       ),
     ],
