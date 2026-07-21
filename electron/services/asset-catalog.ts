@@ -148,27 +148,31 @@ const CATALOG: AssetComponent[] = [
     ],
   },
 
-  // ── Whisper base model (optional; transcript-based features) ────────────────
+  // ── Whisper medium model (REQUIRED; the app's one transcription model) ──────
+  // Installed by the first-launch setup screen — deliberately NOT a user choice of
+  // sizes. Medium was picked over base after base's hallucination-loop incident and
+  // an accuracy/speed review; the transcript sidecar records which model produced it.
   {
-    id: 'whisper-base',
-    name: 'Whisper base model',
-    description: 'Speech-to-text model for transcript-assisted editing (optional).',
+    id: 'whisper-medium',
+    name: 'Whisper speech-recognition model',
+    description: 'Speech-to-text model used for transcription and story transcripts.',
     category: 'models',
-    required: false,
+    required: true,
     installSubdir: 'whisper',
-    version: 'base',
-    entry: 'ggml-base.bin',
+    version: 'medium',
+    entry: 'ggml-medium.bin',
     artifacts: [
-      // Cross-platform single file — same model on every OS.
+      // Cross-platform single file — same model on every OS. sha256/bytes verified
+      // against the file downloaded from this exact URL.
       ...(['darwin', 'win32', 'linux'] as Platform[]).flatMap((platform) =>
         (['arm64', 'x64'] as Arch[]).map((arch) => ({
           platform,
           arch,
           kind: 'file' as const,
-          url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin',
-          sha256: '',
-          bytes: 147951465,
-          fileName: 'ggml-base.bin',
+          url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin',
+          sha256: '6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208',
+          bytes: 1533763059,
+          fileName: 'ggml-medium.bin',
         }))
       ),
     ],

@@ -309,24 +309,31 @@ export class BinaryResolver {
   getWhisperModelPath(): string {
     if (this.cachedWhisperModelPath) return this.cachedWhisperModelPath;
 
-    // 1. Managed shared install (the whisper-base asset from Settings → Assets).
-    const managed = assetManager.resolveEntry('whisper-base');
-    if (managed && fs.existsSync(managed)) {
-      log.info(`Using managed whisper base model: ${managed}`);
-      this.cachedWhisperModelPath = managed;
-      return managed;
+    // The shipped model is MEDIUM, installed by the first-launch setup screen as a
+    // REQUIRED asset (no model menu — the app picks). The preference chain below exists
+    // for real transitional states, never as a silent substitute: a dev checkout with a
+    // smaller local model, or a machine that installed base under the old catalog and
+    // hasn't finished the medium download. Whichever is used is logged AND recorded in
+    // the transcript sidecar's 'model' field, so provenance is always visible.
+    const candidates: Array<{ kind: 'managed' | 'bundled'; name: string; p: string | null }> = [];
+    candidates.push({ kind: 'managed', name: 'medium', p: assetManager.resolveEntry('whisper-medium') });
+    for (const size of ['medium', 'small', 'base']) {
+      candidates.push({
+        kind: 'bundled', name: size,
+        p: path.join(AppConfig.resourcesPath, 'utilities', 'models', `ggml-${size}.bin`),
+      });
     }
-
-    // 2. Bundled utilities/models/ggml-base.bin.
-    const bundled = path.join(AppConfig.resourcesPath, 'utilities', 'models', 'ggml-base.bin');
-    if (fs.existsSync(bundled)) {
-      log.info(`Using bundled whisper base model: ${bundled}`);
-      this.cachedWhisperModelPath = bundled;
-      return bundled;
+    for (const c of candidates) {
+      if (c.p && fs.existsSync(c.p)) {
+        log.info(`Using ${c.kind} whisper ${c.name} model: ${c.p}`);
+        this.cachedWhisperModelPath = c.p;
+        return c.p;
+      }
     }
 
     throw new Error(
-      'Whisper base model not installed — install it from Settings → Assets.'
+      'Whisper model not installed — restart the app to run first-launch setup, ' +
+      'or install it from Settings → Assets.'
     );
   }
 

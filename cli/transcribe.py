@@ -525,29 +525,105 @@ def extract_wav(ffmpeg, src_file, dst_wav, max_seconds):
         raise TranscribeError(f"ffmpeg produced no wav for {src_file}")
 
 
-def _warn_repetition_loops(track_id, label, words, min_reps=10):
-    """Post-transcription tripwire: scan a track's mapped words for a phrase (2..15 words)
-    repeated >= min_reps times CONSECUTIVELY — the signature of a whisper hallucination
-    loop. Real speech repeats a few times; ten identical consecutive phrases is decoding
-    pathology. WARNS loudly on stderr (never silently ships a poisoned transcript); it is
-    not an error because chants/song choruses can legitimately trip it."""
-    texts = [w['text'].strip().lower() for w in words]
-    for n in range(2, 16):
+def _find_repetition_runs(texts, min_reps=10, max_unit=15):
+    """Find consecutive repetitions of any phrase unit (2..max_unit words): the signature
+    of a whisper hallucination loop. Real speech repeats a few times; min_reps identical
+    consecutive phrases is decoding pathology. Returns [(i0, i1_exclusive, phrase, reps)]
+    over word indices."""
+    runs = []
+    for n in range(2, max_unit + 1):
         i = 0
         while i + 2 * n <= len(texts):
             reps = 1
             while i + (reps + 1) * n <= len(texts) and texts[i:i + n] == texts[i + reps * n:i + (reps + 1) * n]:
                 reps += 1
             if reps >= min_reps:
-                phrase = ' '.join(texts[i:i + n])
-                at = words[i]['fileStart']
-                print(f"[transcribe] WARNING: track {track_id} ({label}) repeats "
-                      f"{phrase!r} {reps}x consecutively starting at file {at:.1f}s — "
-                      f"possible whisper hallucination loop; review this region",
-                      file=sys.stderr)
+                runs.append((i, i + reps * n, ' '.join(texts[i:i + n]), reps))
                 i += reps * n
             else:
                 i += 1
+    return runs
+
+
+def _warn_repetition_loops(track_id, label, words, min_reps=10):
+    """Post-transcription tripwire on the FINAL mapped words. WARNS loudly on stderr
+    (never silently ships a poisoned transcript); not an error because chants/song
+    choruses can legitimately trip it."""
+    texts = [w['text'].strip().lower() for w in words]
+    for (i0, _i1, phrase, reps) in _find_repetition_runs(texts, min_reps):
+        print(f"[transcribe] WARNING: track {track_id} ({label}) repeats {phrase!r} "
+              f"{reps}x consecutively starting at file {words[i0]['fileStart']:.1f}s — "
+              f"possible whisper hallucination loop; review this region", file=sys.stderr)
+
+
+def _retry_loop_regions(raw, compact_wav, whisper_bin, model, language, temp_dir,
+                        track_id, label, min_reps=10, pad_sec=3.0, max_regions=12):
+    """Loop recovery: when the raw whisper output contains repetition runs, re-decode JUST
+    those regions with a FRESH decoder (the measured fix: the same audio decodes clean in
+    isolation — loops need accumulated state) and splice the results back in.
+
+    Regions are the runs' compact-time spans padded by pad_sec, merged when overlapping,
+    capped at max_regions (a pathological blowup re-warns via the final tripwire instead
+    of retrying forever). Original words inside a retried region are REPLACED by the fresh
+    decode (offsets shifted back by the region start). Everything is reported to stderr."""
+    texts = [w['text'].strip().lower() for w in raw]
+    runs = _find_repetition_runs(texts, min_reps)
+    if not runs:
+        return raw
+
+    # Merge ALL runs' padded compact-time windows first (adjacent loop runs collapse into
+    # one region), THEN cap the number of re-decoded regions — capping raw runs would
+    # silently leave later runs of the same loop field unretried.
+    windows = sorted((max(0.0, raw[i0]['file_start'] - pad_sec), raw[i1 - 1]['file_end'] + pad_sec)
+                     for (i0, i1, _p, _r) in runs)
+    merged = []
+    for (s, e) in windows:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    if len(merged) > max_regions:
+        print(f"[transcribe] track {track_id} ({label}): {len(merged)} loop regions found; "
+              f"retrying only the first {max_regions} (the rest re-warn below)", file=sys.stderr)
+        merged = merged[:max_regions]
+
+    import wave
+    redecoded = []
+    for k, (s, e) in enumerate(merged):
+        print(f"[transcribe] track {track_id} ({label}): loop detected — re-decoding "
+              f"compact {s:.1f}s..{e:.1f}s with fresh state", file=sys.stderr)
+        slice_wav = os.path.join(temp_dir, f"retry_{track_id}_{k}.wav")
+        with wave.open(compact_wav, 'rb') as src:
+            rate = src.getframerate()
+            f0 = int(s * rate)
+            f1 = min(int(e * rate), src.getnframes())
+            src.setpos(f0)
+            frames = src.readframes(f1 - f0)
+            with wave.open(slice_wav, 'wb') as dst:
+                dst.setnchannels(src.getnchannels())
+                dst.setsampwidth(src.getsampwidth())
+                dst.setframerate(rate)
+                dst.writeframes(frames)
+        try:
+            out_prefix = os.path.join(temp_dir, f"retry_{track_id}_{k}")
+            json_path = run_whisper(whisper_bin, model, slice_wav, out_prefix,
+                                    language, lambda pct: None)
+            for w in parse_whisper_json(json_path):
+                w['file_start'] += s
+                w['file_end'] += s
+                redecoded.append(w)
+        finally:
+            _safe_remove(slice_wav)
+
+    def in_window(t):
+        return any(s <= t <= e for (s, e) in merged)
+
+    kept = [w for w in raw if not in_window((w['file_start'] + w['file_end']) / 2.0)]
+    out = sorted(kept + redecoded, key=lambda w: w['file_start'])
+    print(f"[transcribe] track {track_id} ({label}): loop retry replaced "
+          f"{len(raw) - len(kept)} words with {len(redecoded)} fresh-decoded words "
+          f"across {len(merged)} region(s)", file=sys.stderr)
+    return out
 
 
 def run_whisper(whisper_bin, model, wav, out_prefix, language, on_progress):
@@ -658,6 +734,8 @@ def transcribe(zip_path, whisper_bin, whisper_model, ffmpeg, language, max_secon
                 json_path = run_whisper(whisper_bin, whisper_model, compact, out_prefix,
                                         language, on_progress)
                 raw = parse_whisper_json(json_path)
+                raw = _retry_loop_regions(raw, compact, whisper_bin, whisper_model,
+                                          language, _temp_dir, track['id'], label)
                 mapped = map_words(track, raw, time_map)
                 if not mapped:
                     print(f"[transcribe] track {track['id']} ({label}) contributed 0 words",
