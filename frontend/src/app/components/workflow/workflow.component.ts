@@ -213,7 +213,8 @@ export class WorkflowComponent implements OnInit, OnDestroy {
       const result = await this.electronService.installAsset('voice-separator-env');
       if (result && result.ok) {
         this.separatorInstalled = true;
-        this.denoiseMics = true;   // default checked once available
+        // Deliberately NOT auto-checked: isolation stays opt-in per run until the
+        // pass is fully ready (same default as the field declaration).
         await this.refreshSeparatorStatus();
       } else {
         this.separatorError = result?.error || 'Install failed. Check your connection and retry.';
