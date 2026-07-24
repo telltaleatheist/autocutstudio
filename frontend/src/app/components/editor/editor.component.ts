@@ -83,7 +83,7 @@ interface RecentSession {
 }
 
 /** Timeline pointer tool: Arrow (scrub/select) or Blade (drop section boundaries). */
-type ToolMode = 'select' | 'blade';
+type ToolMode = 'select' | 'blade' | 'story';
 
 /**
  * A cut is a half-open FRAME range in ORIGINAL timeline coordinates (the manifest's time
@@ -307,13 +307,42 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // IPC, or any data contract. Reset on session re-init.
   stories: Story[] = [];
   private storyIdCounter = 0;          // monotonic id source (reset per session)
-  // Story Mode: a top-bar toggle. While ON, a canvas drag paints a region into the ACTIVE
-  // story (activeStoryId), or starts a new story when none is active. Cleared on session
-  // re-init; leaving the mode clears the active story.
-  storyMode = false;
+  // Story Mode is the THIRD pointer tool (alongside Select and Blade). While the tool is
+  // 'story', a canvas drag paints a region into the ACTIVE story (activeStoryId), or starts a
+  // new story when none is active. `storyMode` is DERIVED from toolMode (see getter) so the
+  // tabs, ribbon and paint logic all track the single tool state.
   activeStoryId: string | null = null;
+  // A selected story for delete: `regionIndex` null = the WHOLE story (notch click), a number =
+  // one CHUNK (ribbon-bar click), addressing the story's CANONICAL (merged) regions. Delete /
+  // Cmd+X act on THIS (a chunk removes just that region; a whole selection removes the story) —
+  // never rippling the timeline. Cleared by any other canvas gesture, Escape, or session reset.
+  storySelection: { storyId: string; regionIndex: number | null } | null = null;
   // Stable, distinct color per story NUMBER (cycled). Dark FCP-friendly hues.
   private readonly STORY_COLORS = ['#e8a33d', '#4a9eff', '#7bc98f', '#c98fd6', '#d67b7b', '#7bd6cf', '#e0c650', '#9a8ff0'];
+
+  // ── Story analysis (local Ollama LLM) ────────────────────────────────────────
+  // Chapter splitting + title suggestions. Ollama-only for now (no downloads); the model is the
+  // user's choice from their locally-pulled models.
+  ollamaModels: { id: string; name: string }[] = [];
+  ollamaConnected = false;
+  selectedOllamaModel = '';
+  private readonly OLLAMA_MODEL_KEY = 'editor.ollamaModel';
+  analyzing = false;
+  analyzeMessage = '';
+  analyzeError: string | null = null;
+
+  // Split modal — assign detected chapters to stories (any non-contiguous subset). `splitBuckets`
+  // are the target stories ([0] = the story being split); `splitAssign[i]` is chapter i's bucket
+  // index, or -1 for excluded (scrap).
+  splitModalOpen = false;
+  splitRunning = false;
+  splitError: string | null = null;
+  private splitStory: Story | null = null;
+  splitStoryTitle = '';
+  splitChapters: { index: number; startSeconds: number; endSeconds: number; label: string }[] = [];
+  splitAssign: number[] = [];
+  splitBuckets: { title: string }[] = [];
+  splitActiveBucket = 0;
 
   // ── Transcript ────────────────────────────────────────────────────────────
   // Stable per-track-id color, assigned by discovery order and cycled for extra tracks.
@@ -411,6 +440,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // progress/completion (from a superseded session) can never touch live UI.
     this.electron.onTranscribeProgress((d) => this.onTranscribeProgress(d));
     this.electron.onTranscribeComplete((d) => this.onTranscribeComplete(d));
+    // Load the local Ollama model list for the Stories-tab analyzer (non-blocking; the picker
+    // shows "is Ollama running?" until it connects).
+    void this.refreshOllamaModels();
     try {
       const res = await this.electron.getEditorPayload();
       if (res?.zipPath && res.zipPath !== this.currentZipPath) {
@@ -558,8 +590,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // Stories are per-session and NOT persisted (v1) — a re-init starts with none.
     this.stories = [];
     this.storyIdCounter = 0;
-    this.storyMode = false;
+    this.toolMode = 'select';
     this.activeStoryId = null;
+    this.storySelection = null;
     this.marqueeForStory = false;
     this.draggingStoryEdge = null;
     // A pending debounced save belongs to the PREVIOUS session — never let it fire
@@ -1087,6 +1120,25 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.selectedRanges = [];
     this.selectedGroupStart = null;
     this.selectedGroupEnd = null;
+    this.storySelection = null;
+  }
+
+  /** Cancel an in-flight HIGHLIGHT gesture (a marquee or shift-drag range) without committing it —
+   *  Escape mid-drag throws away an accidental highlight. Returns true if something was aborted.
+   *  Leaves no selection behind. Story-edge drags and playhead scrubs are not "highlights" and
+   *  are left to finish on mouseup. */
+  private abortInFlightGesture(): boolean {
+    if (!this.marqueeActive && !this.draggingSelection) return false;
+    this.marqueeActive = false;
+    this.marqueeMoved = false;
+    this.marqueeForStory = false;
+    this.draggingSelection = false;
+    this.selStart = null;
+    this.selEnd = null;
+    document.body.style.userSelect = '';
+    window.removeEventListener('mousemove', this.onWindowMouseMove);
+    window.removeEventListener('mouseup', this.onWindowMouseUp);
+    return true;
   }
 
   /**
@@ -1507,11 +1559,12 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const y = this.canvasEventY(ev);
     const inRuler = y <= this.RULER_H;
     const inRibbon = this.hasStories() && y > this.RULER_H && y <= this.RULER_H + this.ribbonHeight;
+    // Any fresh canvas gesture drops a prior story selection; the ribbon branch below re-sets it.
+    this.storySelection = null;
 
-    // A mousedown in the stories ribbon: grabbing a region EDGE (either mode) starts an
-    // edge drag that redefines that boundary. Otherwise, in Story Mode a click selects the
-    // story as the active paint target (click again to deselect); outside it, it reflects
-    // the story's region(s) into the timeline selection and scrolls into view.
+    // A mousedown in the stories ribbon: grabbing a region EDGE (any tool) starts an edge drag
+    // that redefines that boundary. Otherwise a click on a ribbon block SELECTS that story chunk
+    // (the delete target) and makes its story active — in any tool.
     if (inRibbon) {
       const edgeHit = this.storyEdgeAtX(this.timeToX(t));
       if (edgeHit) {
@@ -1526,12 +1579,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
           return;
         }
       }
-      const s = this.storyAtEdited(t);
-      if (this.storyMode) {
-        if (s) this.toggleActiveStory(s.id);
-      } else if (s) {
-        this.selectResolvedStory(s);
-      }
+      // A click on a ribbon block SELECTS that story chunk (region) — the target of a
+      // chunk-delete — and makes its story active, highlighting just that region. Clicking a
+      // gap in the ribbon (no block) leaves nothing selected.
+      const chunk = this.storyRegionAtEdited(t);
+      if (chunk) this.selectStoryChunk(chunk.storyId, chunk.regionIndex);
       this.requestRender();
       return;
     }
@@ -1566,7 +1618,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // routes it to a story rather than a cut selection. A bare click (no move) is a no-op.
     // With the BLADE tool active, story mode defers to the blade branch below — so the user
     // can pre-cut a section mid-clip and then paint stories against the new boundary.
-    if (this.storyMode && this.toolMode === 'select') {
+    if (this.toolMode === 'story') {
       this.selectedRanges = [];
       this.selStart = null;
       this.selEnd = null;
@@ -1720,9 +1772,17 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     });
   }
 
-  /** Switch the active pointer tool (Arrow / Blade). */
+  /** Switch the active pointer tool (Arrow / Blade / Story). Entering Story shows the Stories
+   *  tab (the tab binds to the derived `storyMode`); leaving it drops the active paint target
+   *  and any story selection. */
   setTool(mode: ToolMode): void {
+    if (this.toolMode === mode) return;
+    if (this.toolMode === 'story' && mode !== 'story') {
+      this.activeStoryId = null;
+      this.storySelection = null;
+    }
     this.toolMode = mode;
+    this.requestRender();
   }
 
   private onWindowMouseMove = (ev: MouseEvent): void => {
@@ -2054,22 +2114,28 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       ev.preventDefault();
       this.setTool('blade');               // FCP Blade tool
     } else if ((ev.key === 's' || ev.key === 'S') && !ev.metaKey && !ev.ctrlKey) {
-      // S: toggle Story Mode (drag to mark stories).
+      // S: switch to the Story tool (like A=Select, B=Blade). A/B leave it.
       if (this.loading) return;
       ev.preventDefault();
-      this.toggleStoryMode();
+      this.setTool('story');
     } else if ((ev.metaKey || ev.ctrlKey) && (ev.key === 'x' || ev.key === 'X')) {
-      // Cmd/Ctrl+X == ripple-delete the current selection (FCP alias for Delete).
+      // Cmd/Ctrl+X: a selected story chunk/story is removed from the story list; otherwise it's
+      // the FCP ripple-delete alias for the timeline selection.
       if (this.loading) return;
       ev.preventDefault();
+      if (this.storySelection) { this.deleteStorySelection(); return; }
       this.deleteSelection();
     } else if (ev.key === 'Delete' || ev.key === 'Backspace') {
       if (this.loading) return;
       ev.preventDefault();
+      if (this.storySelection) { this.deleteStorySelection(); return; }
       this.deleteSelection();
     } else if (ev.key === 'Escape') {
       if (this.loading) return;
-      // Clear the timeline selection (single + marquee) and the transcript-group highlight.
+      ev.preventDefault();
+      // A highlight in progress? Cancel it (throw away an accidental marquee) before anything
+      // else. Otherwise clear the timeline selection + transcript highlight + story selection.
+      if (this.abortInFlightGesture()) { this.requestRender(); return; }
       this.clearSelection();
       this.requestRender();
     }
@@ -2407,17 +2473,26 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
 
-  /** Switch Story Mode on/off (top-bar toggle, the left-pane tabs, and the S key all land
-   *  here). Leaving clears the active paint target. */
+  /** Story Mode is derived from the tool: it's ON exactly when the Story tool is active. Drives
+   *  the Edit/Stories tab highlight, the stories pane, and the paint gesture. */
+  get storyMode(): boolean {
+    return this.toolMode === 'story';
+  }
+
+  /** Enter/leave Story Mode by switching the tool (the left-pane tabs land here). */
   setStoryMode(on: boolean): void {
-    if (this.storyMode === on) return;
-    this.storyMode = on;
-    if (!on) this.activeStoryId = null;
-    this.requestRender();
+    this.setTool(on ? 'story' : 'select');
   }
 
   toggleStoryMode(): void {
-    this.setStoryMode(!this.storyMode);
+    this.setTool(this.storyMode ? 'select' : 'story');
+  }
+
+  /** Re-assign story numbers to 1..N in array order so project numbering is always sequential:
+   *  deleting a story shifts its successors down, and the color notch (cycled by number) tracks
+   *  it. Numbers are no longer user-editable — they simply reflect order. */
+  private renumberStories(): void {
+    this.stories.forEach((s, i) => { s.number = i + 1; });
   }
 
   /**
@@ -2451,7 +2526,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (active) {
       active.regions = this.mergeRegions([...active.regions, { start: lo, end: hi }]);
     } else {
-      const number = this.stories.reduce((mx, s) => Math.max(mx, s.number), 0) + 1;
+      const number = this.stories.length + 1;
       const story: Story = {
         id: `story-${++this.storyIdCounter}`,
         number,
@@ -2459,6 +2534,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         regions: [{ start: lo, end: hi }],
       };
       this.stories = [...this.stories, story];
+      this.renumberStories();
     }
     this.scheduleEditsSave();
     this.requestRender();
@@ -2472,22 +2548,64 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.requestRender();
   }
 
-  /** Inline number edit (immediate). Positive integers only; reorders export + ribbon color. */
-  onStoryNumberInput(story: Story, value: string): void {
-    const n = parseInt(value, 10);
-    if (Number.isFinite(n) && n > 0) {
-      story.number = n;
-      this.scheduleEditsSave();
-      this.requestRender();
-    }
+  /** Color-notch click: select the WHOLE story (all its regions) and make it the active paint
+   *  target. A follow-up Delete removes the whole story (× does the same); it never ripples the
+   *  timeline. */
+  selectWholeStory(story: Story): void {
+    this.storySelection = { storyId: story.id, regionIndex: null };
+    this.activeStoryId = story.id;
+    this.selectResolvedStory({ regions: this.mergeRegions(story.regions) });
+    this.requestRender();
   }
 
-  /** Delete a story (immediate, off the undo stack). Clears the active target if it was this one. */
+  /** Select one story CHUNK (region) as the delete target and make its story active. The story's
+   *  regions are canonicalized (merged) so `regionIndex` addresses story.regions directly, and
+   *  only that region is reflected into the timeline highlight. */
+  selectStoryChunk(storyId: string, regionIndex: number): void {
+    const story = this.stories.find(s => s.id === storyId);
+    if (!story) return;
+    story.regions = this.mergeRegions(story.regions);
+    this.storySelection = { storyId, regionIndex };
+    this.activeStoryId = storyId;
+    const region = story.regions[regionIndex];
+    this.selectResolvedStory({ regions: region ? [region] : [] });
+    this.requestRender();
+  }
+
+  /** Delete the current story selection WITHOUT touching the timeline: a chunk selection removes
+   *  just that region (the story survives even if it empties — use × to remove it entirely); a
+   *  whole-story selection removes the story. */
+  private deleteStorySelection(): void {
+    const sel = this.storySelection;
+    if (!sel) return;
+    const story = this.stories.find(s => s.id === sel.storyId);
+    if (!story) { this.storySelection = null; return; }
+    if (sel.regionIndex === null) {
+      this.deleteStory(story);
+      return;
+    }
+    story.regions = this.mergeRegions(story.regions);
+    if (sel.regionIndex >= 0 && sel.regionIndex < story.regions.length) {
+      story.regions.splice(sel.regionIndex, 1);
+    }
+    this.storySelection = null;
+    this.clearSelection();
+    this.scheduleEditsSave();
+    this.requestRender();
+    this.cdr.detectChanges();
+  }
+
+  /** Delete a whole story (immediate, off the undo stack). Clears active/selection if it was this
+   *  one, then resequences the remaining story numbers. */
   deleteStory(story: Story): void {
     this.stories = this.stories.filter(s => s.id !== story.id);
     if (this.activeStoryId === story.id) this.activeStoryId = null;
+    if (this.storySelection?.storyId === story.id) this.storySelection = null;
+    this.renumberStories();
+    this.clearSelection();
     this.scheduleEditsSave();
     this.requestRender();
+    this.cdr.detectChanges();
   }
 
   /** Enter in an inline story field commits by blurring it. */
@@ -2495,15 +2613,22 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     (ev.target as HTMLElement | null)?.blur();
   }
 
-  /** EDITED-seconds timecode span (first region start – last region end) for a story, with a
-   *  region count when it has more than one. Tracks cuts via originalToEdited. */
-  storyTimecode(story: Story): string {
+  /** Total EDITED duration of a story (sum of its regions), as "Xh Ym" / "Ym Zs" / "Zs" — how
+   *  long the story runs, not where it sits. A region count is appended when it has more than
+   *  one. Tracks cuts via originalToEdited. */
+  storyDuration(story: Story): string {
     const regions = this.mergeRegions(story.regions);
     if (regions.length === 0) return '—';
-    const a = this.formatTimecode(this.originalToEdited(regions[0].start));
-    const b = this.formatTimecode(this.originalToEdited(regions[regions.length - 1].end));
-    const count = regions.length > 1 ? `  ·  ${regions.length} regions` : '';
-    return `${a} – ${b}${count}`;
+    let total = 0;
+    for (const r of regions) {
+      total += Math.max(0, this.originalToEdited(r.end) - this.originalToEdited(r.start));
+    }
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = Math.floor(total % 60);
+    const dur = h > 0 ? `${h}h ${m}m` : (m > 0 ? `${m}m ${s}s` : `${s}s`);
+    const count = regions.length > 1 ? `  ·  ${regions.length} parts` : '';
+    return `${dur}${count}`;
   }
 
   /** Ribbon edge hit-test: the story-region edge within ±5 css px of `x`, or null. Checks
@@ -2571,6 +2696,22 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return null;
   }
 
+  /** The story CHUNK (merged-region index) whose span contains edited time `t`, or null. First
+   *  hit in number order wins (matches storyAtEdited). The index addresses the story's CANONICAL
+   *  (merged) regions — selectStoryChunk canonicalizes before using it. */
+  private storyRegionAtEdited(t: number): { storyId: string; regionIndex: number } | null {
+    for (const s of this.storiesForDisplay()) {
+      for (let i = 0; i < s.regions.length; i++) {
+        const lo = this.originalToEdited(s.regions[i].start);
+        const hi = this.originalToEdited(s.regions[i].end);
+        if (hi - lo > this.EPS && t >= lo - this.EPS && t <= hi + this.EPS) {
+          return { storyId: s.id, regionIndex: i };
+        }
+      }
+    }
+    return null;
+  }
+
   /** Reflect a resolved story's region(s) into the timeline selection and scroll into view. */
   private selectResolvedStory(s: { regions: { start: number; end: number }[] }): void {
     const ranges: { start: number; end: number }[] = [];
@@ -2597,6 +2738,313 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (lo < left || hi > right) {
       this.scrollOffset = this.clampScroll(lo - this.viewportSec * 0.1);
     }
+  }
+
+  // ── Story analysis (Ollama): model picker, chapter split, title suggestion ───
+
+  /** (Re)load the list of locally-installed Ollama models and reconcile the selection. */
+  async refreshOllamaModels(): Promise<void> {
+    if (!this.electron.isElectron()) return;
+    try {
+      const res = await this.electron.ollamaListModels();
+      this.ollamaConnected = res.connected;
+      this.ollamaModels = res.models || [];
+      const saved = localStorage.getItem(this.OLLAMA_MODEL_KEY) || '';
+      const has = (id: string) => this.ollamaModels.some(m => m.id === id);
+      if (saved && has(saved)) this.selectedOllamaModel = saved;
+      else if (!has(this.selectedOllamaModel)) this.selectedOllamaModel = this.ollamaModels[0]?.id || '';
+    } catch {
+      this.ollamaConnected = false;
+      this.ollamaModels = [];
+    }
+    this.cdr.detectChanges();
+  }
+
+  /** Model picker change — persist the choice. */
+  onOllamaModelChange(id: string): void {
+    this.selectedOllamaModel = id;
+    if (id) localStorage.setItem(this.OLLAMA_MODEL_KEY, id);
+  }
+
+  /** Transcript segments ({text, startSeconds, endSeconds} in ORIGINAL seconds) overlapping the
+   *  given ORIGINAL-second regions, chronological. Empty when nothing was transcribed there. */
+  private segmentsForRegions(regions: { start: number; end: number }[]): { text: string; startSeconds: number; endSeconds: number }[] {
+    const out: { text: string; startSeconds: number; endSeconds: number }[] = [];
+    for (const g of this.transcriptGroups) {
+      const overlaps = regions.some(r => g.originalEnd > r.start + this.EPS && g.originalStart < r.end - this.EPS);
+      if (!overlaps) continue;
+      const text = (g.text || '').trim();
+      if (text) out.push({ text, startSeconds: g.originalStart, endSeconds: g.originalEnd });
+    }
+    out.sort((a, b) => a.startSeconds - b.startSeconds);
+    return out;
+  }
+
+  /** Concatenated transcript text for a set of ORIGINAL-second regions (for title suggestion). */
+  private transcriptTextForRegions(regions: { start: number; end: number }[]): string {
+    return this.segmentsForRegions(regions).map(s => s.text).join(' ').trim();
+  }
+
+  /**
+   * Analyze the whole timeline from the Stories tab. With stories defined: suggest + auto-fill a
+   * title for each (one at a time; scrap — non-story content — excluded). With none: split the
+   * whole transcript into stories by subject change. Progress shows in the activity dock.
+   */
+  async analyzeTimeline(): Promise<void> {
+    if (this.analyzing || !this.selectedOllamaModel || this.transcriptState !== 'ready') return;
+    this.analyzing = true;
+    this.analyzeError = null;
+    this.activityOpen = true;   // surface progress in the floating dock
+    this.cdr.detectChanges();
+    try {
+      if (this.hasStories()) {
+        for (const s of this.stories) {
+          const text = this.transcriptTextForRegions(this.mergeRegions(s.regions));
+          if (!text) continue;
+          this.analyzeMessage = `Titling “${s.title || 'story'}”…`;
+          this.cdr.detectChanges();
+          const res = await this.electron.suggestStoryTitle({ text, model: this.selectedOllamaModel });
+          if (res.title) {
+            s.title = res.title;
+            this.scheduleEditsSave();
+            this.requestRender();
+            this.cdr.detectChanges();
+          }
+        }
+      } else {
+        this.analyzeMessage = 'Splitting the timeline into stories…';
+        this.cdr.detectChanges();
+        const dur = this.manifest?.timelineDuration || 0;
+        const segments = this.segmentsForRegions([{ start: 0, end: dur > 0 ? dur : Number.MAX_SAFE_INTEGER }]);
+        if (segments.length === 0) throw new Error('No transcript to analyze.');
+        const res = await this.electron.analyzeStoryChapters({ segments, model: this.selectedOllamaModel });
+        const chapters = res.chapters || [];
+        if (chapters.length === 0) throw new Error('No stories detected.');
+        const created: Story[] = chapters.map((c, i) => ({
+          id: `story-${++this.storyIdCounter}`,
+          number: i + 1,
+          title: this.cleanChapterLabel(c.label) || `Story ${i + 1}`,
+          regions: [{ start: c.startSeconds, end: c.endSeconds }],
+        }));
+        this.stories = [...this.stories, ...created];
+        this.renumberStories();
+        this.scheduleEditsSave();
+        this.requestRender();
+      }
+    } catch (err: any) {
+      this.analyzeError = err?.message || String(err);
+    } finally {
+      this.analyzing = false;
+      this.analyzeMessage = '';
+      this.cdr.detectChanges();
+    }
+  }
+
+  /** Open the Split modal for a story. Does NOT auto-run detection — the user picks a model and
+   *  hits Start (so no model loads until they ask). */
+  openSplitModal(story: Story): void {
+    this.splitStory = story;
+    this.splitStoryTitle = story.title;
+    this.splitModalOpen = true;
+    this.splitBuckets = [{ title: story.title }];
+    this.splitActiveBucket = 0;
+    this.splitChapters = [];
+    this.splitAssign = [];
+    this.splitError = null;
+    this.splitRunning = false;
+    this.cdr.detectChanges();
+  }
+
+  /** Start (or re-run) chapter detection on the open story with the CURRENT model — the Start
+   *  button in the modal header. Switching the model dropdown and hitting it again re-detects. */
+  async startSplit(): Promise<void> {
+    if (!this.splitStory || this.splitRunning) return;
+    await this.runSplitDetection();
+  }
+
+  /** Detect chapters for the open split story with the selected model. The chapters always tile
+   *  the story's full span (first→start, last→end), so coverage is complete even when a weak model
+   *  under-segments; the modal surfaces that via the coverage summary. */
+  private async runSplitDetection(): Promise<void> {
+    const story = this.splitStory;
+    if (!story) return;
+    this.splitError = null;
+    this.splitChapters = [];
+    this.splitAssign = [];
+    if (!this.selectedOllamaModel) {
+      this.splitError = 'Pick an Ollama model first (dropdown at the top of this dialog).';
+      this.splitRunning = false;
+      this.cdr.detectChanges();
+      return;
+    }
+    this.splitRunning = true;
+    this.cdr.detectChanges();
+    try {
+      const segments = this.segmentsForRegions(this.mergeRegions(story.regions));
+      if (segments.length === 0) throw new Error('No transcript in this story to split. Transcribe first.');
+      const res = await this.electron.analyzeStoryChapters({ segments, model: this.selectedOllamaModel });
+      this.splitChapters = (res.chapters || []).map(c => ({
+        index: c.index, startSeconds: c.startSeconds, endSeconds: c.endSeconds,
+        label: this.cleanChapterLabel(c.label),
+      }));
+      if (this.splitChapters.length === 0) throw new Error('No chapters detected.');
+      // No pre-selection — the user chooses which chapters go into which story (unassigned = scrap).
+      this.splitAssign = this.splitChapters.map(() => -1);
+    } catch (err: any) {
+      this.splitError = err?.message || String(err);
+    } finally {
+      this.splitRunning = false;
+      this.cdr.detectChanges();
+    }
+  }
+
+  /** Human-readable coverage summary for the detected chapters (count + the span they tile). Makes
+   *  it obvious when a model under-segments into one giant chapter vs. genuinely missing coverage. */
+  get splitCoverage(): string {
+    if (!this.splitChapters.length) return '';
+    const start = this.splitChapters[0].startSeconds;
+    const end = this.splitChapters[this.splitChapters.length - 1].endSeconds;
+    const n = this.splitChapters.length;
+    return `${n} chapter${n > 1 ? 's' : ''} · covers ${this.chapterClock(start)}–${this.chapterClock(end)}`;
+  }
+
+  setSplitActiveBucket(i: number): void { this.splitActiveBucket = i; }
+
+  addSplitBucket(): void {
+    this.splitBuckets.push({ title: `Story ${this.stories.length + this.splitBuckets.length}` });
+    this.splitActiveBucket = this.splitBuckets.length - 1;
+  }
+
+  removeSplitBucket(i: number): void {
+    if (i === 0) return;   // bucket 0 is the original story — never removed
+    this.splitAssign = this.splitAssign.map(b => (b === i ? -1 : (b > i ? b - 1 : b)));
+    this.splitBuckets.splice(i, 1);
+    if (this.splitActiveBucket >= this.splitBuckets.length) this.splitActiveBucket = 0;
+  }
+
+  onSplitBucketTitle(i: number, value: string): void {
+    if (this.splitBuckets[i]) this.splitBuckets[i].title = value;
+  }
+
+  /** Assign a chapter to the active bucket; re-click with the same active bucket excludes it (scrap). */
+  clickSplitChapter(i: number): void {
+    this.splitAssign[i] = this.splitAssign[i] === this.splitActiveBucket ? -1 : this.splitActiveBucket;
+  }
+
+  /** Preview color for a split bucket (bucket 0 = the original story's number; others preview
+   *  the numbers they'll receive). */
+  splitBucketColor(i: number): string {
+    const n = i === 0 ? (this.splitStory?.number || 1) : (this.stories.length + i);
+    return this.storyColor(n);
+  }
+
+  splitBucketCount(i: number): number { return this.splitAssign.filter(b => b === i).length; }
+  get splitScrapCount(): number { return this.splitAssign.filter(b => b === -1).length; }
+  /** True once at least one chapter is assigned to a story — gates Apply so a bare confirm can't
+   *  silently empty the story (everything left as scrap). */
+  get splitAnyAssigned(): boolean { return this.splitAssign.some(b => b >= 0); }
+
+  /** Compact clock (H:MM:SS / M:SS, no frames). */
+  private fmtClock(seconds: number): string {
+    const total = Math.max(0, Math.floor(seconds));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    return h > 0 ? `${h}:${this.pad2(m)}:${this.pad2(s)}` : `${m}:${this.pad2(s)}`;
+  }
+
+  /**
+   * STORY-LOCAL time of an ORIGINAL-second position: how far into the story's OWN content the
+   * position sits, i.e. the sum of the story's earlier regions' edited durations plus the edited
+   * offset within the region that contains it. This is where the moment lands in Final Cut Pro
+   * once the between-region content (and any cuts) is removed — so a story that sits 3 hours deep
+   * in the livestream but is only an hour of real content reads 0:00 … 1:00:00, not livestream time.
+   */
+  private storyLocalTime(originalSeconds: number, regions: { start: number; end: number }[]): number {
+    const sorted = [...regions].sort((a, b) => a.start - b.start);
+    let acc = 0;
+    for (const r of sorted) {
+      const es = this.originalToEdited(r.start);
+      const ee = this.originalToEdited(r.end);
+      const dur = Math.max(0, ee - es);
+      if (originalSeconds <= r.start + this.EPS) return acc;                 // before this region
+      if (originalSeconds <= r.end + this.EPS) {                             // inside this region
+        return acc + Math.max(0, this.originalToEdited(originalSeconds) - es);
+      }
+      acc += dur;
+    }
+    return acc;   // at/after the last region → the story's full length
+  }
+
+  /** Story-local clock for a chapter boundary in the open Split modal (relative to the split
+   *  story's own content, excluding between-region gaps — matching the FCP output). */
+  chapterClock(originalSeconds: number): string {
+    const regions = this.splitStory ? this.mergeRegions(this.splitStory.regions) : [];
+    return this.fmtClock(this.storyLocalTime(originalSeconds, regions));
+  }
+
+  /** Strip a leading "Chapter:", "Chapter 3:", "3." etc. that models often prepend, so story/chapter
+   *  labels read cleanly. Falls back to the original if stripping would empty it. */
+  private cleanChapterLabel(label: string): string {
+    const cleaned = (label || '').replace(/^\s*(chapter|part|section)\s*\d*\s*[:\-.)]?\s*/i, '').trim();
+    return cleaned || (label || '').trim();
+  }
+
+  /**
+   * Apply the split: rewrite the original story from bucket 0 and create a new story per other
+   * non-empty bucket. Each chapter's span is intersected with the story's ORIGINAL regions so
+   * the story's gaps are preserved (a story can be split across locations).
+   */
+  confirmSplit(): void {
+    const story = this.splitStory;
+    if (!story) { this.cancelSplit(); return; }
+    const orig = this.mergeRegions(story.regions);
+    const bucketRegions: { start: number; end: number }[][] = this.splitBuckets.map(() => []);
+    this.splitChapters.forEach((ch, idx) => {
+      const b = this.splitAssign[idx];
+      if (b < 0) return;   // excluded (scrap)
+      for (const r of orig) {
+        const lo = Math.max(r.start, ch.startSeconds);
+        const hi = Math.min(r.end, ch.endSeconds);
+        if (hi - lo > this.EPS) bucketRegions[b].push({ start: lo, end: hi });
+      }
+    });
+    // Bucket 0 rewrites the original story (empty ⇒ it keeps nothing, shown as empty).
+    story.regions = this.mergeRegions(bucketRegions[0]);
+    if (this.splitBuckets[0].title.trim()) story.title = this.splitBuckets[0].title.trim();
+    // Other non-empty buckets become new stories, inserted right after the original.
+    const newStories: Story[] = [];
+    for (let i = 1; i < this.splitBuckets.length; i++) {
+      const regions = this.mergeRegions(bucketRegions[i]);
+      if (regions.length === 0) continue;
+      newStories.push({
+        id: `story-${++this.storyIdCounter}`,
+        number: 0,   // renumbered below
+        title: this.splitBuckets[i].title.trim() || 'Story',
+        regions,
+      });
+    }
+    if (newStories.length) {
+      const at = this.stories.findIndex(s => s.id === story.id);
+      this.stories.splice(at + 1, 0, ...newStories);
+    }
+    this.renumberStories();
+    this.storySelection = null;
+    this.scheduleEditsSave();
+    this.requestRender();
+    this.cancelSplit();
+  }
+
+  cancelSplit(): void {
+    this.splitModalOpen = false;
+    this.splitStory = null;
+    this.splitChapters = [];
+    this.splitAssign = [];
+    this.splitBuckets = [];
+    this.splitActiveBucket = 0;
+    this.splitError = null;
+    this.splitRunning = false;
+    this.cdr.detectChanges();
   }
 
   // ── Top-bar File menu ────────────────────────────────────────────────────────
@@ -3039,9 +3487,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return Math.min(100, Math.round((this.peaksBurstDone / this.peaksBurstTotal) * 100));
   }
 
-  /** Anything worth a spinner: transcription, export, or waveform analysis in flight. */
+  /** Anything worth a spinner: transcription, export, waveform, or story analysis in flight. */
   get hasBackgroundActivity(): boolean {
-    return this.transcriptState === 'running' || this.exporting || this.waveformActive;
+    return this.transcriptState === 'running' || this.exporting || this.waveformActive || this.analyzing;
   }
 
   toggleActivity(): void {

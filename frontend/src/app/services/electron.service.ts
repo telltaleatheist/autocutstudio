@@ -217,6 +217,32 @@ export class ElectronService {
     }
   }
 
+  // --- Story analysis bridge (local Ollama LLM) ------------------------------
+  // Chapter splitting + title suggestions for Story Mode. Same loose-cast bridge
+  // pattern. Outside Electron these throw rather than pretend a model ran.
+
+  /** List locally-installed Ollama models for the Story-mode model picker. */
+  async ollamaListModels(host?: string): Promise<{ connected: boolean; models: Array<{ id: string; name: string }> }> {
+    if (!this.isElectron()) throw new Error('Not running in Electron');
+    return this.bridge.ollamaListModels(host ? { host } : undefined);
+  }
+
+  /** Split a span of transcript segments into consecutive subject chapters. */
+  async analyzeStoryChapters(payload: {
+    segments: Array<{ text: string; startSeconds: number; endSeconds: number }>;
+    model: string;
+    host?: string;
+  }): Promise<{ chapters: Array<{ index: number; startSeconds: number; endSeconds: number; label: string; verbalCue: boolean }> }> {
+    if (!this.isElectron()) throw new Error('Not running in Electron');
+    return this.bridge.analyzeStoryChapters(payload);
+  }
+
+  /** Suggest a single title for a story's transcript text. */
+  async suggestStoryTitle(payload: { text: string; model: string; host?: string }): Promise<{ title: string }> {
+    if (!this.isElectron()) throw new Error('Not running in Electron');
+    return this.bridge.suggestStoryTitle(payload);
+  }
+
   /**
    * Check if running in Electron
    */

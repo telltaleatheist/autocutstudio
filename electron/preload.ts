@@ -71,6 +71,11 @@ export interface ElectronAPI {
   onTranscribeComplete: (callback: (data: any) => void) => void;
   removeTranscribeListeners: () => void;
 
+  // Story analysis (local Ollama LLM)
+  ollamaListModels: (payload?: { host?: string }) => Promise<{ connected: boolean; models: Array<{ id: string; name: string }> }>;
+  analyzeStoryChapters: (payload: { segments: Array<{ text: string; startSeconds: number; endSeconds: number }>; model: string; host?: string }) => Promise<{ chapters: Array<{ index: number; startSeconds: number; endSeconds: number; label: string; verbalCue: boolean }> }>;
+  suggestStoryTitle: (payload: { text: string; model: string; host?: string }) => Promise<{ title: string }>;
+
   // Utility
   getAppVersion: () => Promise<string>;
   log: (level: string, ...args: any[]) => Promise<void>;
@@ -182,6 +187,11 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.removeAllListeners('transcribe-progress');
     ipcRenderer.removeAllListeners('transcribe-complete');
   },
+
+  // Story analysis (local Ollama LLM)
+  ollamaListModels: (payload) => ipcRenderer.invoke('ollama:list-models', payload),
+  analyzeStoryChapters: (payload) => ipcRenderer.invoke('story:analyze-chapters', payload),
+  suggestStoryTitle: (payload) => ipcRenderer.invoke('story:suggest-title', payload),
 
   // Utility
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),

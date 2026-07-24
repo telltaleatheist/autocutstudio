@@ -10,6 +10,8 @@ import { BinaryResolver } from '../services/binary-resolver';
 import { AlignmentAudioService } from '../services/alignment-audio-service';
 import { AppConfig } from '../config/app-config';
 import * as assetManager from '../services/asset-manager';
+import * as ollamaService from '../services/ollama-service';
+import { analyzeChapters, suggestTitle, Segment } from '../services/chapter-splitter';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -32,6 +34,49 @@ export function setupIpcHandlers(windowService: WindowService, pythonSvc: Python
   setupAssetHandlers(windowService);
   setupAlignmentHandlers(windowService);
   setupEditorHandlers(windowService);
+  setupStoryAnalysisHandlers();
+}
+
+/**
+ * Story-analysis handlers: local-LLM (Ollama) chapter splitting + title
+ * suggestions for Story Mode. All synchronous request/response — the renderer
+ * holds the transcript and passes the relevant segments in; the main process
+ * only runs the LLM call + phrase→timestamp mapping. Failures reject with the
+ * real error (Ollama down, empty response, unparseable) — never a fabricated
+ * result.
+ */
+function setupStoryAnalysisHandlers(): void {
+  // List locally-installed Ollama models (for the model picker).
+  ipcMain.handle('ollama:list-models', async (_event, payload?: { host?: string }) => {
+    return ollamaService.listModels(payload?.host);
+  });
+
+  // Split a span of transcript into consecutive subject chapters.
+  ipcMain.handle(
+    'story:analyze-chapters',
+    async (_event, payload: { segments: Segment[]; model: string; host?: string }) => {
+      const { segments, model, host } = payload || ({} as any);
+      if (!Array.isArray(segments) || segments.length === 0) {
+        throw new Error('No transcript segments provided for chapter analysis.');
+      }
+      const generate = (prompt: string, opts?: { numPredict?: number; temperature?: number }) =>
+        ollamaService.generate(model, prompt, { host, ...opts });
+      const chapters = await analyzeChapters(segments, model, generate);
+      return { chapters };
+    }
+  );
+
+  // Suggest a single title for a story's transcript text.
+  ipcMain.handle(
+    'story:suggest-title',
+    async (_event, payload: { text: string; model: string; host?: string }) => {
+      const { text, model, host } = payload || ({} as any);
+      const generate = (prompt: string, opts?: { numPredict?: number; temperature?: number }) =>
+        ollamaService.generate(model, prompt, { host, ...opts });
+      const title = await suggestTitle(text, generate);
+      return { title };
+    }
+  );
 }
 
 /**

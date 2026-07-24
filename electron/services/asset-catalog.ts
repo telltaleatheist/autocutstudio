@@ -148,21 +148,22 @@ const CATALOG: AssetComponent[] = [
     ],
   },
 
-  // ── Whisper large-v3 model (REQUIRED; the app's one transcription model) ────
+  // ── Whisper base model (REQUIRED; the app's default transcription model) ────
   // Installed by the first-launch setup screen — deliberately NOT a user choice of
-  // sizes. large-v3 was picked over medium for accuracy and, notably, verbatimness:
-  // it surfaces more disfluencies (um/uh) than medium, which the transcript feature
-  // wants. It uses 128 mel filterbanks (medium uses 80) — the bundled whisper-cli is
-  // new enough (verified it loads v3). The transcript sidecar records which model ran.
+  // sizes. base is the default: small (~148 MB) and fast, so it downloads quickly
+  // and transcribes cheaply while iterating. (It does NOT reliably surface fillers
+  // like um/uh — that's a training property of Whisper at every size — so a heavier
+  // model can be swapped back in here later if verbatimness becomes the priority.)
+  // The transcript sidecar records which model actually ran.
   {
-    id: 'whisper-large-v3',
+    id: 'whisper-base',
     name: 'Whisper speech-recognition model',
     description: 'Speech-to-text model used for transcription and story transcripts.',
     category: 'models',
     required: true,
     installSubdir: 'whisper',
-    version: 'large-v3',
-    entry: 'ggml-large-v3.bin',
+    version: 'base',
+    entry: 'ggml-base.bin',
     artifacts: [
       // Cross-platform single file — same model on every OS. sha256/bytes verified
       // against the file downloaded from this exact URL.
@@ -171,10 +172,10 @@ const CATALOG: AssetComponent[] = [
           platform,
           arch,
           kind: 'file' as const,
-          url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin',
-          sha256: '64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2',
-          bytes: 3095033483,
-          fileName: 'ggml-large-v3.bin',
+          url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin',
+          sha256: '60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe',
+          bytes: 147951465,
+          fileName: 'ggml-base.bin',
         }))
       ),
     ],

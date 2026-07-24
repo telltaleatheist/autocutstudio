@@ -204,6 +204,53 @@
     padding: 2px 4px 4px;
   }
 
+  /* Analyze toolbar: local-model picker + refresh + analyze/auto-split. */
+  .stories-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 4px 8px;
+
+    .story-model {
+      flex: 1 1 auto;
+      min-width: 0;
+      font-size: 11px;
+      color: #e2e2e6;
+      background: #1c1c1f;
+      border: 1px solid #3a3a40;
+      border-radius: 4px;
+      padding: 3px 6px;
+      outline: none;
+      &:focus { border-color: #55555c; }
+    }
+    .story-refresh {
+      flex: 0 0 auto;
+      width: 24px;
+      font-size: 13px;
+      line-height: 1;
+      color: #b8b8be;
+      background: #2b2b30;
+      border: 1px solid #3a3a40;
+      border-radius: 4px;
+      padding: 3px 0;
+      cursor: pointer;
+      &:hover { background: #34343a; color: #fff; }
+    }
+    .story-analyze {
+      flex: 0 0 auto;
+      font-size: 11px;
+      font-weight: 600;
+      color: #fff;
+      background: #3a7bd0;
+      border: 1px solid #2b5ea0;
+      border-radius: 4px;
+      padding: 4px 10px;
+      cursor: pointer;
+      &:hover:not(:disabled) { background: #4589e0; }
+      &:disabled { opacity: 0.45; cursor: default; }
+    }
+  }
+
   .story-row {
     display: flex;
     align-items: center;
@@ -219,13 +266,38 @@
       background: #2c2618;
       box-shadow: inset 2px 0 0 #e8a33d;
     }
+    /* Selected (chunk or whole story): brighter blue rail so it reads as the delete target. */
+    &.selected {
+      background: #1b2740;
+      box-shadow: inset 2px 0 0 #4a9eff;
+    }
 
-    .story-swatch { flex: 0 0 auto; width: 10px; height: 10px; border-radius: 2px; }
+    /* Color notch — clickable, selects the whole story. */
+    .story-swatch {
+      flex: 0 0 auto;
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      cursor: pointer;
+      &:hover { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25); }
+    }
 
-    /* Inline-editable number + title share the dark field look. */
-    .story-num,
-    .story-title {
+    /* Sequential number — a plain label now (no longer editable). */
+    .story-num {
+      flex: 0 0 auto;
+      width: 20px;
+      text-align: right;
       font-size: 11px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      color: #9a9aa2;
+    }
+
+    /* Inline-editable title keeps the dark field look. */
+    .story-title {
+      flex: 1 1 auto;
+      min-width: 0;
+      font-size: 12px;
       color: #e2e2e6;
       background: #1c1c1f;
       border: 1px solid #3a3a40;
@@ -233,11 +305,8 @@
       padding: 2px 6px;
       outline: none;
       font-family: inherit;
-
       &:focus { border-color: #55555c; }
     }
-    .story-num { flex: 0 0 auto; width: 42px; font-variant-numeric: tabular-nums; }
-    .story-title { flex: 1 1 auto; min-width: 0; font-size: 12px; }
 
     .story-tc {
       flex: 0 0 auto;
@@ -245,6 +314,20 @@
       font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
       color: #7a7a80;
       white-space: nowrap;
+    }
+
+    .story-split {
+      flex: 0 0 auto;
+      font-size: 10px;
+      font-weight: 600;
+      color: #c4c4ca;
+      background: #2b2b30;
+      border: 1px solid #3a3a40;
+      border-radius: 3px;
+      padding: 2px 7px;
+      cursor: pointer;
+      &:hover:not(:disabled) { background: #34343a; color: #fff; }
+      &:disabled { opacity: 0.4; cursor: default; }
     }
 
     .story-empty {
@@ -1291,4 +1374,230 @@
 @keyframes activity-sweep {
   0% { margin-left: -40%; }
   100% { margin-left: 100%; }
+}
+
+/* Story-analysis failure line in the activity dock. */
+.activity-error {
+  font-size: 11px;
+  color: #e6a597;
+  line-height: 1.35;
+  padding: 4px 2px 2px;
+}
+
+/* Split modal — assign AI-detected chapters to stories (any non-contiguous subset). Lives inside
+   the shared .modal-backdrop; its own card because the layout differs from the export modal. */
+.split-modal {
+  width: min(640px, 100%);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  background: #202023;
+  border: 1px solid #0d0d0e;
+  border-radius: 10px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+
+  .split-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 12px 14px;
+    border-bottom: 1px solid #2c2c31;
+
+    .split-title { flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; color: #e8e8ec; }
+    .split-model {
+      flex: 0 1 auto;
+      max-width: 180px;
+      font-size: 11px;
+      color: #e2e2e6;
+      background: #1c1c1f;
+      border: 1px solid #3a3a40;
+      border-radius: 4px;
+      padding: 3px 6px;
+      outline: none;
+      &:focus { border-color: #55555c; }
+    }
+    .split-rerun {
+      flex: 0 0 auto;
+      font-size: 11px;
+      font-weight: 600;
+      color: #c4c4ca;
+      background: #2b2b30;
+      border: 1px solid #3a3a40;
+      border-radius: 4px;
+      padding: 4px 10px;
+      cursor: pointer;
+      &:hover:not(:disabled) { background: #34343a; color: #fff; }
+      &:disabled { opacity: 0.45; cursor: default; }
+    }
+    .split-x {
+      flex: 0 0 auto;
+      font-size: 18px;
+      line-height: 1;
+      color: #8a8a90;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      &:hover { color: #fff; }
+    }
+  }
+
+  .split-idle { padding: 30px 16px; font-size: 12px; color: #9a9aa2; text-align: center; line-height: 1.5; b { color: #cfcfd4; } }
+  .split-loading { padding: 22px 16px; font-size: 12px; color: #b8b8be; text-align: center; }
+  .split-error { padding: 18px 16px; font-size: 12px; color: #e6a597; line-height: 1.4; }
+
+  .split-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 14px;
+    overflow: hidden;
+  }
+
+  /* Target stories (buckets). */
+  .split-buckets {
+    flex: 0 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+
+    .split-bucket {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 220px;
+      background: #1c1c1f;
+      border: 1px solid #3a3a40;
+      border-radius: 6px;
+      padding: 3px 6px;
+      cursor: pointer;
+
+      &.active { border-color: #4a9eff; box-shadow: 0 0 0 1px #4a9eff inset; }
+
+      .split-bucket-swatch { flex: 0 0 auto; width: 11px; height: 11px; border-radius: 3px; }
+      .split-bucket-title {
+        flex: 1 1 auto;
+        min-width: 60px;
+        width: 100px;
+        font-size: 11px;
+        color: #e2e2e6;
+        background: transparent;
+        border: none;
+        outline: none;
+        font-family: inherit;
+      }
+      .split-bucket-count {
+        flex: 0 0 auto;
+        font-size: 10px;
+        font-weight: 700;
+        color: #9a9aa2;
+        font-variant-numeric: tabular-nums;
+      }
+      .split-bucket-del {
+        flex: 0 0 auto;
+        font-size: 13px;
+        line-height: 1;
+        color: #8a8a90;
+        &:hover { color: #e08a7a; }
+      }
+    }
+
+    .split-add {
+      font-size: 11px;
+      font-weight: 600;
+      color: #b8b8be;
+      background: #2b2b30;
+      border: 1px dashed #46464d;
+      border-radius: 6px;
+      padding: 3px 10px;
+      cursor: pointer;
+      &:hover { background: #34343a; color: #fff; }
+    }
+  }
+
+  /* Chapters list — click to assign to the active bucket. Tall enough for ~10 rows even when
+     fewer are detected; scrolls beyond that. */
+  .split-chapters {
+    flex: 1 1 auto;
+    min-height: 380px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding-right: 2px;
+
+    .split-chapter {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 8px;
+      background: #1c1c1f;
+      border: 1px solid #2c2c31;
+      border-left: 3px solid transparent;
+      border-radius: 5px;
+      cursor: pointer;
+
+      &:hover { background: #26262a; }
+      &.excluded { opacity: 0.5; }
+
+      .split-chapter-time {
+        flex: 0 0 auto;
+        font-size: 10px;
+        font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+        color: #7a7a80;
+        width: 118px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .split-chapter-label { flex: 1 1 auto; min-width: 0; font-size: 12px; color: #e2e2e6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .split-chapter-badge {
+        flex: 0 0 auto;
+        font-size: 9.5px;
+        font-weight: 700;
+        color: #0d0d0e;
+        border-radius: 3px;
+        padding: 1px 6px;
+        min-width: 16px;
+        text-align: center;
+        &.scrap { background: #46464d; color: #b8b8be; }
+      }
+    }
+  }
+
+  .split-foot {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-top: 1px solid #2c2c31;
+
+    .split-coverage { font-size: 11px; color: #7bc98f; white-space: nowrap; }
+    .split-scrap-note { font-size: 11px; color: #d8a24a; }
+    .split-hint { flex: 1 1 auto; font-size: 11px; color: #6f6f77; }
+
+    .modal-btn {
+      font-size: 12px;
+      font-weight: 500;
+      color: #e2e2e6;
+      background: #3a3a40;
+      border: 1px solid #0d0d0e;
+      border-radius: 5px;
+      padding: 6px 14px;
+      cursor: pointer;
+      transition: background 0.12s ease;
+      &:hover { background: #47474e; }
+      &.primary {
+        background: #3a7bd0;
+        border-color: #2b5ea0;
+        color: #fff;
+        &:hover:not(:disabled) { background: #4589e0; }
+        &:disabled { opacity: 0.45; cursor: default; }
+      }
+    }
+  }
 }

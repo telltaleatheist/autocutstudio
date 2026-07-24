@@ -136,7 +136,87 @@
         <div class="activity-task-sub">{{ peaksBurstDone }} / {{ peaksBurstTotal }} clips</div>
       </div>
 
-      <div class="activity-idle" *ngIf="!hasBackgroundActivity">No background activity.</div>
+      <!-- Story analysis (chapter split / title suggestions). -->
+      <div class="activity-task" *ngIf="analyzing">
+        <div class="activity-task-row">
+          <span class="activity-task-name">Analyzing stories</span>
+        </div>
+        <div class="activity-bar indeterminate"><div class="activity-bar-fill"></div></div>
+        <div class="activity-task-sub">{{ analyzeMessage || 'Working…' }}</div>
+      </div>
+
+      <div class="activity-idle" *ngIf="!hasBackgroundActivity && !analyzeError">No background activity.</div>
+      <div class="activity-error" *ngIf="analyzeError && !analyzing">Analysis failed: {{ analyzeError }}</div>
+    </div>
+  </div>
+
+  <!-- Split modal: assign AI-detected chapters to stories (any non-contiguous subset). -->
+  <div class="modal-backdrop" *ngIf="splitModalOpen" (click)="cancelSplit()">
+    <div class="split-modal" (click)="$event.stopPropagation()">
+      <div class="split-head">
+        <span class="split-title">Split “{{ splitStoryTitle }}” into chapters</span>
+        <select class="split-model" [value]="selectedOllamaModel"
+                (change)="onOllamaModelChange($any($event.target).value)"
+                title="Model used for chapter detection — a larger model finds more subject breaks">
+          <option *ngIf="ollamaModels.length === 0" value="">No models — is Ollama running?</option>
+          <option *ngFor="let m of ollamaModels" [value]="m.id">{{ m.name }}</option>
+        </select>
+        <button class="split-rerun" (click)="startSplit()"
+                [disabled]="splitRunning || !selectedOllamaModel" title="Detect chapters with the chosen model">
+          {{ splitRunning ? '…' : (splitChapters.length ? 'Re-run' : 'Start') }}
+        </button>
+        <button class="split-x" (click)="cancelSplit()" title="Close">×</button>
+      </div>
+
+      <!-- Idle: nothing runs until Start is pressed (no model loads on open). -->
+      <div class="split-idle" *ngIf="!splitRunning && !splitError && !splitChapters.length">
+        Pick a model above, then hit <b>Start</b> to detect chapters for this story.
+      </div>
+      <div class="split-loading" *ngIf="splitRunning">Detecting chapters with {{ selectedOllamaModel }}…</div>
+      <div class="split-error" *ngIf="splitError && !splitRunning">{{ splitError }}</div>
+
+      <div class="split-body" *ngIf="!splitRunning && !splitError && splitChapters.length">
+        <!-- Target stories (buckets). Click one to make it the assignment target. -->
+        <div class="split-buckets">
+          <div class="split-bucket" *ngFor="let b of splitBuckets; let bi = index"
+               [class.active]="bi === splitActiveBucket"
+               (click)="setSplitActiveBucket(bi)">
+            <span class="split-bucket-swatch" [style.background]="splitBucketColor(bi)"></span>
+            <input class="split-bucket-title" [value]="b.title"
+                   (click)="$event.stopPropagation()"
+                   (input)="onSplitBucketTitle(bi, $any($event.target).value)"
+                   placeholder="Story title" />
+            <span class="split-bucket-count">{{ splitBucketCount(bi) }}</span>
+            <span class="split-bucket-del" *ngIf="bi > 0"
+                  (click)="removeSplitBucket(bi); $event.stopPropagation()" title="Remove story">×</span>
+          </div>
+          <button class="split-add" (click)="addSplitBucket()">+ Add story</button>
+        </div>
+
+        <!-- Chapters: click to assign to the active story (re-click to exclude). -->
+        <div class="split-chapters">
+          <div class="split-chapter" *ngFor="let c of splitChapters; let ci = index"
+               [class.excluded]="splitAssign[ci] < 0"
+               (click)="clickSplitChapter(ci)"
+               [style.borderLeftColor]="splitAssign[ci] >= 0 ? splitBucketColor(splitAssign[ci]) : 'transparent'">
+            <span class="split-chapter-time">{{ chapterClock(c.startSeconds) }}–{{ chapterClock(c.endSeconds) }}</span>
+            <span class="split-chapter-label">{{ c.label }}</span>
+            <span class="split-chapter-badge" *ngIf="splitAssign[ci] >= 0"
+                  [style.background]="splitBucketColor(splitAssign[ci])">{{ splitAssign[ci] + 1 }}</span>
+            <span class="split-chapter-badge scrap" *ngIf="splitAssign[ci] < 0">scrap</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="split-foot" *ngIf="!splitRunning">
+        <span class="split-coverage" *ngIf="splitChapters.length && !splitError">{{ splitCoverage }}</span>
+        <span class="split-scrap-note" *ngIf="splitChapters.length && splitScrapCount > 0">{{ splitScrapCount }} unassigned</span>
+        <span class="split-hint">Pick a story above, then click chapters to add them.</span>
+        <button class="modal-btn" (click)="cancelSplit()">Cancel</button>
+        <button class="modal-btn primary" (click)="confirmSplit()"
+                [disabled]="!splitChapters.length || !!splitError || !splitAnyAssigned"
+                title="Assign at least one chapter to a story">Apply</button>
+      </div>
     </div>
   </div>
 
@@ -180,29 +260,51 @@
         </button>
       </div>
 
-      <!-- Stories tab: hint + editable story list (number / title / timecode / delete);
-           clicking a row makes it the active paint target. -->
+      <!-- Stories tab: analyze toolbar + story list (color notch / sequential number / editable
+           title / total length / split / delete). Clicking a row makes it the active paint
+           target; clicking the color notch selects the whole story; Split opens the chapter
+           modal. -->
       <div class="stories-pane" *ngIf="storyMode">
+        <div class="stories-toolbar">
+          <select class="story-model" [value]="selectedOllamaModel"
+                  (change)="onOllamaModelChange($any($event.target).value)"
+                  [title]="ollamaConnected ? 'Local Ollama model used for analysis' : 'Ollama not detected — start it, then refresh'">
+            <option *ngIf="ollamaModels.length === 0" value="">No models — is Ollama running?</option>
+            <option *ngFor="let m of ollamaModels" [value]="m.id">{{ m.name }}</option>
+          </select>
+          <button class="story-refresh" (click)="refreshOllamaModels()" title="Refresh model list">⟳</button>
+          <button class="story-analyze" (click)="analyzeTimeline()"
+                  [disabled]="analyzing || !selectedOllamaModel || transcriptState !== 'ready'"
+                  [title]="hasStories()
+                      ? 'Suggest a title for each story (scrap excluded)'
+                      : 'Split the whole timeline into stories by subject'">
+            {{ analyzing ? 'Analyzing…' : (hasStories() ? 'Suggest titles' : 'Auto-split') }}
+          </button>
+        </div>
         <div class="stories-hint">
           {{ activeStoryId
               ? 'Adding regions to the selected story — drag on the timeline to add more. Click it again to start a new one.'
               : 'Drag on the timeline to start a new story — edges take whole clips. Click a story below to add more regions to it; drag its edges in the strip to adjust. Need a mid-clip boundary? Cut it with the Blade (B) first.' }}
         </div>
-        <div class="stories-empty" *ngIf="!hasStories()">No stories yet — drag on the timeline to mark one.</div>
+        <div class="stories-empty" *ngIf="!hasStories()">No stories yet — drag on the timeline to mark one, or Auto-split.</div>
         <div class="story-row" *ngFor="let s of stories"
              [class.active]="s.id === activeStoryId"
+             [class.selected]="storySelection?.storyId === s.id"
              (click)="onStoryRowClick(s, $event)"
              [title]="s.id === activeStoryId ? 'Active — drags add regions here' : 'Click to make active'">
-          <span class="story-swatch" [style.background]="storyColor(s.number)"></span>
-          <input class="story-num" type="number" min="1" [value]="s.number"
-                 (input)="onStoryNumberInput(s, $any($event.target).value)"
-                 (keydown.enter)="blurStoryInput($event)" title="Project number" />
+          <span class="story-swatch" [style.background]="storyColor(s.number)"
+                (click)="selectWholeStory(s); $event.stopPropagation()"
+                title="Select the whole story"></span>
+          <span class="story-num">{{ s.number }}</span>
           <input class="story-title" id="story-title-{{ s.id }}" [value]="s.title"
                  (input)="onStoryTitleInput(s, $any($event.target).value)"
                  (keydown.enter)="blurStoryInput($event)" placeholder="Story title" />
-          <span class="story-tc">{{ storyTimecode(s) }}</span>
+          <span class="story-tc">{{ storyDuration(s) }}</span>
           <span class="story-empty" *ngIf="isStoryEmpty(s)" title="No regions">empty</span>
-          <button class="story-del" (click)="deleteStory(s)" title="Delete story">×</button>
+          <button class="story-split" (click)="openSplitModal(s); $event.stopPropagation()"
+                  [disabled]="isStoryEmpty(s) || transcriptState !== 'ready'"
+                  title="Split this story into chapters">Split</button>
+          <button class="story-del" (click)="deleteStory(s); $event.stopPropagation()" title="Delete story">×</button>
         </div>
       </div>
 
@@ -301,7 +403,7 @@
 
   <!-- Timeline pane. -->
   <section class="timeline-pane" [style.flexBasis.%]="splitH * 100">
-    <!-- Toolbar strip above the ruler: Select / Blade tools. -->
+    <!-- Toolbar strip above the ruler: Select / Blade / Story tools. -->
     <div class="timeline-toolbar">
       <div class="tool-toggle">
         <button class="tool-btn" [class.active]="toolMode === 'select'"
@@ -311,6 +413,10 @@
         <button class="tool-btn" [class.active]="toolMode === 'blade'"
                 (click)="setTool('blade')" title="Blade (B)" aria-label="Blade tool">
           <span class="tool-ico">▮</span>
+        </button>
+        <button class="tool-btn" [class.active]="toolMode === 'story'"
+                (click)="setTool('story')" title="Story (S)" aria-label="Story tool">
+          <span class="tool-ico">▤</span>
         </button>
       </div>
     </div>
