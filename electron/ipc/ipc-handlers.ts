@@ -51,17 +51,21 @@ function setupStoryAnalysisHandlers(): void {
     return ollamaService.listModels(payload?.host);
   });
 
-  // Split a span of transcript into consecutive subject chapters.
+  // Split a span of transcript into consecutive subject chapters. Streams step progress back to
+  // the calling renderer (one step per window, plus a titling step) on 'story:analyze-progress'.
   ipcMain.handle(
     'story:analyze-chapters',
-    async (_event, payload: { segments: Segment[]; model: string; host?: string }) => {
+    async (event, payload: { segments: Segment[]; model: string; host?: string }) => {
       const { segments, model, host } = payload || ({} as any);
       if (!Array.isArray(segments) || segments.length === 0) {
         throw new Error('No transcript segments provided for chapter analysis.');
       }
       const generate = (prompt: string, opts?: { numPredict?: number; temperature?: number }) =>
         ollamaService.generate(model, prompt, { host, ...opts });
-      const chapters = await analyzeChapters(segments, model, generate);
+      const onProgress = (p: { phase: string; done: number; total: number }) => {
+        if (!event.sender.isDestroyed()) event.sender.send('story:analyze-progress', p);
+      };
+      const chapters = await analyzeChapters(segments, model, generate, onProgress);
       return { chapters };
     }
   );

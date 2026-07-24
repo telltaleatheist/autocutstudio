@@ -75,6 +75,8 @@ export interface ElectronAPI {
   ollamaListModels: (payload?: { host?: string }) => Promise<{ connected: boolean; models: Array<{ id: string; name: string }> }>;
   analyzeStoryChapters: (payload: { segments: Array<{ text: string; startSeconds: number; endSeconds: number }>; model: string; host?: string }) => Promise<{ chapters: Array<{ index: number; startSeconds: number; endSeconds: number; label: string; verbalCue: boolean }> }>;
   suggestStoryTitle: (payload: { text: string; model: string; host?: string }) => Promise<{ title: string }>;
+  onStoryAnalyzeProgress: (callback: (p: { phase: string; done: number; total: number }) => void) => void;
+  removeStoryAnalyzeProgressListener: () => void;
 
   // Utility
   getAppVersion: () => Promise<string>;
@@ -192,6 +194,12 @@ const electronAPI: ElectronAPI = {
   ollamaListModels: (payload) => ipcRenderer.invoke('ollama:list-models', payload),
   analyzeStoryChapters: (payload) => ipcRenderer.invoke('story:analyze-chapters', payload),
   suggestStoryTitle: (payload) => ipcRenderer.invoke('story:suggest-title', payload),
+  onStoryAnalyzeProgress: (callback) => {
+    ipcRenderer.on('story:analyze-progress', (_event, p) => callback(p));
+  },
+  removeStoryAnalyzeProgressListener: () => {
+    ipcRenderer.removeAllListeners('story:analyze-progress');
+  },
 
   // Utility
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),

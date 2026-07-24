@@ -140,9 +140,11 @@
       <div class="activity-task" *ngIf="analyzing">
         <div class="activity-task-row">
           <span class="activity-task-name">Analyzing stories</span>
+          <span class="activity-task-pct" *ngIf="aiProgressTotal > 0">{{ aiProgressPct }}%</span>
         </div>
-        <div class="activity-bar indeterminate"><div class="activity-bar-fill"></div></div>
-        <div class="activity-task-sub">{{ analyzeMessage || 'Working…' }}</div>
+        <div class="activity-bar" *ngIf="aiProgressTotal > 0"><div class="activity-bar-fill" [style.width.%]="aiProgressPct"></div></div>
+        <div class="activity-bar indeterminate" *ngIf="aiProgressTotal <= 0"><div class="activity-bar-fill"></div></div>
+        <div class="activity-task-sub">{{ analyzeMessage || aiPhase || 'Working…' }}</div>
       </div>
 
       <div class="activity-idle" *ngIf="!hasBackgroundActivity && !analyzeError">No background activity.</div>
@@ -172,7 +174,16 @@
       <div class="split-idle" *ngIf="!splitRunning && !splitError && !splitChapters.length">
         Pick a model above, then hit <b>Start</b> to detect chapters for this story.
       </div>
-      <div class="split-loading" *ngIf="splitRunning">Detecting chapters with {{ selectedOllamaModel }}…</div>
+      <div class="split-loading" *ngIf="splitRunning">
+        <div class="split-loading-text">{{ aiPhase || 'Detecting chapters' }} · {{ selectedOllamaModel }}</div>
+        <div class="split-progress">
+          <div class="split-progress-fill" [class.indeterminate]="aiProgressTotal <= 0"
+               [style.width.%]="aiProgressTotal > 0 ? aiProgressPct : 100"></div>
+        </div>
+        <div class="split-progress-pct" *ngIf="aiProgressTotal > 0">
+          step {{ aiProgressDone }} / {{ aiProgressTotal }} · {{ aiProgressPct }}%
+        </div>
+      </div>
       <div class="split-error" *ngIf="splitError && !splitRunning">{{ splitError }}</div>
 
       <div class="split-body" *ngIf="!splitRunning && !splitError && splitChapters.length">
@@ -210,6 +221,7 @@
 
       <div class="split-foot" *ngIf="!splitRunning">
         <span class="split-coverage" *ngIf="splitChapters.length && !splitError">{{ splitCoverage }}</span>
+        <span class="split-cached" *ngIf="splitFromCache && splitChapters.length" title="Showing the saved analysis — Re-run to re-detect with the model">cached · Re-run to refresh</span>
         <span class="split-scrap-note" *ngIf="splitChapters.length && splitScrapCount > 0">{{ splitScrapCount }} unassigned</span>
         <span class="split-hint">Pick a story above, then click chapters to add them.</span>
         <button class="modal-btn" (click)="cancelSplit()">Cancel</button>

@@ -243,6 +243,19 @@ export class ElectronService {
     return this.bridge.suggestStoryTitle(payload);
   }
 
+  /** Per-step progress of a running chapter analysis (one step per window + a titling step). */
+  onStoryAnalyzeProgress(callback: (p: { phase: string; done: number; total: number }) => void): void {
+    if (this.isElectron()) {
+      this.bridge.onStoryAnalyzeProgress((p: any) => this.ngZone.run(() => callback(p)));
+    }
+  }
+
+  removeStoryAnalyzeProgressListener(): void {
+    if (this.isElectron()) {
+      this.bridge.removeStoryAnalyzeProgressListener();
+    }
+  }
+
   /**
    * Check if running in Electron
    */

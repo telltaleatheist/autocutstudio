@@ -102,7 +102,28 @@ export interface Cut { startFrame: number; endFrame: number; }
  * max existing + 1, editable) that orders the exported projects. Not persisted across
  * sessions (v1); reset on session re-init.
  */
-export interface Story { id: string; number: number; title: string; regions: { start: number; end: number }[]; }
+export interface Story {
+  id: string;
+  number: number;
+  title: string;
+  regions: { start: number; end: number }[];
+  /**
+   * Cached chapter-split analysis so reopening Split is instant and reworkable without re-running
+   * the model. `regions` is the span that was ANALYZED (the re-apply intersection basis, which may
+   * differ from `regions` above once a split has been applied); `chapters` the detected list;
+   * `assign`/`buckets` the last modal layout to restore; `childIds` the stories the last Apply
+   * created (deleted + recreated on re-apply so rework never duplicates). Off the export payload.
+   */
+  split?: StorySplitCache;
+}
+
+interface StorySplitCache {
+  regions: { start: number; end: number }[];
+  chapters: { index: number; startSeconds: number; endSeconds: number; label: string }[];
+  assign: number[];
+  buckets: { title: string }[];
+  childIds: string[];
+}
 
 /**
  * One kept interval of the timeline after cuts are applied. `os`/`oe` are the interval's
@@ -330,6 +351,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   analyzing = false;
   analyzeMessage = '';
   analyzeError: string | null = null;
+  // Determinate progress for a running analysis (chapter split or auto-split): one step per
+  // transcript window plus a titling step. Shared — only one analysis runs at a time.
+  aiProgressDone = 0;
+  aiProgressTotal = 0;
+  aiPhase = '';
+  get aiProgressPct(): number {
+    return this.aiProgressTotal > 0 ? Math.min(100, Math.round((this.aiProgressDone / this.aiProgressTotal) * 100)) : 0;
+  }
 
   // Split modal — assign detected chapters to stories (any non-contiguous subset). `splitBuckets`
   // are the target stories ([0] = the story being split); `splitAssign[i]` is chapter i's bucket
@@ -343,6 +372,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   splitAssign: number[] = [];
   splitBuckets: { title: string }[] = [];
   splitActiveBucket = 0;
+  // The regions that were ANALYZED for the open split (the intersection basis for Apply — stays the
+  // original span even after Apply shrinks the story, so a rework redistributes the full chapter set).
+  private splitAnalyzedRegions: { start: number; end: number }[] = [];
+  // True when the open modal is showing a CACHED analysis (no fresh model run) — surfaces a hint.
+  splitFromCache = false;
 
   // ── Transcript ────────────────────────────────────────────────────────────
   // Stable per-track-id color, assigned by discovery order and cycled for extra tracks.
@@ -443,6 +477,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // Load the local Ollama model list for the Stories-tab analyzer (non-blocking; the picker
     // shows "is Ollama running?" until it connects).
     void this.refreshOllamaModels();
+    // Per-step progress of a running chapter analysis → the modal bar + activity dock.
+    this.electron.onStoryAnalyzeProgress((p) => {
+      this.aiProgressDone = p.done;
+      this.aiProgressTotal = p.total;
+      this.aiPhase = p.phase;
+      this.cdr.detectChanges();
+    });
     try {
       const res = await this.electron.getEditorPayload();
       if (res?.zipPath && res.zipPath !== this.currentZipPath) {
@@ -472,6 +513,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.audioEls.clear();
     this.electron.removeEditorListeners();
     this.electron.removeTranscribeListeners();
+    this.electron.removeStoryAnalyzeProgressListener();
   }
 
   // ── Bootstrap: (re)load a session's manifest ────────────────────────────────
@@ -2794,13 +2836,19 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (this.analyzing || !this.selectedOllamaModel || this.transcriptState !== 'ready') return;
     this.analyzing = true;
     this.analyzeError = null;
+    this.aiProgressDone = 0;
+    this.aiProgressTotal = 0;
+    this.aiPhase = '';
     this.activityOpen = true;   // surface progress in the floating dock
     this.cdr.detectChanges();
     try {
       if (this.hasStories()) {
-        for (const s of this.stories) {
+        // Determinate: one step per story we'll title (skipping empties).
+        const titleable = this.stories.filter(s => this.transcriptTextForRegions(this.mergeRegions(s.regions)));
+        this.aiProgressTotal = titleable.length;
+        let done = 0;
+        for (const s of titleable) {
           const text = this.transcriptTextForRegions(this.mergeRegions(s.regions));
-          if (!text) continue;
           this.analyzeMessage = `Titling “${s.title || 'story'}”…`;
           this.cdr.detectChanges();
           const res = await this.electron.suggestStoryTitle({ text, model: this.selectedOllamaModel });
@@ -2808,8 +2856,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
             s.title = res.title;
             this.scheduleEditsSave();
             this.requestRender();
-            this.cdr.detectChanges();
           }
+          this.aiProgressDone = ++done;
+          this.cdr.detectChanges();
         }
       } else {
         this.analyzeMessage = 'Splitting the timeline into stories…';
@@ -2840,19 +2889,49 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
   }
 
-  /** Open the Split modal for a story. Does NOT auto-run detection — the user picks a model and
-   *  hits Start (so no model loads until they ask). */
+  /** Open the Split modal for a story. If a cached analysis exists it loads instantly (reworkable
+   *  without re-running the model, with the last layout restored); otherwise it waits idle until
+   *  the user picks a model and hits Start. */
   openSplitModal(story: Story): void {
     this.splitStory = story;
     this.splitStoryTitle = story.title;
     this.splitModalOpen = true;
-    this.splitBuckets = [{ title: story.title }];
-    this.splitActiveBucket = 0;
-    this.splitChapters = [];
-    this.splitAssign = [];
     this.splitError = null;
     this.splitRunning = false;
+    this.splitActiveBucket = 0;
+    this.aiProgressDone = 0;
+    this.aiProgressTotal = 0;
+    this.aiPhase = '';
+    const cache = story.split;
+    if (cache && cache.chapters?.length) {
+      this.splitChapters = cache.chapters.map(c => ({ ...c }));
+      this.splitAssign = [...cache.assign];
+      this.splitBuckets = cache.buckets.map(b => ({ title: b.title }));
+      this.splitAnalyzedRegions = cache.regions.map(r => ({ ...r }));
+      this.splitFromCache = true;
+    } else {
+      this.splitChapters = [];
+      this.splitAssign = [];
+      this.splitBuckets = [{ title: story.title }];
+      this.splitAnalyzedRegions = [];
+      this.splitFromCache = false;
+    }
     this.cdr.detectChanges();
+  }
+
+  /** Save the current chapter analysis + layout onto the story so a reopen is instant. Preserves
+   *  the childIds from the prior Apply (rework replaces them). */
+  private persistSplitCache(childIds?: string[]): void {
+    const story = this.splitStory;
+    if (!story || !this.splitChapters.length) return;
+    story.split = {
+      regions: this.splitAnalyzedRegions.map(r => ({ ...r })),
+      chapters: this.splitChapters.map(c => ({ ...c })),
+      assign: [...this.splitAssign],
+      buckets: this.splitBuckets.map(b => ({ title: b.title })),
+      childIds: childIds ?? story.split?.childIds ?? [],
+    };
+    this.scheduleEditsSave();
   }
 
   /** Start (or re-run) chapter detection on the open story with the CURRENT model — the Start
@@ -2877,10 +2956,18 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.cdr.detectChanges();
       return;
     }
+    // Re-run re-detects the SAME section that was first analyzed (sticky span from the cache), so
+    // reworking after an Apply doesn't silently re-scope to the story's shrunken leftover regions.
+    // A first run (no cache yet) analyzes the story's current regions.
+    const regions = this.splitAnalyzedRegions.length ? this.splitAnalyzedRegions : this.mergeRegions(story.regions);
     this.splitRunning = true;
+    this.splitFromCache = false;
+    this.aiProgressDone = 0;
+    this.aiProgressTotal = 0;
+    this.aiPhase = 'Starting…';
     this.cdr.detectChanges();
     try {
-      const segments = this.segmentsForRegions(this.mergeRegions(story.regions));
+      const segments = this.segmentsForRegions(regions);
       if (segments.length === 0) throw new Error('No transcript in this story to split. Transcribe first.');
       const res = await this.electron.analyzeStoryChapters({ segments, model: this.selectedOllamaModel });
       this.splitChapters = (res.chapters || []).map(c => ({
@@ -2890,6 +2977,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       if (this.splitChapters.length === 0) throw new Error('No chapters detected.');
       // No pre-selection — the user chooses which chapters go into which story (unassigned = scrap).
       this.splitAssign = this.splitChapters.map(() => -1);
+      this.splitBuckets = [{ title: story.title }];        // fresh analysis → fresh layout
+      this.splitAnalyzedRegions = regions;
+      this.persistSplitCache();                            // cache so a reopen is instant/reworkable
     } catch (err: any) {
       this.splitError = err?.message || String(err);
     } finally {
@@ -2998,12 +3088,20 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   confirmSplit(): void {
     const story = this.splitStory;
     if (!story) { this.cancelSplit(); return; }
-    const orig = this.mergeRegions(story.regions);
+    // Intersect against the ANALYZED span, not the story's current regions: on a rework the story
+    // was already shrunk by a prior Apply, but the chapters still address the original span.
+    const basis = this.splitAnalyzedRegions.length ? this.splitAnalyzedRegions : this.mergeRegions(story.regions);
+    // Remove the stories the previous Apply of THIS split created, so a rework replaces rather
+    // than duplicates them (missing ids — a child the user already deleted — are simply skipped).
+    const oldChildIds = story.split?.childIds || [];
+    if (oldChildIds.length) {
+      this.stories = this.stories.filter(s => s.id === story.id || !oldChildIds.includes(s.id));
+    }
     const bucketRegions: { start: number; end: number }[][] = this.splitBuckets.map(() => []);
     this.splitChapters.forEach((ch, idx) => {
       const b = this.splitAssign[idx];
       if (b < 0) return;   // excluded (scrap)
-      for (const r of orig) {
+      for (const r of basis) {
         const lo = Math.max(r.start, ch.startSeconds);
         const hi = Math.min(r.end, ch.endSeconds);
         if (hi - lo > this.EPS) bucketRegions[b].push({ start: lo, end: hi });
@@ -3014,34 +3112,43 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (this.splitBuckets[0].title.trim()) story.title = this.splitBuckets[0].title.trim();
     // Other non-empty buckets become new stories, inserted right after the original.
     const newStories: Story[] = [];
+    const childIds: string[] = [];
     for (let i = 1; i < this.splitBuckets.length; i++) {
       const regions = this.mergeRegions(bucketRegions[i]);
       if (regions.length === 0) continue;
-      newStories.push({
-        id: `story-${++this.storyIdCounter}`,
-        number: 0,   // renumbered below
-        title: this.splitBuckets[i].title.trim() || 'Story',
-        regions,
-      });
+      const id = `story-${++this.storyIdCounter}`;
+      newStories.push({ id, number: 0, title: this.splitBuckets[i].title.trim() || 'Story', regions });
+      childIds.push(id);
     }
     if (newStories.length) {
       const at = this.stories.findIndex(s => s.id === story.id);
       this.stories.splice(at + 1, 0, ...newStories);
     }
+    this.persistSplitCache(childIds);   // remember analysis + layout + the children this Apply made
     this.renumberStories();
     this.storySelection = null;
     this.scheduleEditsSave();
     this.requestRender();
-    this.cancelSplit();
+    this.closeSplitModal();
   }
 
+  /** Cancel/close: keeps the story's cached analysis (so a reopen is still instant) and remembers
+   *  the in-progress layout, but applies no region changes. */
   cancelSplit(): void {
+    if (this.splitStory && this.splitChapters.length && !this.splitRunning) this.persistSplitCache();
+    this.closeSplitModal();
+  }
+
+  /** Reset the modal's transient state without touching the story's persisted split cache. */
+  private closeSplitModal(): void {
     this.splitModalOpen = false;
     this.splitStory = null;
     this.splitChapters = [];
     this.splitAssign = [];
     this.splitBuckets = [];
+    this.splitAnalyzedRegions = [];
     this.splitActiveBucket = 0;
+    this.splitFromCache = false;
     this.splitError = null;
     this.splitRunning = false;
     this.cdr.detectChanges();

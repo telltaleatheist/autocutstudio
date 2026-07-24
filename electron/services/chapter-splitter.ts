@@ -35,6 +35,9 @@ export interface Chapter {
 /** LLM call. `opts` lets a caller tune the per-call output budget (num_predict). */
 export type Generate = (prompt: string, opts?: { numPredict?: number; temperature?: number }) => Promise<string>;
 
+/** Progress reporter for the multi-call analysis (one step per window, plus a titling step). */
+export type OnProgress = (p: { phase: string; done: number; total: number }) => void;
+
 const MIN_GAP_SECONDS = 45;      // collapse near-duplicate boundaries (incl. across window seams)
 const MAX_WINDOW_CHARS = 30000;  // safety cap on a window's text (~10k tokens); windows rarely hit it
 const SNIPPET_CHARS = 500;       // per-chapter text sent to the titling call
@@ -285,7 +288,12 @@ function deriveLabel(snippet: string): string {
  * `segments` carry ABSOLUTE original-timeline seconds; internally the span is rebased to 0 so
  * window slicing and phrase matching are 0-based, then chapter seconds are shifted back to absolute.
  */
-export async function analyzeChapters(segments: Segment[], model: string, generate: Generate): Promise<Chapter[]> {
+export async function analyzeChapters(
+  segments: Segment[],
+  model: string,
+  generate: Generate,
+  onProgress?: OnProgress,
+): Promise<Chapter[]> {
   if (!segments || segments.length === 0) throw new Error('No transcript in this span to analyze.');
 
   const spanStart = segments.reduce((mn, s) => Math.min(mn, s.startSeconds), Infinity);
@@ -303,6 +311,10 @@ export async function analyzeChapters(segments: Segment[], model: string, genera
     `(${(spanDuration / 60).toFixed(1)} min) · ${segments.length} segments · ` +
     `model=${model} → ${windows.length} windows of ${windowMinutes} min`
   );
+
+  // One step per window (boundary detection) plus a final titling step.
+  const totalSteps = windows.length + 1;
+  onProgress?.({ phase: 'Finding subject changes', done: 0, total: totalSteps });
 
   // Pass 1 — boundary phrases per window, merged into one deduped, 0-seeded list.
   const boundaries: number[] = [0];
@@ -330,6 +342,7 @@ export async function analyzeChapters(segments: Segment[], model: string, genera
       if (t !== null && !boundaries.some(b => Math.abs(b - t) < MIN_GAP_SECONDS)) boundaries.push(t);
     }
     previousTopic = result.end_topic || previousTopic;
+    onProgress?.({ phase: `Window ${i + 1} of ${windows.length}`, done: i + 1, total: totalSteps });
   }
 
   if (windows.length > 0 && windowSuccesses === 0) {
@@ -345,6 +358,7 @@ export async function analyzeChapters(segments: Segment[], model: string, genera
   }));
 
   // Titles — one call names them all (handles chapter 1; never fragments a subject across seams).
+  onProgress?.({ phase: 'Naming chapters', done: windows.length, total: totalSteps });
   const items = spans.map((sp, i) => ({ n: i + 1, snippet: snippetForRange(rel, sp.startRel, sp.endRel) }));
   let titles: Record<string, string> = {};
   try {
@@ -353,6 +367,7 @@ export async function analyzeChapters(segments: Segment[], model: string, genera
   } catch (err) {
     log.warn(`[ChapterSplitter] titling call failed, using derived labels: ${(err as Error)?.message}`);
   }
+  onProgress?.({ phase: 'Done', done: totalSteps, total: totalSteps });
 
   return spans.map((sp, i) => ({
     index: i + 1,
