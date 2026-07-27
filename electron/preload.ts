@@ -26,10 +26,6 @@ export interface ElectronAPI {
   sendSkipSignal: () => Promise<void>;
 
   // Audio processing
-  applyAudioDrift: (options: {
-    inputPath: string;
-    driftFrames: number;
-  }) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
   processAudioDucking: (options: {
     tracks: Array<{ type: string; filePath: string }>;
   }) => Promise<{ success: boolean; tracks?: Array<{ type: string; filePath: string }>; error?: string }>;
@@ -120,7 +116,6 @@ const electronAPI: ElectronAPI = {
   sendSkipSignal: () => ipcRenderer.invoke('send-skip-signal'),
 
   // Audio processing
-  applyAudioDrift: (options) => ipcRenderer.invoke('apply-audio-drift', options),
   processAudioDucking: (options) => ipcRenderer.invoke('process-audio-ducking', options),
 
   // Workflow events

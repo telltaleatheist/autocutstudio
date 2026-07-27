@@ -42,10 +42,6 @@ export interface ElectronAPI {
   onTranscribeProgress: (callback: (data: { jobId: string; progress: number; message: string }) => void) => void;
   onTranscribeComplete: (callback: (data: { jobId: string; exitCode: number; result: any; errorMessage?: string }) => void) => void;
   removeTranscribeListeners: () => void;
-  applyAudioDrift: (options: {
-    inputPath: string;
-    driftFrames: number;
-  }) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
   processAudioDucking: (options: {
     tracks: Array<{ type: string; filePath: string }>;
   }) => Promise<{ success: boolean; tracks?: Array<{ type: string; filePath: string }>; error?: string }>;

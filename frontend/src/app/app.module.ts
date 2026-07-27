@@ -9,7 +9,6 @@ import { FileBrowserComponent } from './components/file-browser/file-browser.com
 import { AudioSourcesComponent } from './components/audio-sources/audio-sources.component';
 import { ConsoleOutputComponent } from './components/console-output/console-output.component';
 import { ResultsComponent } from './components/results/results.component';
-import { AudioEditorComponent } from './components/audio-editor/audio-editor.component';
 import { RelinkingComponent } from './components/relinking/relinking.component';
 import { AudioDuckingComponent } from './components/audio-ducking/audio-ducking.component';
 import { SettingsComponent } from './components/settings/settings.component';
@@ -30,7 +29,6 @@ import { EditorComponent } from './components/editor/editor.component';
     AudioSourcesComponent,
     ConsoleOutputComponent,
     ResultsComponent,
-    AudioEditorComponent,
     RelinkingComponent,
     AudioDuckingComponent,
     SettingsComponent

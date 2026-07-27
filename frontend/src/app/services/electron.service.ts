@@ -385,17 +385,6 @@ export class ElectronService {
     }
   }
 
-  // Audio drift correction
-  async applyAudioDrift(options: {
-    inputPath: string;
-    driftFrames: number;
-  }): Promise<{ success: boolean; outputPath?: string; error?: string }> {
-    if (!this.isElectron()) {
-      throw new Error('Not running in Electron');
-    }
-    return window.electron.applyAudioDrift(options);
-  }
-
   // Configuration
   async getAssetConfig(): Promise<{ success: boolean; assetPaths?: any; error?: string }> {
     if (!this.isElectron()) {
