@@ -1,0 +1,230 @@
+<div class="reports-page">
+  <div class="page-header">
+    <h1>Reports</h1>
+    <p class="subtitle">
+      Everything the Metadata page has generated. Click a row to read it; click any value to copy it.
+    </p>
+  </div>
+
+  <div class="notices" *ngIf="notices().length">
+    <div class="notice" *ngFor="let n of notices(); trackBy: trackByIndex" [class]="'notice ' + n.kind">
+      <span class="notice-icon">{{ n.kind === 'error' ? '⛔' : n.kind === 'warning' ? '⚠️' : '✅' }}</span>
+      <span class="notice-body">
+        <b>{{ n.title }}</b>
+        <span class="notice-text">{{ n.text }}</span>
+      </span>
+      <button class="notice-close" (click)="dismissNotice(n.id)" title="Dismiss">×</button>
+    </div>
+  </div>
+
+  <div class="panes">
+    <!-- ── Report list ─────────────────────────────────────────────────────── -->
+    <div class="pane list-pane">
+      <div class="pane-head">
+        <div class="pane-title">
+          <h2>Reports</h2>
+          <span class="card-note">
+            {{ reports().length }} report(s)<span *ngIf="hasSelectedReports()"> · {{ getSelectedReports().length }} checked</span>
+          </span>
+        </div>
+        <div class="pane-actions">
+          <button class="btn-secondary" *ngIf="hasSelectedReports()" (click)="exportSelectedAsTxt()"
+                  title="Write the checked reports out as .txt files">Export</button>
+          <button class="icon-btn" (click)="loadReports()" [disabled]="isLoading()" title="Reload from disk">⟳</button>
+        </div>
+      </div>
+
+      <div class="empty-state" *ngIf="isLoading() && reports().length === 0">
+        <p>Loading reports…</p>
+      </div>
+
+      <div class="empty-state" *ngIf="!isLoading() && reports().length === 0">
+        <span class="empty-icon">📄</span>
+        <p>No reports yet</p>
+        <p class="hint">Run something through the Metadata queue and it will show up here.</p>
+        <p class="hint path" *ngIf="reportsDirectory()">Looking in {{ reportsDirectory() }}</p>
+      </div>
+
+      <label class="check select-all" *ngIf="reports().length > 0">
+        <input type="checkbox" [checked]="allReportsSelected()" (change)="toggleSelectAll()" />
+        <span>Select all</span>
+      </label>
+
+      <div class="report-list" *ngIf="reports().length > 0">
+        <div class="report-row" *ngFor="let report of reports(); trackBy: trackByReportName"
+             [class.open]="selectedReport()?.name === report.name"
+             [class.checked]="report.selected"
+             (click)="selectReport(report)">
+          <input type="checkbox" class="row-check" [checked]="report.selected || false"
+                 (click)="toggleSelection(report, $event)" />
+          <span class="report-info">
+            <span class="report-title">{{ report.displayTitle || report.name }}</span>
+            <span class="report-meta">
+              {{ formatDate(report.date) }}
+              <span class="badge" *ngIf="report.promptSet">{{ report.promptSet }}</span>
+            </span>
+          </span>
+          <button class="icon-btn danger" (click)="deleteReport(report, $event)" title="Delete this report">×</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Report viewer ───────────────────────────────────────────────────── -->
+    <div class="pane viewer-pane">
+      <div class="pane-head" *ngIf="selectedReport()">
+        <div class="pane-title">
+          <h2>{{ metadata()?._title || selectedReport()!.displayTitle || selectedReport()!.name }}</h2>
+        </div>
+        <div class="pane-actions">
+          <button class="btn-secondary" (click)="showInFolder(selectedReport()!)">Show in folder</button>
+        </div>
+      </div>
+
+      <div class="empty-state" *ngIf="!selectedReport()">
+        <span class="empty-icon">👈</span>
+        <p>Select a report to read it</p>
+      </div>
+
+      <div class="empty-state" *ngIf="isLoading() && selectedReport()">
+        <p>Loading report…</p>
+      </div>
+
+      <div class="empty-state" *ngIf="!isLoading() && selectedReport() && !metadata()">
+        <span class="empty-icon">⛔</span>
+        <p>This report could not be read</p>
+        <p class="hint">The reason is in the notice above.</p>
+      </div>
+
+      <div class="sections" *ngIf="!isLoading() && selectedReport() && metadata() as meta">
+        <!-- Titles -->
+        <div class="section" *ngIf="meta.titles.length">
+          <div class="section-head">
+            <h3>Titles</h3>
+            <span class="count">{{ meta.titles.length }}</span>
+          </div>
+          <div class="row copyable" *ngFor="let title of meta.titles; let i = index; trackBy: trackByIndex"
+               [class.copied]="isCopied('title-' + i)"
+               (click)="copyToClipboard(getTitleText(title), 'title-' + i)"
+               title="Click to copy">
+            <span class="row-num">{{ i + 1 }}</span>
+            <span class="row-text">{{ getTitleText(title) }}</span>
+            <span class="copy-hint">{{ isCopied('title-' + i) ? '✓' : '📋' }}</span>
+          </div>
+        </div>
+
+        <!-- Description -->
+        <div class="section" *ngIf="meta.description">
+          <div class="section-head">
+            <h3>Description</h3>
+            <span class="count">{{ getDescriptionText(meta.description).length }} chars</span>
+            <button class="copy-btn" [class.copied]="isCopied('description')"
+                    (click)="copyToClipboard(getDescriptionText(meta.description), 'description')">
+              {{ isCopied('description') ? '✓ Copied' : 'Copy' }}
+            </button>
+          </div>
+          <textarea class="description-box" readonly [value]="getDescriptionText(meta.description)"></textarea>
+        </div>
+
+        <!-- Tags -->
+        <div class="section" *ngIf="getTagsArray().length">
+          <div class="section-head">
+            <h3>Tags</h3>
+            <span class="count">{{ getTagsArray().length }}</span>
+            <button class="copy-btn" [class.copied]="isCopied('tags-all')"
+                    (click)="copyToClipboard(getTagsString(), 'tags-all')">
+              {{ isCopied('tags-all') ? '✓ Copied' : 'Copy all' }}
+            </button>
+          </div>
+          <div class="tags">
+            <span class="tag" *ngFor="let tag of getTagsArray(); let i = index; trackBy: trackByIndex"
+                  [class.copied]="isCopied('tag-' + i)"
+                  (click)="copyToClipboard(tag, 'tag-' + i)"
+                  title="Click to copy">
+              {{ isCopied('tag-' + i) ? '✓' : tag }}
+            </span>
+          </div>
+        </div>
+
+        <!-- Hashtags -->
+        <div class="section" *ngIf="meta.hashtags">
+          <div class="section-head">
+            <h3>Hashtags</h3>
+            <button class="copy-btn" [class.copied]="isCopied('hashtags')"
+                    (click)="copyToClipboard(meta.hashtags, 'hashtags')">
+              {{ isCopied('hashtags') ? '✓ Copied' : 'Copy' }}
+            </button>
+          </div>
+          <div class="row copyable" (click)="copyToClipboard(meta.hashtags, 'hashtags')">
+            <span class="row-text">{{ meta.hashtags }}</span>
+          </div>
+        </div>
+
+        <!-- Thumbnail text -->
+        <div class="section" *ngIf="meta.thumbnail_text.length">
+          <div class="section-head">
+            <h3>Thumbnail text</h3>
+            <span class="count">{{ meta.thumbnail_text.length }}</span>
+          </div>
+          <div class="row copyable" *ngFor="let text of meta.thumbnail_text; let i = index; trackBy: trackByIndex"
+               [class.copied]="isCopied('thumb-' + i)"
+               (click)="copyToClipboard(getThumbnailText(text), 'thumb-' + i)"
+               title="Click to copy">
+            <span class="row-text">{{ getThumbnailText(text) }}</span>
+            <span class="copy-hint">{{ isCopied('thumb-' + i) ? '✓' : '📋' }}</span>
+          </div>
+        </div>
+
+        <!-- Chapters -->
+        <div class="section" *ngIf="meta.chapters && meta.chapters.length">
+          <div class="section-head">
+            <h3>Chapters</h3>
+            <span class="count">{{ meta.chapters.length }}</span>
+            <button class="copy-btn" [class.copied]="isCopied('chapters-all')" (click)="copyChapters()">
+              {{ isCopied('chapters-all') ? '✓ Copied' : 'Copy all' }}
+            </button>
+          </div>
+          <div class="row copyable" *ngFor="let chapter of meta.chapters; let i = index; trackBy: trackByIndex"
+               [class.copied]="isCopied('chapter-' + i)"
+               (click)="copyToClipboard(getChapterTimestamp(chapter) + ' ' + getChapterTitle(chapter), 'chapter-' + i)"
+               title="Click to copy">
+            <span class="chapter-time">{{ getChapterTimestamp(chapter) }}</span>
+            <span class="row-text">{{ getChapterTitle(chapter) }}</span>
+            <span class="copy-hint">{{ isCopied('chapter-' + i) ? '✓' : '📋' }}</span>
+          </div>
+        </div>
+
+        <!-- Pinned comment -->
+        <div class="section" *ngIf="meta.pinned_comment && meta.pinned_comment.length">
+          <div class="section-head">
+            <h3>Pinned comment</h3>
+            <span class="count">{{ meta.pinned_comment.length }}</span>
+          </div>
+          <div class="row copyable" *ngFor="let comment of meta.pinned_comment; let i = index; trackBy: trackByIndex"
+               [class.copied]="isCopied('comment-' + i)"
+               (click)="copyToClipboard(comment, 'comment-' + i)"
+               title="Click to copy">
+            <span class="row-num">{{ i + 1 }}</span>
+            <span class="row-text">{{ comment }}</span>
+            <span class="copy-hint">{{ isCopied('comment-' + i) ? '✓' : '📋' }}</span>
+          </div>
+        </div>
+
+        <!-- Clip suggestions -->
+        <div class="section" *ngIf="meta.clip_suggestions && meta.clip_suggestions.length">
+          <div class="section-head">
+            <h3>Clip suggestions</h3>
+            <span class="count">{{ meta.clip_suggestions.length }}</span>
+          </div>
+          <div class="row copyable" *ngFor="let clip of meta.clip_suggestions; let i = index; trackBy: trackByIndex"
+               [class.copied]="isCopied('clip-' + i)"
+               (click)="copyToClipboard(clip, 'clip-' + i)"
+               title="Click to copy">
+            <span class="row-num">{{ i + 1 }}</span>
+            <span class="row-text">{{ clip }}</span>
+            <span class="copy-hint">{{ isCopied('clip-' + i) ? '✓' : '📋' }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

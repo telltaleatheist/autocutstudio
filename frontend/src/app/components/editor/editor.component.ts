@@ -108,6 +108,36 @@ export interface Story {
   title: string;
   regions: { start: number; end: number }[];
   /**
+   * The chapter markers INSIDE this story, in ORIGINAL seconds — the pre-consolidation tier the
+   * analyzer merged to build it. Retained but NOT yet consumed: each story becomes its own YouTube
+   * upload, which wants chapter markers in the description, and the eventual fine-tuned title
+   * model conditions on them. Absent on hand-drawn stories (nothing analyzed them).
+   *
+   * Two things must happen before these can be written into a description, neither done here:
+   * map through the cuts (the upload is the EDITED timeline) and rebase to the story's own start
+   * (`storyLocalTime` does both). YouTube also needs 3+ markers, the first at 0:00.
+   */
+  chapters?: StoryChapter[];
+  /**
+   * Fingerprint of the regions `chapters` was derived from — see `regionFingerprint`. Chapters
+   * are STALE whenever this does not equal the fingerprint of the story's regions right now.
+   *
+   * ABSENT means provisional: chapters that came from a whole-recording run or from a parent
+   * story's split describe a span that was cut at a different cadence and before the user drew
+   * this boundary, so they are markers worth keeping but are not this story's chapter layer. Only
+   * a per-story derivation (run 2, consolidation off, scoped to exactly these regions) stamps it.
+   */
+  chaptersFrom?: string;
+  /**
+   * The user typed this title. Auto-titling then leaves it alone.
+   *
+   * The workflow puts naming BETWEEN the run that finds story boundaries and the run that
+   * chapters and titles each story — the user merges, reorders and names, then asks for the rest.
+   * Without this flag that second run overwrites every name they just typed, silently and with no
+   * undo, which is the worst possible way to lose work.
+   */
+  titleTouched?: boolean;
+  /**
    * Cached chapter-split analysis so reopening Split is instant and reworkable without re-running
    * the model. `regions` is the span that was ANALYZED (the re-apply intersection basis, which may
    * differ from `regions` above once a split has been applied); `chapters` the detected list;
@@ -117,21 +147,64 @@ export interface Story {
   split?: StorySplitCache;
 }
 
+/** A chapter marker inside a story. ORIGINAL seconds, same frame as `Story.regions`. */
+export interface StoryChapter {
+  startSeconds: number;
+  endSeconds: number;
+  label: string;
+  /**
+   * This start was placed from the raw junction, not a mapped quote — accurate to ±45 s instead of
+   * the ~5 s the method targets. Shown in the story list because it is otherwise invisible: the
+   * description looks identical either way, and the user only finds out by clicking the marker in
+   * a published video and landing half a minute off.
+   */
+  startApprox?: boolean;
+}
+
 interface StorySplitCache {
   regions: { start: number; end: number }[];
-  chapters: { index: number; startSeconds: number; endSeconds: number; label: string }[];
+  // `subChapters` rides along so a cached reopen still carries the fine tier into Apply — without
+  // it, reopening a cached split and re-applying would silently drop the markers.
+  chapters: { index: number; startSeconds: number; endSeconds: number; label: string; subChapters?: StoryChapter[] }[];
   assign: number[];
-  buckets: { title: string }[];
+  // `touched` = the user typed this bucket's title in the modal. It becomes the resulting story's
+  // `titleTouched`, so a name given here survives auto-titling exactly like one typed in the list.
+  buckets: { title: string; touched?: boolean }[];
   childIds: string[];
 }
 
 /**
  * One kept interval of the timeline after cuts are applied. `os`/`oe` are the interval's
- * bounds in ORIGINAL seconds; `es`/`ee` are the same span mapped into EDITED seconds (the
- * ripple just shifts it left, so ee - es === oe - os). Sorted ascending in both domains, so
- * both maps are binary-searchable.
+ * bounds in ORIGINAL seconds; `es`/`ee` are the same span mapped into EDITED seconds (a span is
+ * only ever relocated, never scaled, so ee - es === oe - os). `seq` is the index of the SEQUENCE
+ * entry it was carved out of — how a selection in edited time is resolved back to the entries a
+ * move has to lift.
+ *
+ * The list is NOT necessarily monotonic in both domains any more: once footage is reordered,
+ * original order and edited order diverge. Hence TWO indexes over the SAME objects —
+ * `keptBySequence` (ascending `es`, i.e. playback order, drives editedToOriginal) and
+ * `keptByOriginal` (ascending `os`, drives originalToEdited). Both are binary-searched; these run
+ * per playback frame and per drawn clip, so neither may degrade to a scan.
  */
-interface KeptInterval { os: number; oe: number; es: number; ee: number; }
+interface KeptInterval { os: number; oe: number; es: number; ee: number; seq: number; }
+
+/** One undoable edit state. See editSnapshot() for why `sequence` has to ride along. */
+interface EditSnapshot {
+  cuts: Cut[];
+  blades: number[];
+  sequence: { start: number; end: number }[] | null;
+}
+
+/**
+ * One row of the activity dock's story-analysis queue. Index 0 is the story being worked on now;
+ * everything after it is waiting its turn, in the order the run will reach it. A finished row is
+ * REMOVED, not marked done — the dock shows what is left, not a history.
+ */
+interface ActivityEntry {
+  id: string;
+  label: string;
+  state: 'running' | 'pending';
+}
 
 /** Vertical layout of a track lane inside the canvas (CSS px, canvas-local). */
 interface TrackRow {
@@ -242,17 +315,32 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // slow stale manifest can never clobber the newer session.
   private bootstrapGeneration = 0;
 
-  // ── Edit model (cuts → edited timeline) ─────────────────────────────────────
-  // `cuts` is the single source of edit truth (frames, ORIGINAL coords, sorted+merged).
-  // Everything derived (segsByTrack above, editedDuration, keptIntervals) is rebuilt from it.
+  // ── Edit model (cuts × sequence → edited timeline) ──────────────────────────
+  // `cuts` (what survives, ORIGINAL frames, sorted+merged) and `sequence` (what order it plays
+  // in) are the two sources of edit truth. Everything derived — segsByTrack above,
+  // editedDuration, both kept-span indexes — is rebuilt from the pair by rebuildEditedModel().
   cuts: Cut[] = [];
   editedDuration = 0;                    // seconds; == manifest.timelineDuration with zero cuts
-  private keptIntervals: KeptInterval[] = [];
+  // The same kept spans indexed two ways (SAME objects, two orders) — see KeptInterval.
+  private keptBySequence: KeptInterval[] = [];   // ascending `es` === playback order
+  private keptByOriginal: KeptInterval[] = [];   // ascending `os`
+  /**
+   * Playback ORDER of the timeline, as a partition of [0, timelineDuration] in ORIGINAL seconds:
+   * entry i plays before entry i+1. null === source order — the overwhelmingly common case, and
+   * what an absent sidecar field restores, so every project written before reordering existed
+   * loads byte-identically.
+   *
+   * INVARIANT: the entries tile [0, timelineDuration] exactly — no gaps, no overlaps. That is
+   * what keeps cuts purely SUBTRACTIVE (rebuildEditedModel intersects the sequence with the cut
+   * complement rather than editing the sequence), so undoing a cut restores its footage to the
+   * slot it was lifted from instead of losing its place in the order.
+   */
+  private sequence: { start: number; end: number }[] | null = null;
   private readonly UNDO_LIMIT = 100;
-  // Undo/redo snapshots BOTH the cut list and the blade boundaries, so Cmd+Z reverses
-  // whichever an action changed — a ripple delete OR dropping a blade.
-  private undoStack: { cuts: Cut[]; blades: number[] }[] = [];
-  private redoStack: { cuts: Cut[]; blades: number[] }[] = [];
+  // Undo/redo snapshots the cut list, the blade boundaries AND the sequence, so Cmd+Z reverses
+  // whichever an action changed — a ripple delete, a dropped blade, or a reorder.
+  private undoStack: EditSnapshot[] = [];
+  private redoStack: EditSnapshot[] = [];
   private readonly EPS = 1e-9;           // seconds; sub-frame slop for interval intersection
 
   // ── Selection (EDITED seconds; either edge may be pending/null) ──────────────
@@ -278,6 +366,21 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // In-flight story-region edge drag (grabbed an edge in the ribbon). The story's regions are
   // canonicalized (merged) at grab time so regionIndex addresses story.regions directly.
   private draggingStoryEdge: { storyId: string; regionIndex: number; edge: 'start' | 'end' } | null = null;
+  /**
+   * In-flight "move this footage somewhere else" drag: grabbed inside an existing highlight with
+   * the Select tool. `ranges` is frozen at grab time (the live selection would follow the model
+   * out from under the gesture), `boundaries` is the section grid frozen for the same reason AND
+   * because sectionBoundaries() rebuilds and re-sorts every clip edge — not a per-mousemove cost.
+   * `moved` gates the commit on the same 3px promotion threshold the marquee uses, so a click
+   * inside a highlight still falls through to plain scrub + section select.
+   */
+  private moveDrag: {
+    ranges: { lo: number; hi: number }[];
+    grabTime: number;                    // EDITED seconds under the cursor at mousedown
+    dropAt: number;                      // snapped insertion point (EDITED seconds)
+    boundaries: number[];
+    moved: boolean;
+  } | null = null;
 
   // ── Edit-state persistence (<session>_edits.json sidecar) ────────────────────
   // Everything the user builds in the editor — cuts, blades, stories, and the undo/redo
@@ -338,6 +441,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // Cmd+X act on THIS (a chunk removes just that region; a whole selection removes the story) —
   // never rippling the timeline. Cleared by any other canvas gesture, Escape, or session reset.
   storySelection: { storyId: string; regionIndex: number | null } | null = null;
+  // Stories ticked for merging. Deliberately separate from `storySelection` (which drives region
+  // editing and paint targeting) so ticking a box never disturbs what the timeline is showing.
+  storyMergeIds = new Set<string>();
   // Stable, distinct color per story NUMBER (cycled). Dark FCP-friendly hues.
   private readonly STORY_COLORS = ['#e8a33d', '#4a9eff', '#7bc98f', '#c98fd6', '#d67b7b', '#7bd6cf', '#e0c650', '#9a8ff0'];
 
@@ -347,12 +453,21 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   ollamaModels: { id: string; name: string }[] = [];
   ollamaConnected = false;
   selectedOllamaModel = '';
-  private readonly OLLAMA_MODEL_KEY = 'editor.ollamaModel';
+  // Key is versioned: v2 introduced the cogito:14b default, and a model saved under the old key
+  // would have silently outranked it forever. Bumping re-defaults everyone exactly once; the next
+  // pick they make sticks.
+  private readonly OLLAMA_MODEL_KEY = 'editor.ollamaModel.v2';
   analyzing = false;
   analyzeMessage = '';
   analyzeError: string | null = null;
-  // Determinate progress for a running analysis (chapter split or auto-split): one step per
-  // transcript window plus a titling step. Shared — only one analysis runs at a time.
+  // Set by the stop button; checked between stories in the titling loop so a stop takes effect
+  // immediately rather than after every remaining story has been titled.
+  private analyzeStopRequested = false;
+  // Determinate progress for a running analysis (chapter split or auto-split). The chapter
+  // pipeline is many small single-question model calls — one per 45s stretch, per junction, per
+  // boundary, per chapter, per adjacent pair — so `total` runs into the hundreds on a long
+  // recording and is revised upward if consolidation merges (a merge adds a re-naming call).
+  // Shared — only one analysis runs at a time.
   aiProgressDone = 0;
   aiProgressTotal = 0;
   aiPhase = '';
@@ -368,9 +483,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   splitError: string | null = null;
   private splitStory: Story | null = null;
   splitStoryTitle = '';
-  splitChapters: { index: number; startSeconds: number; endSeconds: number; label: string }[] = [];
+  // `subChapters` is carried but never shown in the modal — the user assigns whole chapters; the
+  // fine tier just needs to reach whichever story the chapter lands in.
+  splitChapters: { index: number; startSeconds: number; endSeconds: number; label: string; subChapters?: StoryChapter[] }[] = [];
   splitAssign: number[] = [];
-  splitBuckets: { title: string }[] = [];
+  splitBuckets: { title: string; touched?: boolean }[] = [];
   splitActiveBucket = 0;
   // The regions that were ANALYZED for the open split (the intersection basis for Apply — stays the
   // original span even after Apply shrinks the story, so a rework redistributes the full chapter set).
@@ -432,6 +549,12 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   activityX = 0;
   activityY = 0;
   private activityDragBase: { x: number; y: number; dx: number; dy: number } | null = null;
+  // The story-analysis queue: one entry per story a run will visit, [0] running, the rest waiting.
+  // Emptied whenever a run ends (finished, failed or stopped) so ghost rows cannot outlive it.
+  activityQueue: ActivityEntry[] = [];
+  // The dock is 360px wide and shares it with transcription/export/waveform blocks, so a 40-story
+  // session lists the next few and counts the rest.
+  private readonly ACTIVITY_PENDING_SHOWN = 6;
 
   // ── Playback ────────────────────────────────────────────────────────────────
   isPlaying = false;
@@ -603,13 +726,16 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.activityOpen = false;
     this.activityX = 0;
     this.activityY = 0;
+    this.activityQueue = [];
     this.playheadTime = 0;
     this.scrollOffset = 0;
     this.errorMessage = '';
     this.transportError = '';
     // Edit state: a re-init starts the new session with an untouched timeline.
     this.cuts = [];
-    this.keptIntervals = [];
+    this.keptBySequence = [];
+    this.keptByOriginal = [];
+    this.sequence = null;
     this.editedDuration = 0;
     this.undoStack = [];
     this.redoStack = [];
@@ -637,6 +763,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.storySelection = null;
     this.marqueeForStory = false;
     this.draggingStoryEdge = null;
+    this.moveDrag = null;
     // A pending debounced save belongs to the PREVIOUS session — never let it fire
     // across a switch (it would snapshot post-reset state).
     if (this.editsSaveTimer !== null) { clearTimeout(this.editsSaveTimer); this.editsSaveTimer = null; }
@@ -700,56 +827,81 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   // ── Edited model + piecewise time maps ──────────────────────────────────────
   /**
-   * Rebuild every derived edit artifact from `cuts`: the kept-interval list, editedDuration,
-   * the per-track edited segments, and (implicitly) the editedToOriginal/originalToEdited
-   * maps that read keptIntervals. A manifest segment [ts, ts+d) is intersected with each kept
-   * interval; every non-empty intersection is one edited segment whose sourceStart carries the
-   * offset into the media file, so jump-cut playback across removed ranges is automatic.
+   * The effective playback sequence: the stored order, or the single whole-timeline entry that IS
+   * source order. Never null, so every walk over it has exactly one shape and the no-sequence case
+   * is not a second code path that can drift.
+   */
+  private sequenceSpans(): { start: number; end: number }[] {
+    if (this.sequence && this.sequence.length > 0) return this.sequence;
+    return [{ start: 0, end: this.manifest?.timelineDuration || 0 }];
+  }
+
+  /**
+   * Rebuild every derived edit artifact from `sequence` × `cuts`: the kept-span indexes,
+   * editedDuration, the per-track edited segments, and (implicitly) the
+   * editedToOriginal/originalToEdited maps that read them. A manifest segment [ts, ts+d) is
+   * intersected with each kept span; every non-empty intersection is one edited segment whose
+   * sourceStart carries the offset into the media file, so jump-cut playback across removed (and
+   * relocated) ranges is automatic.
    */
   private rebuildEditedModel(): void {
     const m = this.manifest;
-    if (!m) { this.keptIntervals = []; this.editedDuration = 0; this.segsByTrack.clear(); return; }
-    const dur = m.timelineDuration;
+    if (!m) {
+      this.keptBySequence = []; this.keptByOriginal = [];
+      this.editedDuration = 0; this.segsByTrack.clear();
+      return;
+    }
     const fs = m.frameSeconds;
 
-    // Kept intervals = the complement of the cuts within [0, dur], each carrying its rippled
-    // edited-space start. cuts are sorted+merged, so a single left-to-right walk suffices.
+    // Walk the sequence in PLAYBACK order and subtract the cuts from each entry, so the edited
+    // write head `acc` accumulates in SEQUENCE order rather than source order. With no sequence
+    // this is one entry spanning [0, timelineDuration] and the body reduces to the old
+    // complement-of-cuts walk, emitting the identical list.
+    const seq = this.sequenceSpans();
     const kept: KeptInterval[] = [];
-    let cursor = 0, acc = 0;
-    for (const c of this.cuts) {
-      const cs = c.startFrame * fs;
-      const ce = c.endFrame * fs;
-      if (cs > cursor + this.EPS) {
-        const len = cs - cursor;
-        kept.push({ os: cursor, oe: cs, es: acc, ee: acc + len });
+    let acc = 0;
+    for (let s = 0; s < seq.length; s++) {
+      const end = seq[s].end;
+      let cursor = seq[s].start;
+      for (const c of this.cuts) {
+        const cs = c.startFrame * fs;
+        const ce = c.endFrame * fs;
+        if (ce <= cursor) continue;        // wholly before what's left of this entry
+        if (cs >= end) break;              // cuts are sorted; nothing further overlaps the entry
+        if (cs > cursor + this.EPS) {
+          const len = cs - cursor;
+          kept.push({ os: cursor, oe: cs, es: acc, ee: acc + len, seq: s });
+          acc += len;
+        }
+        if (ce > cursor) cursor = ce;      // may overshoot `end`; the tail guard below catches it
+      }
+      if (end > cursor + this.EPS) {
+        const len = end - cursor;
+        kept.push({ os: cursor, oe: end, es: acc, ee: acc + len, seq: s });
         acc += len;
       }
-      if (ce > cursor) cursor = ce;
     }
-    if (dur > cursor + this.EPS) {
-      const len = dur - cursor;
-      kept.push({ os: cursor, oe: dur, es: acc, ee: acc + len });
-      acc += len;
-    }
-    this.keptIntervals = kept;
+    this.keptBySequence = kept;                                   // already ascending in `es`
+    this.keptByOriginal = [...kept].sort((a, b) => a.os - b.os);  // a no-op copy in source order
     this.editedDuration = acc;
 
-    // Split each original segment against the kept intervals.
+    // Split each original segment against the kept spans, indexed by ORIGINAL start so the
+    // `break` still prunes the scan.
     this.segsByTrack.clear();
     for (const [trackId, segs] of this.originalSegsByTrack) {
       const out: EditorSegment[] = [];
       for (const seg of segs) {
         const ts = seg.timelineStart;
         const te = ts + seg.duration;
-        for (const iv of kept) {
-          if (iv.os >= te) break;          // kept intervals are sorted; nothing further overlaps
+        for (const iv of this.keptByOriginal) {
+          if (iv.os >= te) break;          // sorted by os; nothing further overlaps
           if (iv.oe <= ts) continue;
           const os = Math.max(ts, iv.os);
           const oe = Math.min(te, iv.oe);
           if (oe - os <= this.EPS) continue;
           out.push({
             trackId: seg.trackId,
-            timelineStart: iv.es + (os - iv.os),   // rippled position
+            timelineStart: iv.es + (os - iv.os),   // rippled AND resequenced position
             duration: oe - os,
             file: seg.file,
             sourceStart: seg.sourceStart + (os - ts),
@@ -757,7 +909,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
           });
         }
       }
-      // Output is already sorted (segs sorted, kept sorted, non-overlapping).
+      // Pieces were emitted in ORIGINAL order but land at their SEQUENCE position, so the lane is
+      // no longer self-sorting. It MUST end up ascending in timelineStart: segmentAt() binary-
+      // searches it, and an unsorted lane would sync the wrong clip under the playhead. Already
+      // sorted in source order, where this is a no-op pass.
+      out.sort((a, b) => a.timelineStart - b.timelineStart);
       this.segsByTrack.set(trackId, out);
     }
     this.rebuildSnapPoints();
@@ -776,7 +932,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (segs) {
       for (const s of segs) { pts.push(s.timelineStart, s.timelineStart + s.duration); }
     }
-    for (const iv of this.keptIntervals) { pts.push(iv.es, iv.ee); }
+    for (const iv of this.keptBySequence) { pts.push(iv.es, iv.ee); }
     pts.sort((a, b) => a - b);
     const out: number[] = [];
     for (const p of pts) {
@@ -814,9 +970,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return best;
   }
 
-  /** EDITED seconds → ORIGINAL seconds (piecewise, binary-searched over keptIntervals). */
+  /** EDITED seconds → ORIGINAL seconds (piecewise, binary-searched over the SEQUENCE index). */
   private editedToOriginal(e: number): number {
-    const iv = this.keptIntervals;
+    const iv = this.keptBySequence;
     if (iv.length === 0) return 0;
     const t = Math.min(this.editedDuration, Math.max(0, e));
     let lo = 0, hi = iv.length - 1, idx = 0;
@@ -828,12 +984,16 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   /**
-   * ORIGINAL seconds → EDITED seconds. A time inside a removed range collapses to that cut's
-   * seam (the edited position where the removed content used to begin), which is exactly the
-   * landing spot after a ripple delete.
+   * ORIGINAL seconds → EDITED seconds (binary-searched over the ORIGINAL index). A time inside a
+   * removed range collapses to that cut's seam (the edited position where the removed content used
+   * to begin), which is exactly the landing spot after a ripple delete.
+   *
+   * Single-valued and therefore only meaningful for a POINT. Once footage is reordered this map is
+   * no longer monotonic, so a caller mapping both ends of a span and treating [lo, hi] as the
+   * result can get hi < lo — anything spanning a range must use editedRangesForOriginal().
    */
   private originalToEdited(t: number): number {
-    const iv = this.keptIntervals;
+    const iv = this.keptByOriginal;
     if (iv.length === 0) return 0;
     const c = Math.min(this.manifest?.timelineDuration || 0, Math.max(0, t));
     let lo = 0, hi = iv.length - 1, idx = -1;
@@ -844,6 +1004,58 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (idx < 0) return iv[0].es;               // c precedes the first kept interval (leading cut)
     if (c <= iv[idx].oe) return iv[idx].es + (c - iv[idx].os);
     return iv[idx].ee;                          // c is in a cut that follows this kept interval
+  }
+
+  /**
+   * An ORIGINAL span projected onto the edited timeline as the merged, ascending list of edited
+   * ranges its surviving pieces occupy.
+   *
+   * In source order this always collapses to the single range
+   * [originalToEdited(start), originalToEdited(end)] — the cut-swallowed middles have zero edited
+   * width and the flanking pieces re-merge across them — so it is a drop-in generalization of what
+   * every caller used to do by hand. Once footage is reordered one span CAN land in several places,
+   * and a caller still holding [O2E(start), O2E(end)] would compute a negative-width block and
+   * silently drop it (the stories ribbon) or fail every hit-test against it.
+   */
+  private editedRangesForOriginal(start: number, end: number): { lo: number; hi: number }[] {
+    const out: { lo: number; hi: number }[] = [];
+    for (const iv of this.keptByOriginal) {
+      if (iv.os >= end - this.EPS) break;        // sorted by os; nothing further overlaps
+      if (iv.oe <= start + this.EPS) continue;
+      const os = Math.max(start, iv.os);
+      const oe = Math.min(end, iv.oe);
+      if (oe - os <= this.EPS) continue;
+      out.push({ lo: iv.es + (os - iv.os), hi: iv.es + (oe - iv.os) });
+    }
+    return this.mergeRanges(out);
+  }
+
+  /**
+   * An EDITED range projected back onto the original timeline as the ORIGINAL spans it covers.
+   *
+   * Contiguous in edited time does NOT imply contiguous in original time once footage has been
+   * reordered: a ripple delete that mapped only the two edges would manufacture a cut spanning
+   * everything between two relocated blocks and erase footage the user never selected. In source
+   * order this returns exactly one span, matching what editedToOriginal gives for each edge.
+   */
+  private originalSpansForEdited(lo: number, hi: number): { start: number; end: number }[] {
+    const iv = this.keptBySequence;
+    const out: { start: number; end: number }[] = [];
+    if (iv.length === 0 || hi - lo <= this.EPS) return out;
+    // First span whose edited end is past `lo`; from there the walk is contiguous in `es`.
+    let a = 0, b = iv.length - 1, first = iv.length;
+    while (a <= b) {
+      const mid = (a + b) >> 1;
+      if (iv[mid].ee > lo + this.EPS) { first = mid; b = mid - 1; } else { a = mid + 1; }
+    }
+    for (let i = first; i < iv.length; i++) {
+      if (iv[i].es >= hi - this.EPS) break;
+      const es = Math.max(lo, iv[i].es);
+      const ee = Math.min(hi, iv[i].ee);
+      if (ee - es <= this.EPS) continue;
+      out.push({ start: iv[i].os + (es - iv[i].es), end: iv[i].os + (ee - iv[i].es) });
+    }
+    return out;
   }
 
   private fail(message: string): void {
@@ -1061,6 +1273,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // Selection overlay tints ruler + tracks; playhead draws on top of it.
     this.drawSelection(ctx, W, H);
 
+    // Where an in-flight move would land — above the selection tint, under the playhead.
+    this.drawMoveInsertion(ctx, W, H);
+
     // Playhead over everything (ruler + tracks).
     this.drawPlayhead(ctx, W, H);
   }
@@ -1125,6 +1340,57 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   /**
+   * Where the moved block will END UP, in EDITED seconds: the snapped drop point minus however
+   * much of the selection lies BEFORE it. Lifting the block closes its gaps, so everything at the
+   * drop point shifts left by exactly that much — a ghost drawn at the raw drop point would
+   * promise a landing spot the drop does not deliver whenever the block moves rightwards.
+   * (Verified against the reorder algorithm: the block always lands at exactly this time.)
+   */
+  private moveLandingTime(d: NonNullable<EditorComponent['moveDrag']>): number {
+    let before = 0;
+    for (const r of d.ranges) before += Math.max(0, Math.min(r.hi, d.dropAt) - r.lo);
+    return d.dropAt - before;
+  }
+
+  /**
+   * In-flight selection move: a hard insertion seam at the snapped drop point plus a dashed ghost
+   * of the block that will land there, sized to the TOTAL length of the moved footage (the pieces
+   * consolidate, so the ghost is what the user will actually get). Drawn only once the drag passes
+   * the promotion threshold, so a click inside a highlight shows nothing at all.
+   */
+  private drawMoveInsertion(ctx: CanvasRenderingContext2D, W: number, H: number): void {
+    const d = this.moveDrag;
+    if (!d || !d.moved) return;
+    let len = 0;
+    for (const r of d.ranges) len += r.hi - r.lo;
+    const landing = this.moveLandingTime(d);
+    const gx = this.timeToX(landing);
+    const gxEnd = this.timeToX(landing + len);
+    const x = this.timeToX(d.dropAt);
+    if (gxEnd < -1 && x < -1) return;                    // wholly off-screen
+    if (gx > W + 1 && x > W + 1) return;
+    const top = this.RULER_H + this.ribbonHeight;
+    const w = Math.max(1, gxEnd - gx);
+    ctx.save();
+    ctx.fillStyle = 'rgba(74,158,255,0.16)';
+    ctx.fillRect(gx, top, w, H - top);
+    ctx.strokeStyle = 'rgba(74,158,255,0.6)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(gx + 0.5, top + 0.5, Math.max(1, w - 1), H - top - 1);
+    ctx.setLineDash([]);
+    // The seam the pointer is snapped to: full height with caps, so it reads as an insertion point
+    // rather than a second playhead.
+    ctx.strokeStyle = '#4a9eff';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    ctx.fillStyle = '#4a9eff';
+    ctx.beginPath(); ctx.moveTo(x - 5, 0); ctx.lineTo(x + 5, 0); ctx.lineTo(x, 8); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x - 5, H); ctx.lineTo(x + 5, H); ctx.lineTo(x, H - 8); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+
+  /**
    * The whole selection as normalized [lo, hi] edited-second ranges: the committed marquee
    * ranges (selectedRanges) unioned with the in-progress single range (selStart/selEnd), sorted
    * and merged so overlaps/adjacencies coalesce. Empty when nothing is selected.
@@ -1170,7 +1436,16 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    *  Leaves no selection behind. Story-edge drags and playhead scrubs are not "highlights" and
    *  are left to finish on mouseup. */
   private abortInFlightGesture(): boolean {
-    if (!this.marqueeActive && !this.draggingSelection) return false;
+    if (!this.marqueeActive && !this.draggingSelection && !this.moveDrag) return false;
+    // A move drag is abandoned WITHOUT clearing the selection: nothing was committed yet, and the
+    // highlight the user is holding is what they'd have to re-make.
+    if (this.moveDrag) {
+      this.moveDrag = null;
+      document.body.style.userSelect = '';
+      window.removeEventListener('mousemove', this.onWindowMouseMove);
+      window.removeEventListener('mouseup', this.onWindowMouseUp);
+      return true;
+    }
     this.marqueeActive = false;
     this.marqueeMoved = false;
     this.marqueeForStory = false;
@@ -1516,9 +1791,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     for (const s of this.storiesForDisplay()) {
       const color = this.storyColor(s.number);
       const isActive = s.id === this.activeStoryId;
-      for (const r of s.regions) {
-        const x0 = this.timeToX(this.originalToEdited(r.start));
-        const x1 = this.timeToX(this.originalToEdited(r.end));
+      const isPicked = this.storyMergeIds.has(s.id);
+      // A region draws as one block PER edited piece: reordering can scatter a single original
+      // region across the edited timeline, and mapping only its two ends would give a
+      // negative-width block that silently vanishes from the ribbon. One piece in source order.
+      for (const piece of s.regions.flatMap(r => this.editedRangesForOriginal(r.start, r.end))) {
+        const x0 = this.timeToX(piece.lo);
+        const x1 = this.timeToX(piece.hi);
         if (x1 <= x0) continue;
         if (x1 < 0 || x0 > W) continue;              // off-screen
         const bx0 = Math.max(0, x0);
@@ -1528,10 +1807,17 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         ctx.save();
         this.roundRectPath(ctx, bx0, by, bw, bh, 2);
         ctx.fillStyle = color;
-        ctx.globalAlpha = isActive ? 1 : 0.7;        // active story reads brighter
+        // Picked-for-merge reads as bright as active: the user is about to act on it.
+        ctx.globalAlpha = (isActive || isPicked) ? 1 : 0.7;
         ctx.fill();
         ctx.globalAlpha = 1;
-        if (isActive) {                              // white outline on the active story
+        // Picked wins the outline over active — the pick is the pending action, and a story can
+        // be both. Blue matches the Merge button; white stays the "this is the paint target" cue.
+        if (isPicked) {
+          ctx.strokeStyle = '#4a9eff';
+          ctx.lineWidth = 2.5;
+          ctx.stroke();
+        } else if (isActive) {
           ctx.strokeStyle = '#ffffff';
           ctx.lineWidth = 1.5;
           ctx.stroke();
@@ -1608,6 +1894,21 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // that redefines that boundary. Otherwise a click on a ribbon block SELECTS that story chunk
     // (the delete target) and makes its story active — in any tool.
     if (inRibbon) {
+      // Right-click is the story menu's gesture, and contextmenu fires AFTER mousedown — running
+      // the click logic first would clear the merge pick on the way to the menu, leaving Merge
+      // grayed out on the very selection the user right-clicked. openStoryCtxMenu owns the pick
+      // rules (keep it when clicking inside it, replace it when clicking outside).
+      if (ev.button === 2) return;
+      // ⌘-click on a story block picks it for merging instead of selecting a chunk — the same
+      // gesture as in the story list, so a run of mis-split stories can be picked off the ribbon
+      // where the split is actually visible. Checked before the edge grab so a ⌘-click near a
+      // boundary picks rather than starting an edge drag.
+      if (this.isMultiPick(ev)) {
+        const hit = this.storyRegionAtEdited(t);
+        if (hit) this.toggleStoryMerge(hit.storyId);   // re-renders the ribbon itself
+        return;
+      }
+      this.clearStoryMergePick();
       const edgeHit = this.storyEdgeAtX(this.timeToX(t));
       if (edgeHit) {
         const story = this.stories.find(st => st.id === edgeHit.storyId);
@@ -1629,6 +1930,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.requestRender();
       return;
     }
+    this.clearStoryMergePick();   // any gesture outside the ribbon abandons the pick
 
     if (ev.shiftKey) {
       // Shift+drag paints a single free range (edited seconds) instead of scrubbing — a manual
@@ -1678,6 +1980,28 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
 
     const onClip = !!(this.rowAt(y) && this.segmentAt(this.rowAt(y)!.track.id, t));
+
+    // SELECT tool, pointer INSIDE an existing highlight: this gesture is a MOVE of that footage,
+    // not a new selection — so nothing is cleared or committed here. A drag past the promotion
+    // threshold relocates on mouseup; a bare click falls through to the very same scrub + section
+    // select it always did (deferred to mouseup, which is where we learn it was a click).
+    // Gated on the lane rather than on a clip so the whole visible yellow band is grabbable,
+    // including the lanes where the band crosses a gap.
+    if (this.toolMode === 'select' && this.rowAt(y)) {
+      const held = this.allSelectionRanges();
+      if (held.some(r => t > r.lo + this.EPS && t < r.hi - this.EPS)) {
+        this.moveDrag = {
+          ranges: held,
+          grabTime: t,
+          dropAt: held[0].lo,          // no movement === no change
+          boundaries: this.sectionBoundaries(),
+          moved: false,
+        };
+        window.addEventListener('mousemove', this.onWindowMouseMove);
+        window.addEventListener('mouseup', this.onWindowMouseUp);
+        return;
+      }
+    }
 
     if (this.toolMode === 'select') {
       this.marqueeForStory = false;
@@ -1786,6 +2110,166 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return dedup;
   }
 
+  // ── Reordering: drag a selection to a new position ──────────────────────────
+  /**
+   * Live update of a selection-move drag. The insertion point is the pointer HARD-snapped to the
+   * nearest section boundary, so a block can only ever land ON an edit — never mid-clip.
+   */
+  private updateMoveDrag(ev: MouseEvent): void {
+    const d = this.moveDrag!;
+    const t = this.canvasEventTime(ev);
+    d.dropAt = this.nearestBoundary(d.boundaries, t);
+    // Same 3px promotion threshold the marquee uses: a jittery click must never relocate footage.
+    if (Math.abs(this.timeToX(t) - this.timeToX(d.grabTime)) > 3) d.moved = true;
+    this.requestRender();
+  }
+
+  /** Nearest value in a SORTED grid (binary search, then only the neighbours can be nearer). */
+  private nearestBoundary(grid: number[], t: number): number {
+    if (grid.length === 0) return t;
+    let lo = 0, hi = grid.length - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (grid[mid] < t) lo = mid + 1; else hi = mid; }
+    let best = grid[lo];
+    for (const i of [lo - 1, lo + 1]) {
+      if (i < 0 || i >= grid.length) continue;
+      if (Math.abs(grid[i] - t) < Math.abs(best - t)) best = grid[i];
+    }
+    return best;
+  }
+
+  /**
+   * The EDITED extent [start, end] of every sequence entry, parallel to sequenceSpans(). An
+   * entry's surviving pieces are laid out consecutively by rebuildEditedModel (that is the whole
+   * point of walking the sequence in playback order), so one pass over keptBySequence — which is
+   * grouped by ascending `seq` for the same reason — fills the table. An entry the cuts emptied is
+   * a ZERO-WIDTH point sitting at the write head, which is what lets it ride along with whichever
+   * side of a nearby split it belongs to instead of vanishing from the walk.
+   */
+  private sequenceExtents(): { es: number; ee: number }[] {
+    const seq = this.sequenceSpans();
+    const out: { es: number; ee: number }[] = [];
+    let acc = 0, k = 0;
+    for (let s = 0; s < seq.length; s++) {
+      const es = acc;
+      while (k < this.keptBySequence.length && this.keptBySequence[k].seq === s) {
+        acc = this.keptBySequence[k].ee;
+        k++;
+      }
+      out.push({ es, ee: acc });
+    }
+    return out;
+  }
+
+  /**
+   * Lift the current selection out of the playback sequence and re-insert it at `dropAt` (EDITED
+   * seconds, already snapped to a section boundary), then rebuild.
+   *
+   * A multi-piece selection CONSOLIDATES into one contiguous block at the drop point, keeping the
+   * pieces' order relative to each other; the gaps they left behind close up. Nothing else moves,
+   * and no footage is added or removed — the sequence only ever gets re-ordered here, so the
+   * result is a permutation of the same partition of [0, timelineDuration].
+   *
+   * The move is expressed entirely in ORIGINAL time on the sequence, never as "the original span
+   * between the selection's two edges": after an earlier reorder, edited-adjacent footage can come
+   * from anywhere, and that shortcut would drag along everything in between.
+   */
+  private moveSelectionTo(ranges: { lo: number; hi: number }[], dropAt: number): void {
+    if (!this.manifest || ranges.length === 0) return;
+    const seq = this.sequenceSpans();
+    const ext = this.sequenceExtents();
+
+    // Every edited time the sequence must be cut at: each selection edge (so a partly-covered
+    // entry splits into a moved half and a staying half) plus the drop point itself (a snapped
+    // clip edge is usually INTERIOR to an entry — with no sequence yet, every drop is).
+    const splitTimes = [...ranges.flatMap(r => [r.lo, r.hi]), dropAt].sort((a, b) => a - b);
+
+    const stay: { start: number; end: number }[] = [];
+    const moved: { start: number; end: number }[] = [];
+    let insertIdx = -1;
+    for (let s = 0; s < seq.length; s++) {
+      const { es, ee } = ext[s];
+      // Interior split points, mapped back to ORIGINAL time. Both lists stay in lockstep: edges[j]
+      // is the original start of sub-entry j, editedEdges[j] its edited start.
+      const edges: number[] = [seq[s].start];
+      const editedEdges: number[] = [es];
+      for (const e of splitTimes) {
+        if (e <= es + this.EPS || e >= ee - this.EPS) continue;
+        const o = this.editedToOriginal(e);
+        if (o > edges[edges.length - 1] + this.EPS && o < seq[s].end - this.EPS) {
+          edges.push(o);
+          editedEdges.push(e);
+        }
+      }
+      edges.push(seq[s].end);
+
+      for (let j = 0; j < edges.length - 1; j++) {
+        const pieceEs = editedEdges[j];
+        const pieceEe = (j + 1 < editedEdges.length) ? editedEdges[j + 1] : ee;
+        // A sub-entry moves when its EDITED span lies inside a selected range. A zero-width one
+        // (entirely cut) has no midpoint to test, so it moves only when strictly enclosed —
+        // otherwise removed footage parked on the selection's edge would follow the block and
+        // undoing the cut would resurrect it in the wrong place.
+        const wide = pieceEe - pieceEs > this.EPS;
+        const probe = wide ? (pieceEs + pieceEe) / 2 : pieceEs;
+        const isMoved = wide
+          ? ranges.some(r => probe > r.lo && probe < r.hi)
+          : ranges.some(r => probe > r.lo + this.EPS && probe < r.hi - this.EPS);
+        if (isMoved) { moved.push({ start: edges[j], end: edges[j + 1] }); continue; }
+        // The block lands before the first STAYING sub-entry at or after the drop — computed
+        // against the post-removal list, so a drop inside the selection is a no-op instead of an
+        // off-by-the-selection's-length jump.
+        if (insertIdx < 0 && pieceEs >= dropAt - this.EPS) insertIdx = stay.length;
+        stay.push({ start: edges[j], end: edges[j + 1] });
+      }
+    }
+    if (moved.length === 0) return;
+    if (insertIdx < 0) insertIdx = stay.length;      // dropped past the last surviving entry
+
+    this.pushUndo();
+    this.redoStack = [];
+    this.sequence = this.normalizeSequence([
+      ...stay.slice(0, insertIdx), ...moved, ...stay.slice(insertIdx),
+    ]);
+    this.rebuildEditedModel();
+
+    // Re-select the block where it now lives: the user just placed it, and losing the highlight
+    // would make a follow-up nudge impossible without re-marqueeing.
+    const landed = this.mergeRanges(
+      moved.flatMap(p => this.editedRangesForOriginal(p.start, p.end)));
+    this.selStart = null;
+    this.selEnd = null;
+    this.selectedGroupStart = null;
+    this.selectedGroupEnd = null;
+    this.storySelection = null;
+    this.selectedRanges = landed.map(r => ({ start: r.lo, end: r.hi }));
+    // Story numbers are a display/export ordering only — after a move they must follow the footage.
+    this.renumberStoriesByTimeline();
+    this.landPlayheadAfterEdit(landed.length > 0 ? landed[0].lo : this.playheadTime, true);
+  }
+
+  /**
+   * Canonicalize a freshly built sequence: drop slivers, re-join entries that ended up adjacent in
+   * ORIGINAL time as well as in playback order, and collapse a sequence that is once again plain
+   * source order back to null. Without this the entry list only ever grows — every move fragments
+   * it further, the rebuild walk is O(entries × cuts), and a sidecar would carry a `sequence` field
+   * describing nothing.
+   */
+  private normalizeSequence(list: { start: number; end: number }[]): { start: number; end: number }[] | null {
+    const out: { start: number; end: number }[] = [];
+    for (const e of list) {
+      if (e.end - e.start <= this.EPS) continue;
+      const last = out[out.length - 1];
+      if (last && Math.abs(last.end - e.start) <= this.EPS) last.end = e.end;
+      else out.push({ start: e.start, end: e.end });
+    }
+    const dur = this.manifest?.timelineDuration || 0;
+    if (out.length === 0) return null;
+    if (out.length === 1 && Math.abs(out[0].start) <= this.EPS && Math.abs(out[0].end - dur) <= this.EPS) {
+      return null;
+    }
+    return out;
+  }
+
   /** Add a blade boundary (ORIGINAL seconds), sorted + de-duplicated. Undoable (Cmd+Z). */
   private addBladeBoundary(originalSec: number): void {
     const t = Math.min(this.manifest?.timelineDuration || 0, Math.max(0, originalSec));
@@ -1829,6 +2313,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private onWindowMouseMove = (ev: MouseEvent): void => {
     if (this.draggingStoryEdge) { this.updateStoryEdgeDrag(ev); }
+    else if (this.moveDrag) { this.updateMoveDrag(ev); }
     else if (this.draggingSelection) { this.selEnd = this.snapEdited(this.canvasEventTime(ev), ev.altKey); this.requestRender(); }
     else if (this.marqueeActive) {
       this.marqueeEndTime = this.marqueeForStory
@@ -1851,7 +2336,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private onWindowMouseUp = (): void => {
     if (!this.draggingPlayhead && !this.draggingScrollbar && !this.draggingSplitV
         && !this.draggingSplitH && !this.draggingSplitP && !this.draggingSelection
-        && !this.marqueeActive && !this.draggingStoryEdge) return;
+        && !this.marqueeActive && !this.draggingStoryEdge && !this.moveDrag) return;
     // Persist split preferences once per drag (not per move frame).
     if (this.draggingSplitV) localStorage.setItem(this.SPLIT_V_KEY, String(this.splitV));
     if (this.draggingSplitH) localStorage.setItem(this.SPLIT_H_KEY, String(this.splitH));
@@ -1863,6 +2348,21 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       if (story) story.regions = this.mergeRegions(story.regions);
       this.draggingStoryEdge = null;
       this.scheduleEditsSave();
+    }
+    // A selection-move drag that actually moved relocates the footage; one that never passed the
+    // threshold was a click inside the highlight, which must still scrub + select its section.
+    if (this.moveDrag) {
+      const d = this.moveDrag;
+      this.moveDrag = null;
+      if (d.moved) {
+        // The FROZEN ranges, not the live selection: what commits must be exactly what the ghost
+        // promised for the whole drag.
+        this.moveSelectionTo(d.ranges, d.dropAt);
+      } else {
+        this.setPlayhead(d.grabTime);
+        this.selectedRanges = [];
+        this.selectSectionAround(d.grabTime);
+      }
     }
     // A marquee that actually moved commits its section selection; a bare click leaves the
     // section-select outcome from mousedown untouched.
@@ -2218,9 +2718,34 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return out;
   }
 
+  /**
+   * The undoable edit state, copied — every one of these arrays is replaced or rebuilt in place
+   * elsewhere, and a snapshot aliasing them would mutate under the stack.
+   *
+   * The SEQUENCE has to ride along with the cuts: the two are read together by
+   * rebuildEditedModel, so undoing to a cut list from before a reorder while leaving the new
+   * order in place would re-tile the restored footage into the wrong slots.
+   */
+  private editSnapshot(): EditSnapshot {
+    return {
+      cuts: [...this.cuts],
+      blades: [...this.bladeBoundaries],
+      sequence: this.sequence ? this.sequence.map(s => ({ start: s.start, end: s.end })) : null,
+    };
+  }
+
+  /** Restore a snapshot onto the live state (the caller rebuilds the model). */
+  private applyEditSnapshot(s: EditSnapshot): void {
+    this.cuts = s.cuts;
+    this.bladeBoundaries = s.blades;
+    // Snapshots persisted before reordering existed carry no `sequence`; undefined must read as
+    // SOURCE ORDER, not as an empty sequence — sequenceSpans() would then tile nothing and the
+    // undo would blank the whole timeline.
+    this.sequence = s.sequence ?? null;
+  }
+
   private pushUndo(): void {
-    // Copies, since both arrays are replaced/rebuilt in place elsewhere.
-    this.undoStack.push({ cuts: [...this.cuts], blades: [...this.bladeBoundaries] });
+    this.undoStack.push(this.editSnapshot());
     if (this.undoStack.length > this.UNDO_LIMIT) this.undoStack.shift();
   }
 
@@ -2239,11 +2764,17 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const newCuts: Cut[] = [];
     let firstStartFrame: number | null = null;
     for (const r of ranges) {
-      const startFrame = Math.round(this.editedToOriginal(r.lo) / fs);
-      const endFrame = Math.round(this.editedToOriginal(r.hi) / fs);
-      if (endFrame <= startFrame) continue;   // sub-frame range — nothing to remove
-      newCuts.push({ startFrame, endFrame });
-      if (firstStartFrame === null || startFrame < firstStartFrame) firstStartFrame = startFrame;
+      // One edited range can cover SEVERAL original spans once footage has been reordered.
+      // Mapping only its two edges would cut everything lying between them in original time —
+      // footage the user never highlighted. In source order this yields the single span the two
+      // edges always described.
+      for (const span of this.originalSpansForEdited(r.lo, r.hi)) {
+        const startFrame = Math.round(span.start / fs);
+        const endFrame = Math.round(span.end / fs);
+        if (endFrame <= startFrame) continue;   // sub-frame span — nothing to remove
+        newCuts.push({ startFrame, endFrame });
+        if (firstStartFrame === null || startFrame < firstStartFrame) firstStartFrame = startFrame;
+      }
     }
     if (newCuts.length === 0) {
       // Every range rounded to zero frames. Clear and bail without touching history.
@@ -2265,10 +2796,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private undo(): void {
     if (this.undoStack.length === 0) return;
     const origTime = this.editedToOriginal(this.playheadTime);
-    this.redoStack.push({ cuts: [...this.cuts], blades: [...this.bladeBoundaries] });
-    const snap = this.undoStack.pop()!;
-    this.cuts = snap.cuts;
-    this.bladeBoundaries = snap.blades;
+    this.redoStack.push(this.editSnapshot());
+    this.applyEditSnapshot(this.undoStack.pop()!);
     this.rebuildEditedModel();
     this.clearSelection();
     this.landPlayheadAfterEdit(this.originalToEdited(origTime), false);
@@ -2277,10 +2806,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private redo(): void {
     if (this.redoStack.length === 0) return;
     const origTime = this.editedToOriginal(this.playheadTime);
-    this.undoStack.push({ cuts: [...this.cuts], blades: [...this.bladeBoundaries] });
-    const snap = this.redoStack.pop()!;
-    this.cuts = snap.cuts;
-    this.bladeBoundaries = snap.blades;
+    this.undoStack.push(this.editSnapshot());
+    this.applyEditSnapshot(this.redoStack.pop()!);
     this.rebuildEditedModel();
     this.clearSelection();
     this.landPlayheadAfterEdit(this.originalToEdited(origTime), false);
@@ -2342,10 +2869,37 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         throw new Error(`edit-state sidecar field '${key}' is not an array — fix or delete the file`);
       }
     }
+    // `sequence` is OPTIONAL and its ABSENCE means source order — which is exactly what every
+    // sidecar written before reordering existed contains. That is why this did NOT bump
+    // EDITS_SCHEMA_VERSION: the check above rejects a mismatch outright ("fix or delete the
+    // file"), so a bump would orphan every project on disk. An added optional field is
+    // compatible in both directions instead.
+    if (e.sequence !== undefined && e.sequence !== null) {
+      if (!Array.isArray(e.sequence)) {
+        throw new Error(`edit-state sidecar field 'sequence' is not an array — fix or delete the file`);
+      }
+      for (const s of e.sequence) {
+        if (!s || typeof s.start !== 'number' || typeof s.end !== 'number' || !(s.end > s.start)) {
+          throw new Error(`edit-state sidecar has a malformed 'sequence' entry — fix or delete the file`);
+        }
+      }
+      // The sequence must TILE [0, timelineDuration] exactly. A gap would silently hide footage
+      // that the cut list says survives, and an overlap would play it twice — either way the
+      // timeline would stop matching the export, so refuse the file instead of guessing.
+      const dur = this.manifest?.timelineDuration || 0;
+      const tiled = [...e.sequence].sort((a: any, b: any) => a.start - b.start);
+      const TOL = 1e-6;
+      let ok = Math.abs(tiled[0].start) <= TOL && Math.abs(tiled[tiled.length - 1].end - dur) <= TOL;
+      for (let i = 1; ok && i < tiled.length; i++) ok = Math.abs(tiled[i].start - tiled[i - 1].end) <= TOL;
+      if (!ok) {
+        throw new Error(`edit-state sidecar 'sequence' does not tile [0, ${dur}] — fix or delete the file`);
+      }
+    }
     this.suppressEditsSave = true;
     try {
       this.cuts = e.cuts;
       this.bladeBoundaries = e.bladeBoundaries;
+      this.sequence = (Array.isArray(e.sequence) && e.sequence.length > 0) ? e.sequence : null;
       this.stories = e.stories;
       this.storyIdCounter = Number.isInteger(e.storyIdCounter) ? e.storyIdCounter : this.stories.length;
       this.undoStack = e.undoStack;
@@ -2371,6 +2925,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         savedAt: new Date().toISOString(),
         cuts: this.cuts,
         bladeBoundaries: this.bladeBoundaries,
+        // Written ONLY when the user has actually reordered something, so an untouched project's
+        // sidecar stays byte-identical to what older builds produce and read.
+        ...(this.sequence ? { sequence: this.sequence } : {}),
         stories: this.stories,
         storyIdCounter: this.storyIdCounter,
         undoStack: this.undoStack,
@@ -2420,6 +2977,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       const stories = this.hasStories() ? this.resolveStoryRegions() : undefined;
       const res = await this.electron.exportEditorCuts({
         zipPath: this.currentZipPath!, cuts: this.cuts,
+        sequence: this.exportSequence(),
         stories, output: stories ? kind : undefined,
       });
       const path = res?.path;
@@ -2433,6 +2991,44 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.menuOpen = false;   // the result now shows in the modal, not the menu
       this.cdr.detectChanges();
     }
+  }
+
+  /**
+   * The playback order as the EXPORT WIRE FORMAT — which is deliberately NOT the in-memory model,
+   * and this is the single most confusable thing in the reorder feature:
+   *
+   *   in memory  `sequence` partitions SLOTS over the whole original timeline [0, timelineDuration],
+   *              cut material included. That is what keeps cuts purely subtractive and lets an
+   *              undone cut land back in the slot it was lifted from.
+   *   on the wire the exporter requires a partition of the SURVIVORS — the complement of the cuts —
+   *              in playback order, and its validator refuses anything else. Sending the slots gets
+   *              "sequence must partition the footage the cuts leave behind" for every project that
+   *              has BOTH a cut and a move. (0–10s, cut 3–4, one move: slots `[{4,10},{0,4}]` is
+   *              rejected; survivors `[{4,10},{0,3}]` is accepted.)
+   *
+   * keptBySequence IS that survivor list already — the spans the sequence carved out of the cut
+   * complement, ordered by `es` — so all that is left is to frame-align it (the exporter checks
+   * alignment to 1e-6 s, and these bounds reach us through editedToOriginal and the cut math, so
+   * they are exactly where drift would show up) and to re-join spans that are BOTH source-adjacent
+   * and playback-consecutive, which would otherwise ask the exporter for a division the user never
+   * made. Undefined in source order — absent means source order on both sides, which is what keeps
+   * every existing project exporting exactly as it does today.
+   */
+  private exportSequence(): { start: number; end: number }[] | undefined {
+    if (!this.sequence || !this.manifest) return undefined;
+    const fs = this.manifest.frameSeconds;
+    const out: { start: number; end: number }[] = [];
+    for (const k of this.keptBySequence) {
+      // Both sides of an interior split quantize from the same number, so alignment can never open
+      // a gap or an overlap between neighbours. Math.round is monotonic, so a span can never invert.
+      const start = Math.round(k.os / fs) * fs;
+      const end = Math.round(k.oe / fs) * fs;
+      if (end - start <= this.EPS) continue;      // collapsed to nothing by alignment
+      const last = out[out.length - 1];
+      if (last && Math.abs(last.end - start) <= this.EPS) last.end = end;
+      else out.push({ start, end });
+    }
+    return out.length > 0 ? out : undefined;
   }
 
   /** Reveal the exported file in Finder/Explorer. */
@@ -2507,6 +3103,79 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return this.mergeRegions(story.regions).length === 0;
   }
 
+  /**
+   * Fingerprint of a set of regions — the identity of the SPAN a story's chapters were derived
+   * from. Stored on the story as `chaptersFrom`; a mismatch against the story's regions right now
+   * is what "stale" means.
+   *
+   * This is a fingerprint and not an invalidate-on-edit call for one reason: regions are mutated
+   * in a dozen places — the ribbon edge drag, Split ▸ Apply, merge, story delete, the timeline
+   * move, auto-split — and every new one of those is another site that has to REMEMBER to
+   * invalidate. That is the thing that gets forgotten quietly, and forgetting it leaves chapter
+   * markers pointing at content the upload no longer contains. Comparing a fingerprint makes
+   * staleness derived, so it cannot be forgotten; there are deliberately no invalidation calls at
+   * the mutation sites.
+   *
+   * Merged and sorted first, so a span painted in two touching drags, or in the other order,
+   * fingerprints identically to the same span painted in one. Rounded to milliseconds because
+   * region edges are arithmetic results and land an ULP either side of where they started —
+   * float noise must never read as a redrawn story. `r1:` is the format's own version: change the
+   * rounding or the layout below and every stored fingerprint must stop matching rather than be
+   * compared against strings built by different rules.
+   */
+  private regionFingerprint(regions: { start: number; end: number }[]): string {
+    return 'r1:' + this.mergeRegions(regions)
+      .map(r => `${r.start.toFixed(3)}-${r.end.toFixed(3)}`)
+      .join(',');
+  }
+
+  /**
+   * Where a story's chapters stand against its regions RIGHT NOW.
+   *
+   *   'fresh' — derived for exactly these regions, per story, with consolidation off.
+   *   'stale' — chapters exist but describe a different span, or were derived at whole-recording
+   *             cadence (provisional, `chaptersFrom` unset). Usable, never trusted; re-derived on
+   *             the next demand.
+   *   'none'  — nothing to use. Fewer than two markers is nothing a description can carry, which
+   *             is why the floor is 2 rather than 1.
+   */
+  storyChapterState(story: Story): 'fresh' | 'stale' | 'none' {
+    if ((story.chapters?.length ?? 0) < 2) return 'none';
+    return story.chaptersFrom && story.chaptersFrom === this.regionFingerprint(story.regions)
+      ? 'fresh' : 'stale';
+  }
+
+  /**
+   * How many of a story's chapter starts are ±45 s guesses rather than mapped quotes. Surfaced in
+   * the story list because nothing else can show it: an approximate start produces a description
+   * line that looks exactly like a good one, and the user finds out by clicking a published marker
+   * and landing half a minute into the wrong thing.
+   */
+  storyApproxChapters(story: Story): number {
+    return (story.chapters || []).filter(c => c.startApprox).length;
+  }
+
+  /**
+   * The ONLY writer of `story.chapters`. Chapters and the span they came from are set together so
+   * they cannot drift apart — a list stamped by one code path and replaced by another is a list
+   * that lies about being fresh.
+   *
+   * `from` is the fingerprint to stamp: pass the one taken BEFORE a long derivation (regions can
+   * move while hundreds of model calls run, and stamping the current regions afterwards would
+   * mark chapters fresh for a span they never saw), or `null` for provisional chapters that must
+   * always read stale. Fewer than two markers clears both fields.
+   */
+  private setStoryChapters(story: Story, chapters: StoryChapter[] | undefined, from?: string | null): void {
+    if (!chapters || chapters.length < 2) {
+      delete story.chapters;
+      delete story.chaptersFrom;
+      return;
+    }
+    story.chapters = chapters;
+    const stamp = from === undefined ? this.regionFingerprint(story.regions) : from;
+    if (stamp) story.chaptersFrom = stamp; else delete story.chaptersFrom;
+  }
+
   /** Stable, distinct color for a story NUMBER (palette cycled; safe for any integer). */
   storyColor(n: number): string {
     const len = this.STORY_COLORS.length;
@@ -2538,6 +3207,30 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   /**
+   * Re-sort the story list by where each story's footage now SITS on the edited timeline, then
+   * renumber. A story number is a display/export ordering convenience, never data: after footage
+   * moves, the list, the ribbon colors and the exported project order all have to follow the
+   * timeline rather than a number someone typed earlier. Stories with nothing left (fully cut)
+   * keep their relative order at the end, where an empty story belongs.
+   */
+  private renumberStoriesByTimeline(): void {
+    if (this.stories.length === 0) return;
+    const keyOf = (s: Story): number => {
+      let best = Infinity;
+      for (const r of this.mergeRegions(s.regions)) {
+        const pieces = this.editedRangesForOriginal(r.start, r.end);
+        if (pieces.length > 0 && pieces[0].lo < best) best = pieces[0].lo;
+      }
+      return best;
+    };
+    const keyed = this.stories.map((s, i) => ({ s, i, k: keyOf(s) }));
+    // Infinity - Infinity is NaN, which corrupts a comparator — compare, don't subtract.
+    keyed.sort((a, b) => (a.k === b.k ? 0 : (a.k < b.k ? -1 : 1)) || (a.i - b.i));
+    this.stories = keyed.map(x => x.s);
+    this.renumberStories();
+  }
+
+  /**
    * Select/deselect a story as the ACTIVE paint target. Clicking the active story again
    * deselects it (so the next drag starts a fresh story). Only meaningful in Story Mode.
    */
@@ -2547,10 +3240,54 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   /** Strip-row click: select the row's story active, unless the click was on an input/button. */
+  /**
+   * ⌘-picking is handled on MOUSEDOWN, not click, and at the ROW level.
+   *
+   * Three parts of a row swallow a click before it can reach the row handler: the title <input>
+   * (flex:1, so it covers most of the row's width, and the click handler must skip it to let the
+   * field take focus), the colour swatch, and the number — the last two stopPropagation for their
+   * own gestures. Handling the modifier click at the row's mousedown reaches all three, and
+   * preventDefault() stops the title field stealing focus on the way.
+   */
+  onStoryRowMouseDown(story: Story, ev: MouseEvent): void {
+    if (!this.isMultiPick(ev)) {
+      // A plain press clears any stale suppression from a press that never produced a click
+      // (mousedown here, mouseup elsewhere) — otherwise it would eat the NEXT ordinary click.
+      this.suppressStoryClick = false;
+      return;
+    }
+    ev.preventDefault();
+    this.suppressStoryClick = true;
+    this.toggleStoryMerge(story.id);
+  }
+
+  /** True once, when the click that follows a ⌘-pick mousedown should be ignored. */
+  private suppressStoryClick = false;
+  private consumeStoryClickSuppression(): boolean {
+    if (!this.suppressStoryClick) return false;
+    this.suppressStoryClick = false;
+    return true;
+  }
+
   onStoryRowClick(story: Story, ev: Event): void {
+    if (this.consumeStoryClickSuppression()) return;   // the ⌘-pick already happened on mousedown
     const tag = (ev.target as HTMLElement | null)?.tagName;
     if (tag === 'INPUT' || tag === 'BUTTON') return;   // let field/delete handle their own click
+    this.clearStoryMergePick();                        // a plain click abandons a half-made pick
     this.toggleActiveStory(story.id);
+  }
+
+  /** Swatch click — selects the whole story, unless this click is the tail of a ⌘-pick. */
+  onStorySwatchClick(story: Story, ev: MouseEvent): void {
+    ev.stopPropagation();
+    if (this.consumeStoryClickSuppression()) return;
+    this.selectWholeStory(story);
+  }
+
+  /** The number is the drag handle; a plain click on it does nothing but must not reach the row. */
+  onStoryNumClick(ev: MouseEvent): void {
+    ev.stopPropagation();
+    this.consumeStoryClickSuppression();
   }
 
   /**
@@ -2586,6 +3323,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   /** Inline title edit (immediate). Redraws so the ribbon label tracks the new title. */
   onStoryTitleInput(story: Story, value: string): void {
     story.title = value;
+    // Typed by hand ⇒ auto-titling must never overwrite it. Set even when the field is cleared:
+    // an empty title the user emptied on purpose is still a decision, and re-filling it from a
+    // model would look like the app disagreeing with them.
+    story.titleTouched = true;
     this.scheduleEditsSave();
     this.requestRender();
   }
@@ -2637,10 +3378,201 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.cdr.detectChanges();
   }
 
+  // ── Merging stories ─────────────────────────────────────────────────────────
+  /** ⌘-click (⌃-click on Windows/Linux) is the multi-pick modifier, in the story list and on the
+   *  timeline ribbon alike. Accepting both keys costs nothing and avoids a platform check. */
+  private isMultiPick(ev: MouseEvent): boolean {
+    return ev.metaKey || ev.ctrlKey;
+  }
+
+  /** Add/remove a story from the merge pick. */
+  toggleStoryMerge(id: string): void {
+    if (this.storyMergeIds.has(id)) this.storyMergeIds.delete(id);
+    else this.storyMergeIds.add(id);
+    this.requestRender();          // the ribbon outlines picked stories too
+    this.cdr.detectChanges();
+  }
+
+  // ── Reordering stories (drag) ───────────────────────────────────────────────
+  // Story order IS the export order: editor_export.py emits one <project> per story into the
+  // event, `projects.sort(key=number)`, Scrap last. So dragging a story to a new slot literally
+  // reorders the <project> elements in the FCPXML — the content moves with the story.
+  //
+  // The drag handle is the story NUMBER, not the whole row: the row holds an inline <input> for
+  // the title, and a draggable row would fight text selection inside it.
+  dragStoryId: string | null = null;
+  /** Insertion point while dragging: drop BEFORE this story, or null for the end of the list. */
+  dropBeforeId: string | null = null;
+
+  onStoryDragStart(story: Story, ev: DragEvent): void {
+    this.dragStoryId = story.id;
+    this.dropBeforeId = null;
+    if (ev.dataTransfer) {
+      ev.dataTransfer.effectAllowed = 'move';
+      ev.dataTransfer.setData('text/plain', story.id);   // Firefox needs data set to start a drag
+    }
+  }
+
+  onStoryDragOver(story: Story, ev: DragEvent): void {
+    if (!this.dragStoryId) return;
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
+    // Above the row's midpoint drops before it; below drops before the NEXT one (i.e. after this).
+    const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+    const idx = this.stories.findIndex(s => s.id === story.id);
+    const target = ev.clientY < rect.top + rect.height / 2
+      ? story.id
+      : (this.stories[idx + 1]?.id ?? null);
+    if (this.dropBeforeId !== target) {
+      this.dropBeforeId = target;
+      this.cdr.detectChanges();
+    }
+  }
+
+  /** Dragging over the pane below the last row targets the end of the list. */
+  onStoryPaneDragOver(ev: DragEvent): void {
+    if (!this.dragStoryId) return;
+    ev.preventDefault();
+    if (this.dropBeforeId !== null) {
+      this.dropBeforeId = null;
+      this.cdr.detectChanges();
+    }
+  }
+
+  onStoryDrop(ev: DragEvent): void {
+    ev.preventDefault();
+    const id = this.dragStoryId;
+    if (!id) return;
+    const moving = this.stories.find(s => s.id === id);
+    if (!moving) { this.onStoryDragEnd(); return; }
+
+    // Rebuild the array with the story lifted out, so the drop index is computed against the list
+    // it will actually land in — indexing the original array is off by one for a downward move.
+    const rest = this.stories.filter(s => s.id !== id);
+    let to = this.dropBeforeId ? rest.findIndex(s => s.id === this.dropBeforeId) : rest.length;
+    if (to < 0) to = rest.length;
+    rest.splice(to, 0, moving);
+
+    this.stories = rest;
+    this.dragStoryId = null;
+    this.dropBeforeId = null;
+    this.renumberStories();      // numbers ARE the export sequence — resequence immediately
+    this.scheduleEditsSave();
+    this.requestRender();        // the ribbon labels stories by number
+    this.cdr.detectChanges();
+  }
+
+  onStoryDragEnd(): void {
+    if (!this.dragStoryId && this.dropBeforeId === null) return;
+    this.dragStoryId = null;
+    this.dropBeforeId = null;
+    this.cdr.detectChanges();
+  }
+
+  // Right-click menu for stories, opened from a list row or a timeline ribbon block. Positioned in
+  // viewport coordinates (position: fixed) so the same menu serves both, which sit in different
+  // scroll containers.
+  storyCtxMenu: { x: number; y: number } | null = null;
+
+  onStoryRowContextMenu(story: Story, ev: MouseEvent): void {
+    ev.preventDefault();
+    this.openStoryCtxMenu(story.id, ev.clientX, ev.clientY);
+  }
+
+  /** Right-click on the timeline ribbon. Ignored (native menu allowed through) anywhere else on
+   *  the canvas, so this never steals a right-click from the tracks. */
+  onCanvasContextMenu(ev: MouseEvent): void {
+    if (!this.hasStories() || this.errorMessage || !this.manifest) return;
+    const y = this.canvasEventY(ev);
+    if (y <= this.RULER_H || y > this.RULER_H + this.ribbonHeight) return;
+    const hit = this.storyRegionAtEdited(this.canvasEventTime(ev));
+    if (!hit) return;
+    ev.preventDefault();
+    this.openStoryCtxMenu(hit.storyId, ev.clientX, ev.clientY);
+  }
+
+  private openStoryCtxMenu(storyId: string, x: number, y: number): void {
+    // Right-clicking OUTSIDE the current pick replaces it with just this story. The menu must only
+    // ever act on stories the user can currently see highlighted — never on a pick they made
+    // earlier and forgot, which would silently merge the wrong things.
+    if (!this.storyMergeIds.has(storyId)) {
+      this.storyMergeIds.clear();
+      this.storyMergeIds.add(storyId);
+      this.requestRender();
+    }
+    this.storyCtxMenu = { x, y };
+    this.cdr.detectChanges();
+  }
+
+  closeStoryCtxMenu(): void {
+    this.storyCtxMenu = null;
+    this.cdr.detectChanges();
+  }
+
+  /** Merge from the context menu. Closes first so the menu cannot outlive the stories it names. */
+  mergeFromCtxMenu(): void {
+    this.closeStoryCtxMenu();
+    this.mergeSelectedStories();
+  }
+
+  /** Drop the pick. Any plain (unmodified) click does this, so a partial selection can never
+   *  linger unnoticed and merge something the user forgot they had picked. */
+  private clearStoryMergePick(): void {
+    if (this.storyMergeIds.size === 0) return;
+    this.storyMergeIds.clear();
+    this.requestRender();
+    this.cdr.detectChanges();
+  }
+
+  /** Merge needs at least two stories ticked. */
+  get canMergeStories(): boolean {
+    return this.storyMergeIds.size >= 2;
+  }
+
+  /**
+   * Merge the ticked stories into one. The analyzer sometimes splits a single story in two — this
+   * is the manual repair, and the direction that matters, since an over-split is fixable by hand
+   * and a missed boundary is not.
+   *
+   * The FIRST ticked story in list order absorbs the others: it keeps its id, position and title,
+   * and takes the union of every region. Immediate and off the undo stack, matching deleteStory.
+   */
+  mergeSelectedStories(): void {
+    const chosen = this.stories.filter(s => this.storyMergeIds.has(s.id));
+    if (chosen.length < 2) return;
+    const target = chosen[0];
+
+    target.regions = this.mergeRegions(chosen.flatMap(s => s.regions));
+    // The absorbed stories' chapters are deliberately NOT concatenated onto the target any more.
+    // A merge redraws the boundary, so what comes out is a new unit: two lists that each chaptered
+    // half of it do not chapter the whole, and a title conditioned on the concatenation describes
+    // a story that no longer exists. The target keeps its own list, which now reads STALE against
+    // the merged regions (its fingerprint cannot match a span it never covered), so it is
+    // re-derived on the next demand instead of being trusted. Nothing is destroyed here — nothing
+    // is promoted either. That falls out of the fingerprint; it is not an invalidation call.
+    // The split cache addresses the span of the OLD story; after a merge it describes neither the
+    // new regions nor the right children, so reopening Split must re-detect rather than restore a
+    // layout that no longer fits.
+    delete target.split;
+
+    const absorbed = new Set(chosen.slice(1).map(s => s.id));
+    this.stories = this.stories.filter(s => !absorbed.has(s.id));
+    if (this.activeStoryId && absorbed.has(this.activeStoryId)) this.activeStoryId = target.id;
+    if (this.storySelection && absorbed.has(this.storySelection.storyId)) this.storySelection = null;
+
+    this.storyMergeIds.clear();
+    this.renumberStories();
+    this.clearSelection();
+    this.scheduleEditsSave();
+    this.requestRender();
+    this.cdr.detectChanges();
+  }
+
   /** Delete a whole story (immediate, off the undo stack). Clears active/selection if it was this
    *  one, then resequences the remaining story numbers. */
   deleteStory(story: Story): void {
     this.stories = this.stories.filter(s => s.id !== story.id);
+    this.storyMergeIds.delete(story.id);
     if (this.activeStoryId === story.id) this.activeStoryId = null;
     if (this.storySelection?.storyId === story.id) this.storySelection = null;
     this.renumberStories();
@@ -2655,6 +3587,274 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     (ev.target as HTMLElement | null)?.blur();
   }
 
+  // ── Hand a subject list to the main window's Titles tab ─────────────────────
+  // The editor runs in its OWN window, so this cannot be an in-process call: the payload goes
+  // through the main process, which focuses the main window and delivers it there. Subjects are
+  // sent as BARE LABELS with no timestamps — the title model never sees a clock (the main
+  // process strips them again defensively; this just never adds them).
+
+  /** True once a story has something worth titling — its own chapters, or at least a title. */
+  canSendStoryToTitles(story: Story): boolean {
+    // A story with neither chapters nor a title can still be sent once it has transcript to
+    // derive chapters FROM — deriving is the point, so gating on "already has chapters" would
+    // hide the button exactly where it is most useful.
+    if (this.analyzing) return false;
+    return (story.chapters?.length ?? 0) > 0
+      || story.title.trim().length > 0
+      || (this.transcriptState === 'ready' && !!this.selectedOllamaModel && !this.isStoryEmpty(story));
+  }
+
+  /**
+   * Send from the story right-click menu: EVERY picked story, not just the one under the cursor.
+   * ⌘-picking three stories and sending them has to send three — dropping two silently would be
+   * indistinguishable from having sent them.
+   *
+   * Order is `this.stories` order, which is the story list's order and the timeline's (the list
+   * is re-sorted by edited position whenever footage moves — see renumberStoriesByTimeline), so
+   * the items land in the Metadata list reading down the timeline. Closes the menu first so it
+   * cannot outlive the stories it names.
+   */
+  async sendStoryToMetadataFromCtxMenu(): Promise<void> {
+    const picked = this.stories.filter(s => this.storyMergeIds.has(s.id));
+    this.closeStoryCtxMenu();
+    if (!picked.length) return;
+    await this.sendStoriesToTitles(picked);
+  }
+
+  /** Send ONE story — the single-story button on a story row. Same path as a multi-story send. */
+  async sendStoryToTitles(story: Story): Promise<void> {
+    await this.sendStoriesToTitles([story]);
+  }
+
+  /**
+   * Send each story's chapter list to the Metadata page as a normal upload — each story becomes
+   * its own YouTube video, so its chapters are that video's subject list, and each gets its own
+   * handoff in one batch.
+   *
+   * A STALE list is never sent: markers that describe a span the user has since redrawn point at
+   * content this upload does not contain, and a subject list is precisely what a title gets
+   * written from, so sending the old one quietly titles the wrong story. ensureStoryChapters
+   * re-derives it, or refuses and says why — and a refusal abandons the send rather than reducing
+   * it to something weaker.
+   *
+   * ALL-OR-NOTHING across the batch: readiness runs story by story (a derivation holds the
+   * analysing flag, so these cannot overlap), and the FIRST story that refuses abandons the whole
+   * send naming itself. Sending the ones that passed would leave the user unable to tell which
+   * stories reached the Metadata page without going and counting them.
+   */
+  async sendStoriesToTitles(stories: Story[]): Promise<void> {
+    if (!stories.length) return;
+    const many = stories.length > 1;
+    // Appended to every refusal in the multi-story case: the user pressed one button and needs
+    // told that NOTHING went, not just that one story had a problem.
+    const nothingSent = many ? ' Nothing was sent.' : '';
+    const handoffs: { subjects: string[]; format: 'normal'; source: string }[] = [];
+
+    for (const story of stories) {
+      const name = story.title.trim() || `Story ${story.number}`;
+      let chapters: StoryChapter[];
+      try {
+        chapters = await this.ensureStoryChapters(story);
+      } catch (err: any) {
+        // A refusal is shown and the send is abandoned — nothing is sent on a reduced basis.
+        this.transportError = (err?.message || String(err)) + nothingSent;
+        this.cdr.detectChanges();
+        return;
+      }
+      // ensureStoryChapters reports a failed re-derivation and hands back the old list (a
+      // pre-existing fallback, left as found). That list is still stale, and stale is the one thing
+      // this send must not do — so the send stops here rather than shipping markers for a span the
+      // user has redrawn. The failure itself is already showing in the activity dock.
+      if (this.storyChapterState(story) === 'stale') {
+        this.transportError =
+          `Not sent: “${name}” still has chapters from a ` +
+          `different span. Re-derive them first.` + nothingSent;
+        this.cdr.detectChanges();
+        return;
+      }
+      const labels = chapters.map(c => c.label.trim()).filter(l => l.length > 0);
+      // PRE-EXISTING FALLBACK: no chapters ⇒ send the bare story title as a one-line subject list.
+      // The receiving Titles tab cannot tell a one-subject story from a story whose chaptering
+      // failed, so what it produces is a title written from a title. Left as found and flagged.
+      const subjects = labels.length ? labels : [story.title.trim()].filter(t => t.length > 0);
+      if (!subjects.length) {
+        this.transportError =
+          `Nothing to send for “${name}” — give the story a title or split it into chapters first.` +
+          nothingSent;
+        this.cdr.detectChanges();
+        return;
+      }
+      handoffs.push({ subjects, format: 'normal', source: name });
+    }
+
+    await this.pushHandoffsToTitles(handoffs);
+  }
+
+  /**
+   * The story's chapter markers, DERIVING them when they are missing or stale — the lazy, one-off
+   * entry into run 2. Owns the analysing flag, so it refuses while another run holds it; the bulk
+   * run calls deriveStoryChapters directly instead.
+   *
+   * A story's own chapters are the only ones worth having: the pipeline's cadence is
+   * duration-derived, so a ~20-minute story lands at ~3.5 min/chapter — normal YouTube spacing,
+   * and finer than the ~6 min the same pipeline gives a multi-hour recording. Chapters carried
+   * over from a whole-recording run were cut at that coarser cadence and before the user drew this
+   * boundary, which is why they read stale and are re-derived here.
+   *
+   * Derived chapters are persisted onto the story, so this cost is paid once per boundary.
+   */
+  private async ensureStoryChapters(story: Story): Promise<StoryChapter[]> {
+    const state = this.storyChapterState(story);
+    if (state === 'fresh') return story.chapters!;
+    if (!this.selectedOllamaModel || this.transcriptState !== 'ready' || this.analyzing) {
+      // STALE and unable to re-derive is a refusal, not a shrug. Handing these back would send
+      // markers that describe a span the user has since redrawn — and because a subject list is
+      // what a title gets written from, the only symptom would be a confidently wrong title for
+      // the wrong story. Say what is missing and stop.
+      if (state === 'stale') {
+        throw new Error(
+          `“${story.title || 'This story'}” has chapters from a different span and they cannot be ` +
+          `re-derived right now — ` +
+          (this.analyzing ? 'an analysis is already running.'
+            : this.transcriptState !== 'ready' ? 'the session has no transcript yet.'
+            : 'no Ollama model is selected.')
+        );
+      }
+      // PRE-EXISTING FALLBACK (state === 'none'): returns [], and sendStoryToTitles then sends the
+      // bare story title instead. Left exactly as it was — flagged, not changed.
+      return story.chapters ?? [];
+    }
+
+    this.analyzing = true;
+    this.analyzeStopRequested = false;
+    this.analyzeError = null;
+    this.aiProgressDone = 0;
+    this.aiProgressTotal = 0;
+    this.activityOpen = true;
+    // A queue of one — the dock renders every analysis the same way, however it was started.
+    this.activityQueueStart([{ id: story.id, label: story.title.trim() || `Story ${story.number}` }]);
+    this.cdr.detectChanges();
+    try {
+      return await this.deriveStoryChapters(story, this.selectedOllamaModel);
+    } catch (err: any) {
+      // PRE-EXISTING FALLBACK: a failed derivation is reported into the activity dock and the
+      // story's old (possibly stale, possibly absent) markers are handed back, so the caller
+      // carries on with the wrong list or with the bare title. Left as found and flagged; the
+      // bulk run deliberately does NOT get this treatment (deriveStoryChapters throws).
+      if (!this.isStopError(err)) this.analyzeError = err?.message || String(err);
+      return story.chapters ?? [];
+    } finally {
+      await this.electron.unloadStoryModel({ model: this.selectedOllamaModel }).catch(() => { /* housekeeping */ });
+      this.analyzing = false;
+      this.analyzeStopRequested = false;
+      this.analyzeMessage = '';
+      this.activityQueue = [];   // the run is over however it ended — no row may outlive it
+      this.cdr.detectChanges();
+    }
+  }
+
+  /**
+   * Run 2's chapter half for ONE story: chapter this story's own span and persist the result.
+   * Assumes the caller already holds the analysing flag and will unload the model.
+   *
+   * THROWS on every failure — no path here returns the story's old markers. A chapter list is what
+   * a title is written from and what a description ships, so a derivation that quietly hands back
+   * the previous list produces a wrong result nothing downstream can tell from a right one.
+   *
+   * `consolidate: false` is the correctness switch, not an optimisation. Stage 5 exists to decide
+   * where one story ends and the next begins; inside a story the user has DECLARED there is no
+   * such seam, so every merge it makes is a false positive that flattens two real chapters into
+   * one — measured on a single-story span it turned 5 chapters into 3, and on an hour-long span in
+   * a stubbed harness 10 into 3. With it off the returned chapters ARE the chapter layer, and each
+   * carries itself as its only `subChapter`; more than one means stage 5 ran, which can only mean
+   * the flag never reached the pipeline. That is checked rather than compensated for: silently
+   * reading the sub-tier instead would hide broken wiring behind chapters cut at story cadence.
+   *
+   * The check is one-sided by nature: consolidation stops at a three-chapter floor, so a story that
+   * yields three or fewer chapters never merges and the flag being dropped costs nothing there —
+   * nothing to detect, and nothing lost.
+   *
+   * The fingerprint is taken BEFORE the run: hundreds of model calls take minutes, the user can
+   * move the story's edges while they run, and stamping the regions as they are afterwards would
+   * mark chapters fresh for a span they never saw.
+   */
+  private async deriveStoryChapters(story: Story, model: string): Promise<StoryChapter[]> {
+    const name = story.title.trim() || `Story ${story.number}`;
+    const regions = this.mergeRegions(story.regions);
+    const segments = this.segmentsForRegions(regions);
+    if (segments.length === 0) {
+      throw new Error(`“${name}” has no transcript in its regions — nothing to chapter.`);
+    }
+    const from = this.regionFingerprint(regions);
+
+    this.analyzeMessage = `Finding chapters in “${name}”…`;
+    this.cdr.detectChanges();
+
+    const res = await this.electron.analyzeStoryChapters({ segments, model, consolidate: false });
+    const returned = res.chapters || [];
+    if (returned.some(c => (c.subChapters?.length ?? 0) > 1)) {
+      // Marked as a WIRING fault, not a data one: it will fail identically for every story, so a
+      // bulk run must stop here rather than spend another full pipeline pass per story proving it.
+      throw Object.assign(
+        new Error(
+          `Chapter analysis consolidated “${name}” into stories when it was told not to: the ` +
+          `story:analyze-chapters IPC handler is dropping \`consolidate: false\`. Its chapters would ` +
+          `be cut at story cadence, merging real chapters away. Check the forwarding in ` +
+          `electron/ipc/ipc-handlers.ts and that the running build is current.`
+        ),
+        { wiringFault: true },
+      );
+    }
+    const derived = returned
+      .map(c => ({
+        startSeconds: c.startSeconds, endSeconds: c.endSeconds, label: this.cleanChapterLabel(c.label),
+        ...(c.startApprox ? { startApprox: true } : {}),
+      }))
+      .sort((a, b) => a.startSeconds - b.startSeconds);
+    // Fewer than two is not a short chapter list, it is a failed one — the pipeline's own boundary
+    // count floors at three chapters for any span, so this only happens when placement dropped
+    // nearly everything.
+    if (derived.length < 2) {
+      throw new Error(`Chapter analysis returned ${derived.length} chapter(s) for “${name}” — not a usable chapter list.`);
+    }
+    this.setStoryChapters(story, derived, from);
+    this.scheduleEditsSave();
+    this.requestRender();
+    return derived;
+  }
+
+  /**
+   * Send the WHOLE session as a livestream: one subject line per story, in story order. This is
+   * the "title the stream itself" case, where the model picks the strongest story to lead with.
+   */
+  async sendAllStoriesToTitles(): Promise<void> {
+    const subjects = this.stories
+      .map(s => s.title.trim())
+      .filter(t => t.length > 0);
+    if (!subjects.length) {
+      this.transportError = 'No story titles to send — name at least one story first.';
+      return;
+    }
+    await this.pushHandoffsToTitles([
+      { subjects, format: 'livestream', source: this.sessionName || 'this session' },
+    ]);
+  }
+
+  /** The one wire call: a batch of handoffs, one per upload. Sent whole or not at all. */
+  private async pushHandoffsToTitles(
+    handoffs: { subjects: string[]; format: 'normal' | 'livestream'; source: string }[]
+  ): Promise<void> {
+    this.transportError = '';
+    try {
+      await this.electron.sendSubjectsToTitles({ handoffs });
+    } catch (err: any) {
+      // Verbatim — the usual cause is the main window having been closed, which the user
+      // needs told rather than a button that silently does nothing.
+      this.transportError = err?.message || String(err);
+    }
+    this.cdr.detectChanges();
+  }
+
   /** Total EDITED duration of a story (sum of its regions), as "Xh Ym" / "Ym Zs" / "Zs" — how
    *  long the story runs, not where it sits. A region count is appended when it has more than
    *  one. Tracks cuts via originalToEdited. */
@@ -2663,7 +3863,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (regions.length === 0) return '—';
     let total = 0;
     for (const r of regions) {
-      total += Math.max(0, this.originalToEdited(r.end) - this.originalToEdited(r.start));
+      // Summed per surviving PIECE: a reordered region's ends can map out of order, and the old
+      // end-minus-start would clamp to 0 and report a story as empty when it is not.
+      for (const p of this.editedRangesForOriginal(r.start, r.end)) total += p.hi - p.lo;
     }
     const h = Math.floor(total / 3600);
     const m = Math.floor((total % 3600) / 60);
@@ -2680,8 +3882,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     for (const s of this.storiesForDisplay()) {
       for (let i = 0; i < s.regions.length; i++) {
         const r = s.regions[i];
-        const x0 = this.timeToX(this.originalToEdited(r.start));
-        const x1 = this.timeToX(this.originalToEdited(r.end));
+        // The grabbable edges are the region's OUTER ends: its first piece's left and its last
+        // piece's right. A region split across a reorder exposes no handle on the interior seams —
+        // dragging one would redefine the region bound to a time on the far side of the move.
+        const pieces = this.editedRangesForOriginal(r.start, r.end);
+        if (pieces.length === 0) continue;
+        const x0 = this.timeToX(pieces[0].lo);
+        const x1 = this.timeToX(pieces[pieces.length - 1].hi);
         if (x1 - x0 <= 1) continue;                       // collapsed at this zoom — not grabbable
         if (Math.abs(x - x1) <= TOL) return { storyId: s.id, regionIndex: i, edge: 'end' };
         if (Math.abs(x - x0) <= TOL) return { storyId: s.id, regionIndex: i, edge: 'start' };
@@ -2715,6 +3922,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   onCanvasHover(ev: MouseEvent): void {
     const canvas = this.canvasRef?.nativeElement;
     if (!canvas) return;
+    if (this.moveDrag) { canvas.style.cursor = 'grabbing'; return; }
     let over = false;
     if (this.hasStories() && !this.draggingStoryEdge) {
       const y = this.canvasEventY(ev);
@@ -2722,7 +3930,17 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         over = !!this.storyEdgeAtX(this.timeToX(this.canvasEventTime(ev)));
       }
     }
-    canvas.style.cursor = (over || this.draggingStoryEdge) ? 'ew-resize' : '';
+    if (over || this.draggingStoryEdge) { canvas.style.cursor = 'ew-resize'; return; }
+    // A highlight in a track lane is grabbable — the grab cursor IS the discoverability of the
+    // move gesture, which has no other affordance.
+    if (this.toolMode === 'select' && this.rowAt(this.canvasEventY(ev))) {
+      const t = this.canvasEventTime(ev);
+      if (this.allSelectionRanges().some(r => t > r.lo + this.EPS && t < r.hi - this.EPS)) {
+        canvas.style.cursor = 'grab';
+        return;
+      }
+    }
+    canvas.style.cursor = '';
   }
 
   /** The display story (with id) whose region contains edited time `t`, or null. Regions within
@@ -2730,9 +3948,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private storyAtEdited(t: number): { id: string; number: number; title: string; regions: { start: number; end: number }[] } | null {
     for (const s of this.storiesForDisplay()) {
       for (const r of s.regions) {
-        const lo = this.originalToEdited(r.start);
-        const hi = this.originalToEdited(r.end);
-        if (hi - lo > this.EPS && t >= lo - this.EPS && t <= hi + this.EPS) return s;
+        for (const p of this.editedRangesForOriginal(r.start, r.end)) {
+          if (t >= p.lo - this.EPS && t <= p.hi + this.EPS) return s;
+        }
       }
     }
     return null;
@@ -2744,10 +3962,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private storyRegionAtEdited(t: number): { storyId: string; regionIndex: number } | null {
     for (const s of this.storiesForDisplay()) {
       for (let i = 0; i < s.regions.length; i++) {
-        const lo = this.originalToEdited(s.regions[i].start);
-        const hi = this.originalToEdited(s.regions[i].end);
-        if (hi - lo > this.EPS && t >= lo - this.EPS && t <= hi + this.EPS) {
-          return { storyId: s.id, regionIndex: i };
+        for (const p of this.editedRangesForOriginal(s.regions[i].start, s.regions[i].end)) {
+          if (t >= p.lo - this.EPS && t <= p.hi + this.EPS) return { storyId: s.id, regionIndex: i };
         }
       }
     }
@@ -2758,9 +3974,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private selectResolvedStory(s: { regions: { start: number; end: number }[] }): void {
     const ranges: { start: number; end: number }[] = [];
     for (const r of s.regions) {
-      const lo = this.originalToEdited(r.start);
-      const hi = this.originalToEdited(r.end);
-      if (hi - lo > this.EPS) ranges.push({ start: lo, end: hi });
+      // One highlight band per edited piece — selectedRanges is already a LIST, so a region
+      // scattered by a reorder highlights all of its footage rather than one bogus span.
+      for (const p of this.editedRangesForOriginal(r.start, r.end)) {
+        ranges.push({ start: p.lo, end: p.hi });
+      }
     }
     this.selStart = null;
     this.selEnd = null;
@@ -2794,12 +4012,61 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       const saved = localStorage.getItem(this.OLLAMA_MODEL_KEY) || '';
       const has = (id: string) => this.ollamaModels.some(m => m.id === id);
       if (saved && has(saved)) this.selectedOllamaModel = saved;
-      else if (!has(this.selectedOllamaModel)) this.selectedOllamaModel = this.ollamaModels[0]?.id || '';
+      else if (!has(this.selectedOllamaModel)) this.selectedOllamaModel = this.defaultOllamaModel();
     } catch {
       this.ollamaConnected = false;
       this.ollamaModels = [];
     }
     this.cdr.detectChanges();
+  }
+
+  /**
+   * First-run model default: `cogito:14b` — the BASE model, and the eventual base for the YouTube
+   * metadata adapters, so everything downstream conditions on the same weights. Matching is exact
+   * (plus Ollama's implicit `:latest`) so a fine-tune built on it is never picked up by accident.
+   *
+   * Falls back to qwen2.5:14b (the validated rater), then any 14B, then whatever is installed.
+   * 14B is the floor — smaller models fail by MISSING boundaries, the one error a user cannot fix
+   * by joining chapters. Only applies when the user has never picked a model; their choice wins.
+   */
+  private defaultOllamaModel(): string {
+    const ids = this.ollamaModels.map(m => m.id);
+    const exact = (want: string) => ids.find(id => id === want || id === `${want}:latest`);
+    return exact('cogito:14b')
+        || exact('qwen2.5:14b')
+        || ids.find(id => /(^|:)14b($|:)/i.test(id))
+        || ids[0]
+        || '';
+  }
+
+  /**
+   * Stop the running analysis — the X on the activity dock entry and on the Split dialog.
+   *
+   * Two halves, both needed: the main process aborts the in-flight HTTP call (so a stop lands
+   * within a call rather than after it), and `analyzeStopRequested` breaks the renderer's own
+   * per-story titling loop, which would otherwise just start the next story.
+   */
+  async stopAnalysis(): Promise<void> {
+    if (!this.analyzing && !this.splitRunning) return;
+    this.analyzeStopRequested = true;
+    this.analyzeMessage = 'Stopping…';
+    this.aiPhase = 'Stopping…';
+    this.cdr.detectChanges();
+    try {
+      await this.electron.cancelStoryAnalysis();
+    } catch {
+      // Nothing was running, or the bridge is gone — the loop flag still ends it.
+    }
+  }
+
+  /** True when an error is really a user-initiated stop, which must never surface as a failure. */
+  private isStopError(err: any): boolean {
+    const name = err?.name || '';
+    const msg = String(err?.message || err || '');
+    return this.analyzeStopRequested
+      || name === 'AnalysisCancelledError'
+      || name === 'OllamaCancelledError'
+      || /Analysis stopped\.|OllamaCancelledError|AnalysisCancelledError/.test(msg);
   }
 
   /** Model picker change — persist the choice. */
@@ -2808,15 +4075,63 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (id) localStorage.setItem(this.OLLAMA_MODEL_KEY, id);
   }
 
-  /** Transcript segments ({text, startSeconds, endSeconds} in ORIGINAL seconds) overlapping the
-   *  given ORIGINAL-second regions, chronological. Empty when nothing was transcribed there. */
+  // Sentence-ish segmentation for the analyzer. A transcript GROUP is one timeline clip's worth of
+  // speech, which on an uncut recording can be the whole hour — far too coarse to feed the chapter
+  // pipeline, which cuts at 45 s and maps a quoted sentence to the start time of the segment it
+  // lands in. Coarse segments break it two ways: whole minutes collapse into a single 45 s stretch
+  // (the rest come out empty and are dropped), and a mapped quote resolves only to its clip's
+  // start, so a chapter that must land within ~5 s could be minutes off. So segments are built
+  // from WORDS, which carry real per-word timings.
+  private readonly SEG_MAX_WORDS = 20;    // hard cap, so a run without punctuation still breaks up
+  private readonly SEG_MIN_WORDS = 4;     // don't emit "Yeah." as its own segment
+  private readonly SEG_GAP_SECONDS = 2;   // a pause this long ends a segment regardless of text
+
+  /**
+   * Transcript segments ({text, startSeconds, endSeconds} in ORIGINAL seconds) overlapping the
+   * given ORIGINAL-second regions, chronological. Empty when nothing was transcribed there.
+   *
+   * Built per track (so two people talking at once don't interleave mid-sentence) and then merged
+   * in timeline order — the same ordering the group-level view uses, just at sentence granularity.
+   */
   private segmentsForRegions(regions: { start: number; end: number }[]): { text: string; startSeconds: number; endSeconds: number }[] {
+    const words = (this.transcript?.words || []).filter(w =>
+      regions.some(r => w.timelineEnd > r.start + this.EPS && w.timelineStart < r.end - this.EPS)
+    );
+    if (words.length === 0) return [];
+
+    const byTrack = new Map<string, TranscriptWord[]>();
+    for (const w of words) {
+      let arr = byTrack.get(w.track);
+      if (!arr) { arr = []; byTrack.set(w.track, arr); }
+      arr.push(w);
+    }
+
     const out: { text: string; startSeconds: number; endSeconds: number }[] = [];
-    for (const g of this.transcriptGroups) {
-      const overlaps = regions.some(r => g.originalEnd > r.start + this.EPS && g.originalStart < r.end - this.EPS);
-      if (!overlaps) continue;
-      const text = (g.text || '').trim();
-      if (text) out.push({ text, startSeconds: g.originalStart, endSeconds: g.originalEnd });
+    for (const arr of byTrack.values()) {
+      arr.sort((a, b) => a.timelineStart - b.timelineStart);
+      let buf: TranscriptWord[] = [];
+      const flush = () => {
+        if (buf.length === 0) return;
+        const text = buf.map(w => w.text).join(' ').replace(/\s+/g, ' ').trim();
+        if (text) {
+          out.push({
+            text,
+            startSeconds: buf[0].timelineStart,
+            endSeconds: buf[buf.length - 1].timelineEnd,
+          });
+        }
+        buf = [];
+      };
+      for (let i = 0; i < arr.length; i++) {
+        const w = arr[i];
+        // A pause, or a jump to another timeline clip, ends the current sentence before this word.
+        const prev = buf[buf.length - 1];
+        if (prev && (w.timelineStart - prev.timelineEnd > this.SEG_GAP_SECONDS || w.group !== prev.group)) flush();
+        buf.push(w);
+        const endsSentence = /[.!?]["')\]]?$/.test(w.text.trim());
+        if ((endsSentence && buf.length >= this.SEG_MIN_WORDS) || buf.length >= this.SEG_MAX_WORDS) flush();
+      }
+      flush();
     }
     out.sort((a, b) => a.startSeconds - b.startSeconds);
     return out;
@@ -2828,13 +4143,22 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   /**
-   * Analyze the whole timeline from the Stories tab. With stories defined: suggest + auto-fill a
-   * title for each (one at a time; scrap — non-story content — excluded). With none: split the
-   * whole transcript into stories by subject change. Progress shows in the activity dock.
+   * Analyze the whole timeline from the Stories tab — the two runs, chosen by whether stories
+   * exist yet.
+   *
+   * RUN 1 (no stories): split the whole transcript into stories by subject change. Its job is
+   * finding the story BOUNDARIES; the user then curates — merging what it over-split, reordering,
+   * naming. The sub-chapters it retains ride along as provisional markers.
+   *
+   * RUN 2 (stories exist): per story, in order — chapter that story on its own terms, then write a
+   * working title from those chapters. A story whose chapters are already fresh, and a title the
+   * user typed, both cost nothing. Stoppable between stories as well as mid-call.
    */
   async analyzeTimeline(): Promise<void> {
     if (this.analyzing || !this.selectedOllamaModel || this.transcriptState !== 'ready') return;
+    const model = this.selectedOllamaModel;
     this.analyzing = true;
+    this.analyzeStopRequested = false;
     this.analyzeError = null;
     this.aiProgressDone = 0;
     this.aiProgressTotal = 0;
@@ -2843,24 +4167,85 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.cdr.detectChanges();
     try {
       if (this.hasStories()) {
-        // Determinate: one step per story we'll title (skipping empties).
-        const titleable = this.stories.filter(s => this.transcriptTextForRegions(this.mergeRegions(s.regions)));
-        this.aiProgressTotal = titleable.length;
-        let done = 0;
-        for (const s of titleable) {
-          const text = this.transcriptTextForRegions(this.mergeRegions(s.regions));
-          this.analyzeMessage = `Titling “${s.title || 'story'}”…`;
-          this.cdr.detectChanges();
-          const res = await this.electron.suggestStoryTitle({ text, model: this.selectedOllamaModel });
-          if (res.title) {
-            s.title = res.title;
-            this.scheduleEditsSave();
-            this.requestRender();
+        // One pass per story that has transcript to work from (empties and scrap excluded).
+        const workable = this.stories.filter(s => this.transcriptTextForRegions(this.mergeRegions(s.regions)));
+        // The whole run, listed in the dock up front: story 1 running, the rest waiting. Each row
+        // is removed as its story finishes, so "how much is left" is the list itself and the bar
+        // below is free to mean one thing only — see the scale note at the top of the loop.
+        this.activityQueueStart(workable.map(s => ({ id: s.id, label: s.title.trim() || `Story ${s.number}` })));
+        // One story failing does not end the run. This loop is potentially hours of model calls
+        // across every story in the session; abandoning the rest because one story's placement
+        // collapsed would be a worse bug than the one it guards against. The failure is NOT
+        // hidden, though — the story keeps its old markers, which the list already shows as stale,
+        // it is not given a title written off a list that failed, and every failure is named at
+        // the end. A wiring fault (below) is different and does stop the run: it will fail
+        // identically for every story, and each retry costs another full pipeline pass.
+        const failures: string[] = [];
+        for (const s of workable) {
+          if (this.analyzeStopRequested) break;   // stop between stories, not just mid-call
+          // THE BAR IS ONE SCALE: this story's chapter-pipeline call progress, as reported by
+          // onStoryAnalyzeProgress. Zeroed here so the previous story's tally can never be read as
+          // this one's, and left at 0 (indeterminate) for the stretches that report no calls.
+          // Story-level progress is the queue below it, not a second scale in the same bar.
+          this.aiProgressDone = 0;
+          this.aiProgressTotal = 0;
+          this.aiPhase = '';
+          this.analyzeMessage = '';
+          const name = s.title.trim() || `Story ${s.number}`;
+
+          try {
+            // Chapters first — the title is written FROM them, so this order is the whole point.
+            // A fresh list is reused rather than re-derived: "fresh" means its fingerprint still
+            // matches these exact regions, so re-running could only reproduce it.
+            const chapters = this.storyChapterState(s) === 'fresh'
+              ? s.chapters!
+              : await this.deriveStoryChapters(s, model);
+            if (this.analyzeStopRequested) break;
+
+            // A title the user typed is left exactly as they typed it. They name stories between
+            // run 1 and run 2, so overwriting here would destroy that work with no undo.
+            if (!s.titleTouched) {
+              // The subject list, and only the subject list. There is no transcript path here: the
+              // chapters were just derived from this story's own span, so if they are unusable the
+              // answer is to report that, not to write a title from a 12k-char splice that
+              // discards its own middle.
+              const subjects = chapters.map(c => c.label.trim()).filter(l => l.length > 0);
+              if (subjects.length < 2) {
+                throw new Error('produced no usable chapter labels to title from');
+              }
+              this.analyzeMessage = `Titling “${name}”…`;
+              // One model call with no step reporting — the bar goes indeterminate rather than
+              // freeze on the chapter run's finished tally, which would read as stalled work.
+              this.aiProgressDone = 0;
+              this.aiProgressTotal = 0;
+              this.cdr.detectChanges();
+              const res = await this.electron.suggestStoryTitle({ text: subjects, model });
+              s.title = res.title;
+              this.scheduleEditsSave();
+              this.requestRender();
+            }
+          } catch (err: any) {
+            if (this.isStopError(err)) break;
+            if (err?.wiringFault) throw err;
+            failures.push(`${name}: ${err?.message || String(err)}`);
           }
-          this.aiProgressDone = ++done;
+
+          // Done with this story — succeeded or skipped after failing (the failure is reported at
+          // the end of the run). Its row drops off the top and the next story becomes running.
+          this.activityQueueAdvance();
           this.cdr.detectChanges();
         }
+        // Named, not counted — "2 stories failed" tells the user nothing they can act on, and the
+        // stories that failed are exactly the ones still showing stale chapters.
+        if (failures.length) {
+          throw new Error(
+            `${failures.length} of ${workable.length} stories could not be chaptered or titled ` +
+            `(the rest were done):\n• ${failures.join('\n• ')}`
+          );
+        }
       } else {
+        // Run 1 has no stories to queue yet — it is the one pass that finds them, so it is one row.
+        this.activityQueueStart([{ id: 'timeline', label: 'Analyzing stories' }]);
         this.analyzeMessage = 'Splitting the timeline into stories…';
         this.cdr.detectChanges();
         const dur = this.manifest?.timelineDuration || 0;
@@ -2869,22 +4254,39 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         const res = await this.electron.analyzeStoryChapters({ segments, model: this.selectedOllamaModel });
         const chapters = res.chapters || [];
         if (chapters.length === 0) throw new Error('No stories detected.');
-        const created: Story[] = chapters.map((c, i) => ({
-          id: `story-${++this.storyIdCounter}`,
-          number: i + 1,
-          title: this.cleanChapterLabel(c.label) || `Story ${i + 1}`,
-          regions: [{ start: c.startSeconds, end: c.endSeconds }],
-        }));
+        const created: Story[] = chapters.map((c, i) => {
+          const story: Story = {
+            id: `story-${++this.storyIdCounter}`,
+            number: i + 1,
+            title: this.cleanChapterLabel(c.label) || `Story ${i + 1}`,
+            regions: [{ start: c.startSeconds, end: c.endSeconds }],
+          };
+          // PROVISIONAL (no fingerprint): these sub-chapters were cut at whole-recording cadence
+          // — ~6 min apart on a multi-hour stream where this story wants ~3.5 — and before the
+          // user curated the boundary. They are worth keeping as markers, but run 2 must re-derive
+          // them rather than accept them as this story's chapter layer.
+          this.setStoryChapters(story, this.toStoryChapters(c.subChapters), null);
+          return story;
+        });
         this.stories = [...this.stories, ...created];
         this.renumberStories();
         this.scheduleEditsSave();
         this.requestRender();
       }
     } catch (err: any) {
-      this.analyzeError = err?.message || String(err);
+      // A stop is not an error — the user asked for it.
+      this.analyzeError = this.isStopError(err) ? null : (err?.message || String(err));
     } finally {
+      // Down the moment the run ends — finished, failed or stopped. Ollama would otherwise hold
+      // the weights for its own keep_alive (minutes), and nothing here needs them again.
+      // The chapter path also unloads in the main process; a second unload is a harmless no-op.
+      await this.electron.unloadStoryModel({ model }).catch(() => { /* housekeeping only */ });
       this.analyzing = false;
+      this.analyzeStopRequested = false;
       this.analyzeMessage = '';
+      // Emptied here and only here for the bulk run: a stop, a wiring fault or a crash all land in
+      // this finally, so no path can leave the dock listing stories that will never run.
+      this.activityQueue = [];
       this.cdr.detectChanges();
     }
   }
@@ -2906,7 +4308,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (cache && cache.chapters?.length) {
       this.splitChapters = cache.chapters.map(c => ({ ...c }));
       this.splitAssign = [...cache.assign];
-      this.splitBuckets = cache.buckets.map(b => ({ title: b.title }));
+      this.splitBuckets = cache.buckets.map(b => ({ title: b.title, touched: b.touched }));
       this.splitAnalyzedRegions = cache.regions.map(r => ({ ...r }));
       this.splitFromCache = true;
     } else {
@@ -2928,7 +4330,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       regions: this.splitAnalyzedRegions.map(r => ({ ...r })),
       chapters: this.splitChapters.map(c => ({ ...c })),
       assign: [...this.splitAssign],
-      buckets: this.splitBuckets.map(b => ({ title: b.title })),
+      buckets: this.splitBuckets.map(b => ({ title: b.title, touched: b.touched })),
       childIds: childIds ?? story.split?.childIds ?? [],
     };
     this.scheduleEditsSave();
@@ -2961,6 +4363,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // A first run (no cache yet) analyzes the story's current regions.
     const regions = this.splitAnalyzedRegions.length ? this.splitAnalyzedRegions : this.mergeRegions(story.regions);
     this.splitRunning = true;
+    this.analyzeStopRequested = false;
     this.splitFromCache = false;
     this.aiProgressDone = 0;
     this.aiProgressTotal = 0;
@@ -2973,6 +4376,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.splitChapters = (res.chapters || []).map(c => ({
         index: c.index, startSeconds: c.startSeconds, endSeconds: c.endSeconds,
         label: this.cleanChapterLabel(c.label),
+        subChapters: this.toStoryChapters(c.subChapters),
       }));
       if (this.splitChapters.length === 0) throw new Error('No chapters detected.');
       // No pre-selection — the user chooses which chapters go into which story (unassigned = scrap).
@@ -2981,9 +4385,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.splitAnalyzedRegions = regions;
       this.persistSplitCache();                            // cache so a reopen is instant/reworkable
     } catch (err: any) {
-      this.splitError = err?.message || String(err);
+      // A stop leaves the dialog idle (its Start button back), not showing a failure.
+      this.splitError = this.isStopError(err) ? null : (err?.message || String(err));
     } finally {
       this.splitRunning = false;
+      this.analyzeStopRequested = false;
       this.cdr.detectChanges();
     }
   }
@@ -3013,7 +4419,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   onSplitBucketTitle(i: number, value: string): void {
-    if (this.splitBuckets[i]) this.splitBuckets[i].title = value;
+    if (!this.splitBuckets[i]) return;
+    this.splitBuckets[i].title = value;
+    // A name typed here is a name the user chose, exactly like one typed in the story list — it
+    // rides onto the resulting story as `titleTouched` so auto-titling leaves it alone.
+    this.splitBuckets[i].touched = true;
   }
 
   /** Assign a chapter to the active bucket; re-click with the same active bucket excludes it (scrap). */
@@ -3054,14 +4464,21 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const sorted = [...regions].sort((a, b) => a.start - b.start);
     let acc = 0;
     for (const r of sorted) {
-      const es = this.originalToEdited(r.start);
-      const ee = this.originalToEdited(r.end);
-      const dur = Math.max(0, ee - es);
+      // Per-piece sums, so a region whose footage a reorder scattered still reports its real
+      // length instead of collapsing to 0 on a backwards end-minus-start.
+      const pieces = this.editedRangesForOriginal(r.start, r.end);
       if (originalSeconds <= r.start + this.EPS) return acc;                 // before this region
       if (originalSeconds <= r.end + this.EPS) {                             // inside this region
-        return acc + Math.max(0, this.originalToEdited(originalSeconds) - es);
+        // Content of the region that precedes `originalSeconds` IN ORIGINAL TIME. Story-local
+        // time is a chapter clock for the exported project, which lays a story's regions out in
+        // original order — it deliberately does not follow a within-region reorder.
+        let inner = 0;
+        for (const p of this.editedRangesForOriginal(r.start, Math.min(r.end, originalSeconds))) {
+          inner += p.hi - p.lo;
+        }
+        return acc + inner;
       }
-      acc += dur;
+      for (const p of pieces) acc += p.hi - p.lo;
     }
     return acc;   // at/after the last region → the story's full length
   }
@@ -3071,6 +4488,49 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   chapterClock(originalSeconds: number): string {
     const regions = this.splitStory ? this.mergeRegions(this.splitStory.regions) : [];
     return this.fmtClock(this.storyLocalTime(originalSeconds, regions));
+  }
+
+  /**
+   * Normalize an analyzer sub-chapter list into a story's retained markers. A single entry means
+   * the chapter was never merged, so there is no internal structure to keep — returning undefined
+   * there keeps "has chapters" honest instead of storing a marker list of one that no description
+   * could use.
+   */
+  private toStoryChapters(subChapters?: StoryChapter[]): StoryChapter[] | undefined {
+    if (!subChapters || subChapters.length < 2) return undefined;
+    return subChapters
+      .map(c => ({
+        startSeconds: c.startSeconds, endSeconds: c.endSeconds, label: this.cleanChapterLabel(c.label),
+        ...(c.startApprox ? { startApprox: true } : {}),
+      }))
+      .sort((a, b) => a.startSeconds - b.startSeconds);
+  }
+
+  /**
+   * The retained markers overlapping a set of ORIGINAL-second regions, clamped to them. Used when
+   * a split hands part of an analyzed span to a different story: a marker outside the regions that
+   * story actually kept would point at content the upload does not contain.
+   */
+  private clipStoryChapters(chapters: StoryChapter[] | undefined, regions: { start: number; end: number }[]): StoryChapter[] | undefined {
+    if (!chapters?.length || !regions.length) return undefined;
+    const out: StoryChapter[] = [];
+    for (const c of chapters) {
+      for (const r of regions) {
+        const lo = Math.max(r.start, c.startSeconds);
+        const hi = Math.min(r.end, c.endSeconds);
+        // The approximate-placement flag only survives when the START is the one that was placed.
+        // A marker clipped forward to a region edge starts where the user drew the edge, which is
+        // exact — keeping the flag there would report a precision problem that no longer exists.
+        if (hi - lo > this.EPS) {
+          out.push({
+            startSeconds: lo, endSeconds: hi, label: c.label,
+            ...(c.startApprox && lo <= c.startSeconds + this.EPS ? { startApprox: true } : {}),
+          });
+        }
+      }
+    }
+    out.sort((a, b) => a.startSeconds - b.startSeconds);
+    return out.length >= 2 ? out : undefined;
   }
 
   /** Strip a leading "Chapter:", "Chapter 3:", "3." etc. that models often prepend, so story/chapter
@@ -3098,6 +4558,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.stories = this.stories.filter(s => s.id === story.id || !oldChildIds.includes(s.id));
     }
     const bucketRegions: { start: number; end: number }[][] = this.splitBuckets.map(() => []);
+    // Each bucket also collects the fine tier of every chapter assigned to it, so a story built out
+    // of several chapters keeps all their markers.
+    const bucketChapters: StoryChapter[][] = this.splitBuckets.map(() => []);
     this.splitChapters.forEach((ch, idx) => {
       const b = this.splitAssign[idx];
       if (b < 0) return;   // excluded (scrap)
@@ -3106,10 +4569,18 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         const hi = Math.min(r.end, ch.endSeconds);
         if (hi - lo > this.EPS) bucketRegions[b].push({ start: lo, end: hi });
       }
+      if (ch.subChapters?.length) bucketChapters[b].push(...ch.subChapters);
     });
     // Bucket 0 rewrites the original story (empty ⇒ it keeps nothing, shown as empty).
     story.regions = this.mergeRegions(bucketRegions[0]);
-    if (this.splitBuckets[0].title.trim()) story.title = this.splitBuckets[0].title.trim();
+    // PROVISIONAL (no fingerprint): these markers were cut for the PARENT story's span at the
+    // parent's cadence, then clipped to whatever this bucket kept. They describe the content
+    // honestly, but a story half the size wants roughly twice as many, so run 2 re-derives.
+    this.setStoryChapters(story, this.clipStoryChapters(bucketChapters[0], story.regions), null);
+    if (this.splitBuckets[0].title.trim()) {
+      story.title = this.splitBuckets[0].title.trim();
+      if (this.splitBuckets[0].touched) story.titleTouched = true;
+    }
     // Other non-empty buckets become new stories, inserted right after the original.
     const newStories: Story[] = [];
     const childIds: string[] = [];
@@ -3117,7 +4588,12 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       const regions = this.mergeRegions(bucketRegions[i]);
       if (regions.length === 0) continue;
       const id = `story-${++this.storyIdCounter}`;
-      newStories.push({ id, number: 0, title: this.splitBuckets[i].title.trim() || 'Story', regions });
+      const child: Story = {
+        id, number: 0, title: this.splitBuckets[i].title.trim() || 'Story', regions,
+        ...(this.splitBuckets[i].touched ? { titleTouched: true } : {}),
+      };
+      this.setStoryChapters(child, this.clipStoryChapters(bucketChapters[i], regions), null);
+      newStories.push(child);
       childIds.push(id);
     }
     if (newStories.length) {
@@ -3135,6 +4611,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   /** Cancel/close: keeps the story's cached analysis (so a reopen is still instant) and remembers
    *  the in-progress layout, but applies no region changes. */
   cancelSplit(): void {
+    // Closing while a detection runs stops it. Without this the run is orphaned — the dialog goes
+    // away but hundreds of model calls keep going in the main process with nowhere to land.
+    if (this.splitRunning) void this.stopAnalysis();
     if (this.splitStory && this.splitChapters.length && !this.splitRunning) this.persistSplitCache();
     this.closeSplitModal();
   }
@@ -3379,7 +4858,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       if (!merged && g.trackId !== this.sourceFilter) continue;
       if (q && !g.text.toLowerCase().includes(q)) continue;
       if (this.isGroupFullyCut(g)) continue;
-      const editedStart = this.originalToEdited(g.originalStart);
+      // A group's edited span is its OUTER extent across surviving pieces. In source order that is
+      // the old O2E(start)/O2E(end) pair exactly; a reorder that splits a group (possible when the
+      // drop edge falls inside its clip on another track) leaves the karaoke highlight following
+      // the group's first piece, which is where the line starts reading.
+      const pieces = this.editedRangesForOriginal(g.originalStart, g.originalEnd);
+      if (pieces.length === 0) continue;
+      const editedStart = pieces[0].lo;
       out.push({
         label: g.label,
         color: g.color,
@@ -3387,10 +4872,15 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         originalStart: g.originalStart,
         originalEnd: g.originalEnd,
         editedStart,
-        editedEnd: this.originalToEdited(g.originalEnd),
+        editedEnd: pieces[pieces.length - 1].hi,
         timecode: this.formatTimecode(editedStart),
       });
     }
+    // updateActiveGroup() walks this list assuming ascending editedStart and BREAKS at the first
+    // line past the playhead — transcriptGroups is in original order, which stops being edited
+    // order the moment footage moves, and an unsorted list would freeze the karaoke highlight.
+    // Stable no-op in source order.
+    out.sort((a, b) => a.editedStart - b.editedStart);
     this.visibleGroups = out;
     // The list (and its indices) just changed — re-resolve which line the playhead sits in.
     this.updateActiveGroup(false);
@@ -3504,19 +4994,24 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * the group selected. A group whose span collapses under cuts still seeks (no range).
    */
   selectGroup(g: TranscriptGroupView): void {
-    const lo = this.originalToEdited(g.originalStart);
-    const hi = this.originalToEdited(g.originalEnd);
+    // One piece in source order → the old single selStart/selEnd range. Several (a reorder split
+    // the group's clip) → the multi-range form, so the highlight covers all of its footage
+    // instead of a span running backwards through unrelated material.
+    const pieces = this.editedRangesForOriginal(g.originalStart, g.originalEnd);
     this.selectedRanges = [];        // the group replaces any marquee selection
-    if (hi - lo > this.EPS) {
-      this.selStart = lo;
-      this.selEnd = hi;
-    } else {
-      this.selStart = null;
-      this.selEnd = null;
+    this.selStart = null;
+    this.selEnd = null;
+    if (pieces.length === 1) {
+      if (pieces[0].hi - pieces[0].lo > this.EPS) {
+        this.selStart = pieces[0].lo;
+        this.selEnd = pieces[0].hi;
+      }
+    } else if (pieces.length > 1) {
+      this.selectedRanges = pieces.map(p => ({ start: p.lo, end: p.hi }));
     }
     this.selectedGroupStart = g.originalStart;
     this.selectedGroupEnd = g.originalEnd;
-    this.setPlayhead(lo);           // also re-anchors playback + requests a render
+    this.setPlayhead(pieces.length > 0 ? pieces[0].lo : g.editedStart);
     this.ensureSelectionVisible();
   }
 
@@ -3597,6 +5092,39 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   /** Anything worth a spinner: transcription, export, waveform, or story analysis in flight. */
   get hasBackgroundActivity(): boolean {
     return this.transcriptState === 'running' || this.exporting || this.waveformActive || this.analyzing;
+  }
+
+  /**
+   * The entry being worked on now, or null when no analysis is queued. It is index 0 by the
+   * invariant activityQueueStart/activityQueueAdvance maintain: the head of the queue is what is
+   * running, and it leaves the queue when it is done.
+   */
+  get activityRunning(): ActivityEntry | null {
+    return this.activityQueue[0] ?? null;
+  }
+
+  /** The waiting rows rendered under it, capped at what the dock can show. */
+  get activityPending(): ActivityEntry[] {
+    return this.activityQueue.filter(e => e.state === 'pending').slice(0, this.ACTIVITY_PENDING_SHOWN);
+  }
+
+  /** How many queued stories are beyond the shown rows — the "+N more" line. */
+  get activityPendingMore(): number {
+    return Math.max(0, this.activityQueue.filter(e => e.state === 'pending').length - this.ACTIVITY_PENDING_SHOWN);
+  }
+
+  /** Seed the queue for a run. The first entry is running; the rest wait in run order. */
+  private activityQueueStart(entries: { id: string; label: string }[]): void {
+    this.activityQueue = entries.map((e, i) => ({ ...e, state: i === 0 ? 'running' : 'pending' }));
+  }
+
+  /**
+   * The current entry is finished with — done, or failed and skipped. It drops off the top and the
+   * next one becomes running, which is exactly what the dock is meant to show.
+   */
+  private activityQueueAdvance(): void {
+    this.activityQueue.shift();
+    if (this.activityQueue.length) this.activityQueue[0].state = 'running';
   }
 
   toggleActivity(): void {

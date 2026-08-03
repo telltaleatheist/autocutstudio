@@ -1,5 +1,5 @@
 // electron/preload.ts
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 /**
  * Exposed API for renderer process
@@ -53,7 +53,9 @@ export interface ElectronAPI {
   openEditor: (payload: { zipPath: string }) => Promise<{ success: boolean; error?: string }>;
   getEditorPayload: () => Promise<{ zipPath: string }>;
   getEditorManifest: (zipPath: string) => Promise<any>;
-  exportEditorCuts: (payload: { zipPath: string; cuts: Array<{ startFrame: number; endFrame: number }>; stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }>; output?: 'fcpxml' | 'transcripts' }) => Promise<any>;
+  // `sequence` is the playback ORDER as a partition of the SURVIVORS (the complement of `cuts`),
+  // ORIGINAL seconds, frame-aligned; absent means source order.
+  exportEditorCuts: (payload: { zipPath: string; cuts: Array<{ startFrame: number; endFrame: number }>; sequence?: Array<{ start: number; end: number }>; stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }>; output?: 'fcpxml' | 'transcripts' }) => Promise<any>;
   loadEditorEdits: (payload: { zipPath: string }) => Promise<any | null>;
   saveEditorEdits: (payload: { zipPath: string; edits: any }) => Promise<{ path: string }>;
   onEditorPayload: (callback: (payload: any) => void) => void;
@@ -69,10 +71,75 @@ export interface ElectronAPI {
 
   // Story analysis (local Ollama LLM)
   ollamaListModels: (payload?: { host?: string }) => Promise<{ connected: boolean; models: Array<{ id: string; name: string }> }>;
-  analyzeStoryChapters: (payload: { segments: Array<{ text: string; startSeconds: number; endSeconds: number }>; model: string; host?: string }) => Promise<{ chapters: Array<{ index: number; startSeconds: number; endSeconds: number; label: string; verbalCue: boolean }> }>;
-  suggestStoryTitle: (payload: { text: string; model: string; host?: string }) => Promise<{ title: string }>;
+  // `consolidate: false` says "this span is already ONE story" — it skips the stage that decides
+  // where one story ends and the next begins, which inside a declared story can only merge real
+  // chapters away. See AnalyzeOptions in services/chapter-splitter.ts.
+  // The handler forwards it verbatim; the default (true) lives in chapter-splitter alone.
+  // `startApprox` on a chapter: its start is a raw ±45 s junction, not a mapped quote. It rides
+  // out on the payload because the degradation is invisible downstream — a description built from
+  // approximate starts reads exactly like a good one. No handler change needed; the handler
+  // returns whatever analyzeChapters produced.
+  analyzeStoryChapters: (payload: { segments: Array<{ text: string; startSeconds: number; endSeconds: number }>; model: string; host?: string; consolidate?: boolean }) => Promise<{ chapters: Array<{ index: number; startSeconds: number; endSeconds: number; label: string; verbalCue: boolean; startApprox?: boolean; subChapters: Array<{ startSeconds: number; endSeconds: number; label: string; startApprox?: boolean }> }> }>;
+  // `text` takes a SUBJECT LIST (a story's chapter labels, in order) as well as transcript text —
+  // suggestTitle() picks its prompt from the shape. The array is what the fine-tuned titling
+  // adapter conditions on, so it is the preferred shape, not a convenience.
+  suggestStoryTitle: (payload: { text: string | string[]; model: string; host?: string }) => Promise<{ title: string }>;
+  cancelStoryAnalysis: () => Promise<{ stopped: boolean }>;
+  unloadStoryModel: (payload: { model: string; host?: string }) => Promise<{ ok: boolean }>;
   onStoryAnalyzeProgress: (callback: (p: { phase: string; done: number; total: number }) => void) => void;
   removeStoryAnalyzeProgressListener: () => void;
+
+  // Titles tab (local fine-tuned title model via Ollama)
+  generateTitles: (payload: {
+    text: string;
+    format: 'normal' | 'livestream';
+    target: 'top-decile' | 'strong' | 'typical' | 'weak';
+    count?: number;
+    model?: string;
+    host?: string;
+  }) => Promise<{ titles: string[]; subjects: string[]; model: string }>;
+  cancelTitles: () => Promise<{ stopped: boolean }>;
+  unloadTitleModel: (payload?: { model?: string; host?: string }) => Promise<{ ok: boolean }>;
+  onTitlesProgress: (callback: (p: { done: number; total: number; title?: string }) => void) => void;
+  removeTitlesProgressListener: () => void;
+  // Editor → Titles handoff (cross-window): the editor pushes, the main window receives.
+  // A BATCH of handoffs, one per story — the editor can send several picked stories at once,
+  // and each is its own upload with its own subject list. Both the push and the pull carry the
+  // main process's whole undelivered queue; an empty array from the pull means nothing waited.
+  sendSubjectsToTitles: (payload: { handoffs: { subjects: string[]; format?: 'normal' | 'livestream'; source?: string }[] }) => Promise<{ success: boolean }>;
+  takePendingTitleSubjects: () => Promise<{ subjects: string[]; format: 'normal' | 'livestream'; source?: string }[]>;
+  onTitlesSubjects: (callback: (p: { subjects: string[]; format: 'normal' | 'livestream'; source?: string }[]) => void) => void;
+  removeTitlesSubjectsListener: () => void;
+
+  // Metadata page (ported from ContentStudio — channel names and payload shapes are that
+  // app's, verbatim, because the main-process half is the same code ported alongside this).
+  // ONE forced rename: ContentStudio cancels a metadata job on 'cancel-job', which this app
+  // already owns for Python workflow jobs. Registering it twice makes ipcMain THROW at
+  // startup, so the metadata cancel lives on 'metadata:cancel-job'.
+  getSettings: () => Promise<any>;
+  updateSettings: (settings: any) => Promise<any>;
+  listPromptSets: () => Promise<{ success: boolean; promptSets: any[] }>;
+  selectFiles: () => Promise<{ success: boolean; files: string[] }>;
+  selectOutputDirectory: () => Promise<{ success: boolean; directory: string | null }>;
+  isDirectory: (filePath: string) => Promise<boolean>;
+  checkDirectory: (dirPath: string) => Promise<{ exists: boolean; writable: boolean }>;
+  readDirectory: (dirPath: string) => Promise<{ success: boolean; directories?: any[]; files?: any[] }>;
+  readFile: (filePath: string) => Promise<string>;
+  writeTextFile: (filePath: string, content: string) => Promise<{ success: boolean; error?: string }>;
+  deleteDirectory: (dirPath: string) => Promise<void>;
+  generateMetadata: (params: any) => Promise<any>;
+  sendHeldPrompt: (jobId: string) => Promise<any>;
+  discardHeldPrompt: (jobId: string) => Promise<any>;
+  cancelMetadataJob: (jobId: string) => Promise<{ success: boolean; error?: string }>;
+  /** Returns its OWN unsubscribe. A job registers a listener for its run and drops it when
+   *  it finishes; a shared removeAllListeners() would tear down the next job's listener too. */
+  onMetadataProgress: (callback: (progress: any) => void) => () => void;
+  /**
+   * Absolute path of a File from a drag-and-drop. Electron 32 REMOVED `File.path`, so the
+   * renderer cannot read it itself — a drop zone written the old way silently adds nothing.
+   * Returns '' when the object is not a real filesystem file.
+   */
+  getPathForFile: (file: File) => string;
 
   // Utility
   getAppVersion: () => Promise<string>;
@@ -189,11 +256,64 @@ const electronAPI: ElectronAPI = {
   ollamaListModels: (payload) => ipcRenderer.invoke('ollama:list-models', payload),
   analyzeStoryChapters: (payload) => ipcRenderer.invoke('story:analyze-chapters', payload),
   suggestStoryTitle: (payload) => ipcRenderer.invoke('story:suggest-title', payload),
+  cancelStoryAnalysis: () => ipcRenderer.invoke('story:cancel'),
+  unloadStoryModel: (payload) => ipcRenderer.invoke('story:unload-model', payload),
   onStoryAnalyzeProgress: (callback) => {
     ipcRenderer.on('story:analyze-progress', (_event, p) => callback(p));
   },
   removeStoryAnalyzeProgressListener: () => {
     ipcRenderer.removeAllListeners('story:analyze-progress');
+  },
+
+  // Titles tab (local fine-tuned title model via Ollama)
+  generateTitles: (payload) => ipcRenderer.invoke('titles:generate', payload),
+  cancelTitles: () => ipcRenderer.invoke('titles:cancel'),
+  unloadTitleModel: (payload) => ipcRenderer.invoke('titles:unload', payload),
+  onTitlesProgress: (callback) => {
+    ipcRenderer.on('titles:progress', (_event, p) => callback(p));
+  },
+  removeTitlesProgressListener: () => {
+    ipcRenderer.removeAllListeners('titles:progress');
+  },
+  sendSubjectsToTitles: (payload) => ipcRenderer.invoke('titles:send-subjects', payload),
+  takePendingTitleSubjects: () => ipcRenderer.invoke('titles:take-pending'),
+  onTitlesSubjects: (callback) => {
+    ipcRenderer.on('titles:subjects', (_event, p) => callback(p));
+  },
+  removeTitlesSubjectsListener: () => {
+    ipcRenderer.removeAllListeners('titles:subjects');
+  },
+
+  // Metadata page. Channel names are ContentStudio's, unchanged — see the interface note
+  // above for the single 'cancel-job' → 'metadata:cancel-job' rename and why it is forced.
+  getSettings: () => ipcRenderer.invoke('get-settings'),
+  updateSettings: (settings) => ipcRenderer.invoke('update-settings', settings),
+  listPromptSets: () => ipcRenderer.invoke('list-prompt-sets'),
+  selectFiles: () => ipcRenderer.invoke('select-files'),
+  selectOutputDirectory: () => ipcRenderer.invoke('select-output-directory'),
+  isDirectory: (filePath) => ipcRenderer.invoke('is-directory', filePath),
+  checkDirectory: (dirPath) => ipcRenderer.invoke('check-directory', dirPath),
+  readDirectory: (dirPath) => ipcRenderer.invoke('read-directory', dirPath),
+  readFile: (filePath) => ipcRenderer.invoke('read-file', filePath),
+  writeTextFile: (filePath, content) => ipcRenderer.invoke('write-text-file', filePath, content),
+  deleteDirectory: (dirPath) => ipcRenderer.invoke('delete-directory', dirPath),
+  generateMetadata: (params) => ipcRenderer.invoke('generate-metadata', params),
+  sendHeldPrompt: (jobId) => ipcRenderer.invoke('send-held-prompt', { jobId }),
+  discardHeldPrompt: (jobId) => ipcRenderer.invoke('discard-held-prompt', { jobId }),
+  cancelMetadataJob: (jobId) => ipcRenderer.invoke('metadata:cancel-job', jobId),
+  onMetadataProgress: (callback) => {
+    const listener = (_event: any, progress: any) => callback(progress);
+    ipcRenderer.on('generation-progress', listener);
+    return () => ipcRenderer.removeListener('generation-progress', listener);
+  },
+  getPathForFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch {
+      // Not a filesystem file (a dragged selection, a browser-synthesised blob). The caller
+      // reports the file by name rather than adding an item that points nowhere.
+      return '';
+    }
   },
 
   // Utility

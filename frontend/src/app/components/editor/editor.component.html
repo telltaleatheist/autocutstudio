@@ -41,6 +41,22 @@
   <!-- Invisible backdrop: an outside click closes the File menu. -->
   <div class="menu-backdrop" *ngIf="menuOpen" (click)="menuOpen = false"></div>
 
+  <!-- Story right-click menu (list row or timeline ribbon). Backdrop swallows the next click,
+       including a right-click, so the menu always closes on the first dismissal. -->
+  <div class="menu-backdrop" *ngIf="storyCtxMenu" (click)="closeStoryCtxMenu()"
+       (contextmenu)="$event.preventDefault(); closeStoryCtxMenu()"></div>
+  <div class="story-ctx" *ngIf="storyCtxMenu"
+       [style.left.px]="storyCtxMenu!.x" [style.top.px]="storyCtxMenu!.y">
+    <button (click)="mergeFromCtxMenu()" [disabled]="!canMergeStories">
+      {{ canMergeStories ? 'Merge ' + storyMergeIds.size + ' stories' : 'Merge (pick 2+ with ⌘-click)' }}
+    </button>
+    <button (click)="sendStoryToMetadataFromCtxMenu()" [disabled]="!storyMergeIds.size || analyzing"
+            title="Send every picked story's chapters to the Metadata page, one item each — chapters are derived first for a story that has none, and re-derived if its regions changed since they were. If any picked story can't be sent, none are.">
+      {{ storyMergeIds.size > 1 ? 'Send ' + storyMergeIds.size + ' stories to Metadata' : 'Send to Metadata' }}
+    </button>
+    <button (click)="closeStoryCtxMenu()">Cancel</button>
+  </div>
+
   <!-- Export chooser: pick what to export (File ▸ Export… / ⌘E). Escape or a backdrop
        click closes it. -->
   <div class="modal-backdrop" *ngIf="exportChooserOpen" (click)="exportChooserOpen = false">
@@ -100,7 +116,7 @@
   <!-- Background activity HUD (FCPX-style). A floating, draggable dock: opened from the button
        in the Edit/Stories tab row and auto-opened when transcription starts; drag it by the
        header to reposition; closed only with its ×. Lists whatever is running: transcription,
-       export, waveform analysis — or nothing. -->
+       export, waveform analysis, the story-analysis queue — or nothing. -->
   <div class="activity-window" *ngIf="activityOpen"
        [style.transform]="'translate(calc(-50% + ' + activityX + 'px), ' + activityY + 'px)'">
     <div class="activity-head" (mousedown)="onActivityDragStart($event)">
@@ -136,15 +152,25 @@
         <div class="activity-task-sub">{{ peaksBurstDone }} / {{ peaksBurstTotal }} clips</div>
       </div>
 
-      <!-- Story analysis (chapter split / title suggestions). -->
-      <div class="activity-task" *ngIf="analyzing">
+      <!-- Story analysis (chapter split / title suggestions). A QUEUE, not a single slot: the story
+           being worked on sits on top with the bar, the percentage and the run's one stop button;
+           the stories still to come are listed under it. A finished story's row is removed, so the
+           top row is always what is running now. The bar is the RUNNING story's own pipeline
+           progress — "how many stories are left" is the list itself. -->
+      <div class="activity-task" *ngIf="analyzing && activityRunning">
         <div class="activity-task-row">
-          <span class="activity-task-name">Analyzing stories</span>
+          <span class="activity-task-name">{{ activityRunning.label }}</span>
           <span class="activity-task-pct" *ngIf="aiProgressTotal > 0">{{ aiProgressPct }}%</span>
+          <button class="activity-stop" (click)="stopAnalysis()" title="Stop the analysis">×</button>
         </div>
         <div class="activity-bar" *ngIf="aiProgressTotal > 0"><div class="activity-bar-fill" [style.width.%]="aiProgressPct"></div></div>
         <div class="activity-bar indeterminate" *ngIf="aiProgressTotal <= 0"><div class="activity-bar-fill"></div></div>
         <div class="activity-task-sub">{{ analyzeMessage || aiPhase || 'Working…' }}</div>
+        <div class="activity-wait" *ngFor="let q of activityPending">
+          <span class="activity-wait-name">{{ q.label }}</span>
+          <span class="activity-wait-tag">waiting</span>
+        </div>
+        <div class="activity-wait more" *ngIf="activityPendingMore > 0">+{{ activityPendingMore }} more</div>
       </div>
 
       <div class="activity-idle" *ngIf="!hasBackgroundActivity && !analyzeError">No background activity.</div>
@@ -183,6 +209,7 @@
         <div class="split-progress-pct" *ngIf="aiProgressTotal > 0">
           step {{ aiProgressDone }} / {{ aiProgressTotal }} · {{ aiProgressPct }}%
         </div>
+        <button class="split-stop" (click)="stopAnalysis()" title="Stop detecting chapters">Stop</button>
       </div>
       <div class="split-error" *ngIf="splitError && !splitRunning">{{ splitError }}</div>
 
@@ -288,35 +315,99 @@
           <button class="story-analyze" (click)="analyzeTimeline()"
                   [disabled]="analyzing || !selectedOllamaModel || transcriptState !== 'ready'"
                   [title]="hasStories()
-                      ? 'Suggest a title for each story (scrap excluded)'
+                      ? 'For each story: derive its chapters, then a working title from them. Skips stories whose chapters are already current and titles you typed yourself.'
                       : 'Split the whole timeline into stories by subject'">
-            {{ analyzing ? 'Analyzing…' : (hasStories() ? 'Suggest titles' : 'Auto-split') }}
+            {{ analyzing ? 'Analyzing…' : (hasStories() ? 'Chapter + title' : 'Auto-split') }}
+          </button>
+          <button class="story-merge" *ngIf="hasStories()" (click)="mergeSelectedStories()"
+                  [disabled]="!canMergeStories"
+                  [title]="canMergeStories
+                      ? 'Merge the picked stories into the first one'
+                      : '⌘-click two or more stories — in this list or on the timeline ribbon — to merge them'">
+            Merge{{ storyMergeIds.size >= 2 ? ' ' + storyMergeIds.size : '' }}
+          </button>
+          <button class="story-titles" *ngIf="hasStories()" (click)="sendAllStoriesToTitles()"
+                  title="Send every story title to the Titles tab as a livestream subject list">
+            → Titles
           </button>
         </div>
-        <div class="stories-hint">
+        <div class="stories-hint" *ngIf="storyMergeIds.size">
+          {{ storyMergeIds.size }} picked for merging — ⌘-click more, or hit Merge. Any plain click clears the pick.
+        </div>
+        <div class="stories-hint" *ngIf="!storyMergeIds.size">
           {{ activeStoryId
               ? 'Adding regions to the selected story — drag on the timeline to add more. Click it again to start a new one.'
               : 'Drag on the timeline to start a new story — edges take whole clips. Click a story below to add more regions to it; drag its edges in the strip to adjust. Need a mid-clip boundary? Cut it with the Blade (B) first.' }}
         </div>
         <div class="stories-empty" *ngIf="!hasStories()">No stories yet — drag on the timeline to mark one, or Auto-split.</div>
-        <div class="story-row" *ngFor="let s of stories"
+        <ng-container *ngFor="let s of stories">
+        <div class="story-drop-line" *ngIf="dragStoryId && dropBeforeId === s.id"></div>
+        <div class="story-row"
              [class.active]="s.id === activeStoryId"
              [class.selected]="storySelection?.storyId === s.id"
+             [class.merge-picked]="storyMergeIds.has(s.id)"
+             [class.dragging]="dragStoryId === s.id"
+             (mousedown)="onStoryRowMouseDown(s, $event)"
              (click)="onStoryRowClick(s, $event)"
-             [title]="s.id === activeStoryId ? 'Active — drags add regions here' : 'Click to make active'">
+             (contextmenu)="onStoryRowContextMenu(s, $event)"
+             (dragover)="onStoryDragOver(s, $event)"
+             (drop)="onStoryDrop($event)"
+             [title]="s.id === activeStoryId ? 'Active — drags add regions here' : 'Click to make active · ⌘-click to pick for merging'">
           <span class="story-swatch" [style.background]="storyColor(s.number)"
-                (click)="selectWholeStory(s); $event.stopPropagation()"
+                (click)="onStorySwatchClick(s, $event)"
                 title="Select the whole story"></span>
-          <span class="story-num">{{ s.number }}</span>
+          <span class="story-num" draggable="true"
+                (dragstart)="onStoryDragStart(s, $event)" (dragend)="onStoryDragEnd()"
+                (click)="onStoryNumClick($event)"
+                title="Drag to reorder — story order is the order of the projects in the exported XML">{{ s.number }}</span>
           <input class="story-title" id="story-title-{{ s.id }}" [value]="s.title"
                  (input)="onStoryTitleInput(s, $any($event.target).value)"
                  (keydown.enter)="blurStoryInput($event)" placeholder="Story title" />
           <span class="story-tc">{{ storyDuration(s) }}</span>
+          <!-- Chapter state, three ways. Stale/absent are marked because a story is what owns
+               chapters: redraw its boundary and its markers describe a span the upload no longer
+               contains. Sending to Metadata re-derives either, so this reads as "will be done"
+               rather than as an error. -->
+          <ng-container [ngSwitch]="storyChapterState(s)">
+            <span class="story-chapters" *ngSwitchCase="'fresh'"
+                  title="Chapters derived for this story's current regions">
+              {{ s.chapters?.length }} ch
+            </span>
+            <span class="story-chapters stale" *ngSwitchCase="'stale'"
+                  title="These chapters describe a different span — the story's regions have changed since they were derived, or they came from the whole-recording pass. Send to Metadata re-derives them.">
+              {{ s.chapters?.length }} ch ⟳
+            </span>
+            <!-- An empty story is skipped rather than nagged at: it has no regions to chapter,
+                 and it is already flagged "empty" beside this. -->
+            <ng-container *ngSwitchCase="'none'">
+              <span class="story-chapters missing" *ngIf="!isStoryEmpty(s)"
+                    title="No chapters yet — Send to Metadata derives them for this story.">
+                no ch
+              </span>
+            </ng-container>
+          </ng-container>
+          <!-- Chapter starts that fell back to the raw ±45s junction. Nothing else can show this:
+               the description line reads identically to a well-placed one, and the symptom only
+               appears once the video is published and a marker lands half a minute off. -->
+          <span class="story-chapters approx" *ngIf="storyApproxChapters(s) as n"
+                [title]="n + ' of these chapter starts could not be pinned to a quoted sentence, so they sit on the raw ±45s estimate instead of the usual ~5s. Worth checking before publishing.'">
+            ±{{ n }}
+          </span>
           <span class="story-empty" *ngIf="isStoryEmpty(s)" title="No regions">empty</span>
+          <button class="story-titles" (click)="sendStoryToTitles(s); $event.stopPropagation()"
+                  [disabled]="!canSendStoryToTitles(s)"
+                  title="Send this story’s chapters to the Titles tab in the main window. Chapters are derived first if it has none, and re-derived if the story’s regions changed since they were.">T</button>
           <button class="story-split" (click)="openSplitModal(s); $event.stopPropagation()"
                   [disabled]="isStoryEmpty(s) || transcriptState !== 'ready'"
                   title="Split this story into chapters">Split</button>
           <button class="story-del" (click)="deleteStory(s); $event.stopPropagation()" title="Delete story">×</button>
+        </div>
+        </ng-container>
+        <!-- End-of-list drop target: catches a drop below the last row so a story can be moved
+             to the end, which no row's own hit area covers. -->
+        <div class="story-drop-tail" *ngIf="dragStoryId"
+             (dragover)="onStoryPaneDragOver($event)" (drop)="onStoryDrop($event)">
+          <div class="story-drop-line" *ngIf="dropBeforeId === null"></div>
         </div>
       </div>
 
@@ -455,6 +546,7 @@
                 [class.tool-blade]="toolMode === 'blade'"
                 [class.tool-story]="storyMode"
                 (mousedown)="onCanvasMouseDown($event)"
+                (contextmenu)="onCanvasContextMenu($event)"
                 (mousemove)="onCanvasHover($event)"
                 (wheel)="onWheel($event)"></canvas>
       </div>

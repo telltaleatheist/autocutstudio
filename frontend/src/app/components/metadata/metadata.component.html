@@ -1,0 +1,290 @@
+<div class="metadata-page"
+     (dragover)="onDragOver($event)"
+     (dragleave)="onDragLeave($event)"
+     (drop)="onDrop($event)"
+     [class.dragging-over]="isDraggingOver()">
+
+  <div class="page-header">
+    <h1>Metadata</h1>
+    <p class="subtitle">
+      Build a list, queue it, and let the AI write titles, descriptions, tags and chapters.
+      Finished reports live in the Reports tab.
+    </p>
+  </div>
+
+  <!-- Notices. Replaces ContentStudio's toast service: errors and warnings stay put until
+       dismissed, because a message that fades is a message the user can miss. -->
+  <div class="notices" *ngIf="notices().length">
+    <div class="notice" *ngFor="let n of notices(); trackBy: trackByIndex" [class]="'notice ' + n.kind">
+      <span class="notice-icon">{{ n.kind === 'error' ? '⛔' : n.kind === 'warning' ? '⚠️' : '✅' }}</span>
+      <span class="notice-body">
+        <b>{{ n.title }}</b>
+        <span class="notice-text">{{ n.text }}</span>
+      </span>
+      <button class="notice-close" (click)="dismissNotice(n.id)" title="Dismiss">×</button>
+    </div>
+  </div>
+
+  <!-- ── Item list ─────────────────────────────────────────────────────────── -->
+  <div class="card">
+    <div class="card-head">
+      <h2>Items</h2>
+      <span class="card-note">
+        {{ inputsState.inputItems().length }} item(s)<span *ngIf="hasSelectedItems"> · {{ selectedItems.length }} checked</span>
+      </span>
+    </div>
+
+    <div class="button-group">
+      <button class="btn-primary" (click)="openTextSubjectModal()">✍️ Text subject</button>
+      <button class="btn-primary" (click)="browseFiles()">📂 Browse files</button>
+    </div>
+
+    <!-- The whole page accepts a drop; this is the visible target that says so. -->
+    <div class="drop-zone" [class.active]="isDraggingOver()">
+      <span class="drop-icon">⬇️</span>
+      <span class="drop-text">Drop video, audio or transcript files anywhere on this page</span>
+    </div>
+
+    <div class="master-controls" *ngIf="inputsState.inputItems().length > 0">
+      <label class="check">
+        <input type="checkbox" [checked]="allItemsSelected" (change)="toggleSelectAll()" />
+        <span>Select all</span>
+      </label>
+
+      <div class="control-group">
+        <label class="control-label" for="master-prompt">Prompt set</label>
+        <select id="master-prompt" class="select"
+                [value]="inputsState.masterPromptSet()"
+                (change)="onMasterPromptSetChange($any($event.target).value)">
+          <option *ngFor="let ps of availablePromptSets(); trackBy: trackByIndex" [value]="ps.id">{{ ps.name }}</option>
+        </select>
+      </div>
+
+      <label class="check"
+             title="One job, one report, from every checked item together — rather than one report each">
+        <input type="checkbox" [checked]="inputsState.compilationMode()"
+               (change)="onCompilationModeChange($any($event.target).checked)" />
+        <span>Compilation mode</span>
+      </label>
+
+      <label class="check" *ngIf="hasVideoItems()"
+             title="Generate YouTube chapter markers for every item that can carry them">
+        <input type="checkbox" [checked]="allChaptersEnabled()"
+               (change)="toggleAllChapters($any($event.target).checked)" />
+        <span>Chapters</span>
+      </label>
+
+      <button class="btn-secondary push-right" (click)="clearAllInputs()">Clear list</button>
+    </div>
+
+    <div class="empty-state" *ngIf="inputsState.inputItems().length === 0">
+      <span class="empty-icon">📥</span>
+      <p>Nothing in the list yet</p>
+      <p class="hint">Type a subject, drop a video, or send a story's chapters over from the editor.</p>
+    </div>
+
+    <div class="item-list" *ngIf="inputsState.inputItems().length > 0">
+      <div class="item-row" *ngFor="let item of inputsState.inputItems(); let i = index; trackBy: trackByItemPath"
+           [class.selected]="item.selected">
+        <input type="checkbox" class="row-check" [checked]="item.selected" (change)="toggleItemSelection(i)" />
+
+        <span class="item-icon">{{ item.icon }}</span>
+        <span class="item-info">
+          <span class="item-title">{{ item.displayName }}</span>
+          <span class="item-subtitle">{{ item.type }}</span>
+        </span>
+
+        <select class="select compact"
+                [value]="item.promptSet"
+                [disabled]="inputsState.compilationMode()"
+                (change)="updateItemPromptSet(i, $any($event.target).value)"
+                title="Prompt set for this item">
+          <option *ngFor="let ps of availablePromptSets(); trackBy: trackByIndex" [value]="ps.id">{{ ps.name }}</option>
+        </select>
+
+        <button class="box-toggle" *ngIf="isTextSubject(item)" (click)="openEditTextSubjectModal(i)"
+                title="Edit the text">Edit</button>
+
+        <button class="box-toggle" [class.active]="!!item.notes" (click)="openNotesModal(i)"
+                [title]="item.notes ? 'Edit the custom AI instructions' : 'Add custom AI instructions'">Notes</button>
+
+        <button class="box-toggle" *ngIf="canGenerateChapters(item)"
+                [class.active]="item.generateChapters !== false"
+                (click)="toggleChapterGeneration(i, item.generateChapters === false)"
+                [title]="(item.generateChapters !== false ? 'Chapters on' : 'Chapters off') + ' — generate YouTube chapter markers'">
+          Chapters
+        </button>
+
+        <button class="icon-btn" (click)="moveItem(i, -1)" [disabled]="i === 0" title="Move up">↑</button>
+        <button class="icon-btn" (click)="moveItem(i, 1)"
+                [disabled]="i === inputsState.inputItems().length - 1" title="Move down">↓</button>
+        <button class="icon-btn danger" (click)="removeInput(i)" title="Remove">×</button>
+      </div>
+    </div>
+
+    <button class="btn-accent full-width"
+            [disabled]="!hasSelectedItems"
+            (click)="addToQueue()">
+      ➕ Add {{ selectedItems.length > 0 ? selectedItems.length + ' item(s)' : '' }} to queue
+    </button>
+  </div>
+
+  <!-- ── Job queue ─────────────────────────────────────────────────────────── -->
+  <div class="card" *ngIf="jobQueue.jobs().length > 0">
+    <div class="card-head">
+      <h2>Queue</h2>
+      <span class="card-note">{{ getCompletedJobsCount() }}/{{ jobQueue.jobs().length }} job(s) complete</span>
+    </div>
+
+    <div class="progress">
+      <div class="progress-track">
+        <div class="progress-fill" [style.width.%]="getGlobalQueueProgress()"></div>
+      </div>
+    </div>
+
+    <div class="queue-controls">
+      <label class="check"
+             title="When on, Start Queue transcribes and holds each job so you can review its prompt; press Start Queue again to send everything to the AI.">
+        <input type="checkbox" [checked]="transcribeOnly()"
+               [disabled]="jobQueue.isProcessing()"
+               (change)="transcribeOnly.set($any($event.target).checked)" />
+        <span>Transcribe only (review the prompt before sending)</span>
+      </label>
+      <button class="btn-secondary push-right" (click)="clearCompletedJobs()">Clear completed</button>
+    </div>
+
+    <div class="job-list">
+      <div class="job-card" *ngFor="let job of jobQueue.jobs(); trackBy: trackByJobId"
+           [class.active]="job.status === 'processing'">
+        <div class="job-row" (click)="toggleJobExpansion(job.id)">
+          <span class="job-status-icon" [class]="'job-status-icon ' + job.status">{{ getJobStatusIcon(job.status) }}</span>
+
+          <span class="item-info">
+            <span class="item-title">{{ job.name }}</span>
+            <span class="item-subtitle">
+              {{ getPromptSetIcon(job.promptSet) }} {{ getPromptSetName(job.promptSet) }} · {{ job.mode }}
+              <span *ngIf="job.completedAt"> · {{ job.processingTime?.toFixed(1) }}s</span>
+            </span>
+          </span>
+
+          <span class="job-fraction">{{ getCompletedItemsCount(job) }}/{{ job.inputs.length }}</span>
+
+          <span class="job-progress-mini">
+            <span class="progress-track">
+              <span class="progress-fill" [style.width.%]="getJobProgress(job)"></span>
+            </span>
+          </span>
+
+          <span class="disclosure">{{ isJobExpanded(job.id) ? '▾' : '▸' }}</span>
+
+          <button class="box-toggle" *ngIf="job.status === 'held'"
+                  (click)="viewPrompt(job); $event.stopPropagation()"
+                  title="Read the exact prompt (Start Queue sends it)">Show prompt</button>
+
+          <button class="icon-btn danger" *ngIf="job.status === 'processing'"
+                  (click)="cancelJob(job.id); $event.stopPropagation()" title="Cancel this job">⨯</button>
+
+          <button class="icon-btn" *ngIf="job.status !== 'processing'"
+                  (click)="removeJob(job.id); $event.stopPropagation()" title="Remove">×</button>
+        </div>
+
+        <!-- A titling job's whole output is its candidate list, so the row shows that instead of
+             the per-item transcription rows a file job needs. -->
+        <div class="job-details" *ngIf="isJobExpanded(job.id)">
+          <ng-container *ngIf="isTitleJob(job); else jobItems">
+            <div class="error-strip" *ngIf="job.status === 'failed' && job.error">
+              <span class="error-icon">⚠️</span>
+              <span class="error-text">{{ job.error }}</span>
+            </div>
+
+            <div class="titles-note" *ngIf="job.titles?.length">
+              Click a title to copy it. The badge is its character count — lit means inside the
+              trained band ({{ titleBandHint(job) }}).
+            </div>
+
+            <div class="title-candidates" *ngIf="job.titles?.length">
+              <button class="title-candidate"
+                      *ngFor="let t of job.titles; let i = index; trackBy: trackByIndex"
+                      [class.copied]="isCandidateCopied(job.id, i)"
+                      (click)="copyCandidate(job, i)"
+                      title="Copy this title">
+                <span class="candidate-num">{{ i + 1 }}</span>
+                <span class="candidate-title">{{ t }}</span>
+                <span class="candidate-len" [class.out-of-range]="!isTitleInBand(job, t)"
+                      [title]="isTitleInBand(job, t) ? 'Inside the trained length band' : 'Outside the trained length band'">
+                  {{ t.length }}
+                </span>
+                <span class="candidate-copied">{{ isCandidateCopied(job.id, i) ? 'Copied' : '' }}</span>
+              </button>
+            </div>
+
+            <div class="titles-note" *ngIf="!job.titles?.length && job.status !== 'failed'">
+              <ng-container *ngIf="job.status === 'processing'; else titlesPending">
+                Writing titles with <code>headline-14b-titles</code>…
+              </ng-container>
+              <ng-template #titlesPending>
+                Queued — Start Queue writes {{ titleCount }} titles for this story.
+              </ng-template>
+            </div>
+          </ng-container>
+
+          <ng-template #jobItems>
+            <div class="job-item" *ngFor="let input of job.inputs; let i = index; trackBy: trackByItemPath">
+              <div class="job-item-row">
+                <span class="item-icon">{{ input.icon }}</span>
+                <span class="item-info">
+                  <span class="item-title">{{ input.displayName }}</span>
+                  <span class="item-status" [class]="'item-status ' + getItemStatusClass(job, i)">
+                    {{ getItemStatusText(job, i) }}
+                  </span>
+                </span>
+                <span class="job-item-check" *ngIf="isItemCompleted(job, i)">✅</span>
+                <span class="job-item-check" *ngIf="isItemTranscribed(job, i)">✓</span>
+                <button class="icon-btn" (click)="removeItemFromJob(job.id, i); $event.stopPropagation()"
+                        title="Remove this item from the job">×</button>
+              </div>
+              <div class="progress-track thin">
+                <div class="progress-fill" [style.width.%]="getItemProgress(job, i)"></div>
+              </div>
+            </div>
+          </ng-template>
+        </div>
+      </div>
+    </div>
+
+    <!-- Two stages: transcribe the pending jobs first; once only held jobs remain, a press
+         sends them to the AI. -->
+    <button class="btn-primary full-width" *ngIf="!jobQueue.isProcessing()"
+            [disabled]="jobQueue.getPendingJobs().length === 0 && jobQueue.getHeldJobs().length === 0"
+            (click)="startQueue()">
+      <ng-container *ngIf="jobQueue.getPendingJobs().length > 0; else sendHeld">
+        ▶ Start queue ({{ jobQueue.getPendingJobs().length }} job(s))
+      </ng-container>
+      <ng-template #sendHeld>✉️ Send {{ jobQueue.getHeldJobs().length }} to the AI</ng-template>
+    </button>
+  </div>
+
+  <!-- ── Modal ─────────────────────────────────────────────────────────────── -->
+  <div class="modal-overlay" *ngIf="modalKind()" (click)="closeModal()">
+    <div class="modal" (click)="$event.stopPropagation()">
+      <div class="modal-head">
+        <h3>{{ modalTitle }}</h3>
+        <button class="modal-close" (click)="closeModal()">×</button>
+      </div>
+
+      <p class="modal-hint" *ngIf="modalKind() === 'text-add'">One subject per line — each line becomes its own item.</p>
+      <p class="modal-hint" *ngIf="modalKind() === 'notes'">Steer the AI on this one item, e.g. “lead with the deposition”.</p>
+
+      <textarea class="modal-textarea"
+                rows="12"
+                spellcheck="false"
+                [readonly]="modalReadOnly"
+                [(ngModel)]="modalText"></textarea>
+
+      <div class="modal-actions">
+        <button class="btn-secondary" (click)="closeModal()">{{ modalReadOnly ? 'Close' : 'Cancel' }}</button>
+        <button class="btn-primary" *ngIf="!modalReadOnly" (click)="saveModal()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>

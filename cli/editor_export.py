@@ -15,7 +15,17 @@
 # Invocation:
 #     python cli/editor_export.py --zip /abs/path/<name>_compounds.zip
 #   with a JSON object on STDIN:
-#     { "cuts": [ {"startFrame": int, "endFrame": int}, ... ] }
+#     { "cuts": [ {"startFrame": int, "endFrame": int}, ... ],
+#       "sequence": [ {"start": float, "end": float}, ... ]   # OPTIONAL playback order }
+#
+# 'sequence' is the OPTIONAL reorder: an ordered list of the surviving spans (ORIGINAL
+# seconds, the same declared-concatenated time base as cuts and stories[].regions) in the
+# order they should PLAY. Absent, the export behaves exactly as it always has (survivors
+# play in source order). Present, it must PARTITION the footage the cuts leave behind: the
+# spans may divide a survivor run at any frame (a drag snaps to CLIP edges, which have
+# nothing to do with where cuts are) and play the pieces in any order, but joined together
+# they must cover exactly the survivors — see _validate_sequence for why anything else is
+# refused outright.
 #
 # Output (stdout, exactly one line):
 #     success: {"type":"export_result","path":"/abs/.../<name>_HYBRID_edited.fcpxml",
@@ -39,6 +49,7 @@
 import argparse
 import copy
 import json
+import re
 import sys
 import zipfile
 from fractions import Fraction
@@ -396,11 +407,17 @@ def apply_cuts(tree, entry_name, cuts_raw):
 # keeping everything else, we KEEP only a story's resolved regions (minus the user's
 # cuts) and drop everything else, then collapse the survivors to a single continuous
 # timeline rebased to 0. It reuses the exact same spine surgery (split_spine_element /
-# _trim_children) — we just feed it the COMPLEMENT of the story's kept intervals as the
-# per-part "cuts", and supply a GLOBAL collapse ripple (continuous across parts) instead
-# of make_ripple's per-part one. Within any single kept interval the collapse map is a
-# uniform shift t - const — the very property _trim_children already relies on — so a
-# survivor piece's anchored children stay internally consistent wherever the piece lands.
+# _trim_children) — we just feed it the COMPLEMENT of a kept interval as the per-part
+# "cuts", and a ripple that carries that interval to its own output offset instead of
+# make_ripple's per-part shift. Within any single kept interval that ripple is a uniform
+# shift t - const — the very property _trim_children already relies on — so a survivor
+# piece's anchored children stay internally consistent wherever the piece lands.
+#
+# The unit of work is ONE kept interval (see _placements), not the whole kept set: the
+# complement of a SET glues intervals that touch, and split_spine_element would then never
+# cut between them — two intervals the user wants in different places would ride out as a
+# single piece at the first one's offset. Windowing one interval at a time is what lets a
+# reorder split a survivor run at any frame.
 
 def _complement(intervals, lo, hi):
     """Gaps of [lo, hi) not covered by `intervals` (sorted ascending, disjoint, already
@@ -451,25 +468,155 @@ def _slugify(title, number):
     return slug or f"story-{number}"
 
 
-def _make_collapse(kept):
-    """Build the global collapse ripple for a story from its kept intervals (sorted disjoint
-    Fraction seconds). collapse(t) maps a KEPT global time to its position on the story's
-    0-based collapsed timeline; total is the collapsed duration. A t not inside any kept
-    interval is an internal inconsistency (survivor starts always are) -> raise."""
-    cum = []
+def _cumulative_offsets(kept, order=None):
+    """Collapsed output offset of every kept interval (aligned to `kept`) and the collapsed
+    total. Offsets accumulate in PLAYBACK order — `order`, a permutation of `kept`, or source
+    order when it is None. This is the ONE place playback order turns into numbers: both the
+    spine collapse and the transcript rebasing read it from here, so picture and words cannot
+    drift apart under a reorder."""
+    cum_of = {}
     acc = Fraction(0)
-    for (s, e) in kept:
-        cum.append(acc)
-        acc += (e - s)
-    total = acc
-
-    def collapse(t):
-        for i, (s, e) in enumerate(kept):
-            if s <= t <= e:
-                return cum[i] + (t - s)
+    for iv in (kept if order is None else order):
+        cum_of[iv] = acc
+        acc += (iv[1] - iv[0])
+    if len(cum_of) != len(kept) or any(iv not in cum_of for iv in kept):
         raise ManifestError(
-            f"internal error: collapse time {format_time(t)} is not inside any kept region")
-    return collapse, total
+            "internal error: playback order is not a permutation of the kept intervals "
+            f"({len(order or kept)} ordered vs {len(kept)} kept) — a survivor would be "
+            "duplicated or lost")
+    return [cum_of[iv] for iv in kept], acc
+
+
+def _placements(kept, order=None):
+    """Where each kept interval LANDS: [(s, e, out_offset)] in PLAYBACK order, plus the
+    collapsed total. Each entry is one keep-window for _build_story_project, and inside it the
+    output map is the uniform shift t -> t - s + out_offset.
+
+    `order` is the same intervals in playback order (a permutation of `kept`); None keeps
+    source order. Intervals that are ADJACENT in the source and CONSECUTIVE in playback are
+    merged into one window — offsets accumulate in playback order, so their output is
+    contiguous too and one window produces exactly the piece two windows would produce
+    side by side. That merge is what keeps a non-reordered export identical to what it has
+    always emitted, and it stops a reorder from introducing a cut point the order does not
+    actually need."""
+    cum, total = _cumulative_offsets(kept, order)
+    offset_of = dict(zip(kept, cum))
+    out = []
+    for iv in (kept if order is None else order):
+        off = offset_of[iv]
+        if out and out[-1][1] == iv[0]:
+            out[-1] = (out[-1][0], iv[1], out[-1][2])
+        else:
+            out.append((iv[0], iv[1], off))
+    return out, total
+
+
+# ---------------------------------------------------------------------------
+# Reorder (the OPTIONAL 'sequence' payload field)
+# ---------------------------------------------------------------------------
+# Double-precision seconds carry ~1e-12 of representation noise at hour-scale times, while
+# one frame is ~33ms. A tolerance six orders of magnitude below a frame therefore absorbs
+# float noise while still catching a boundary that was never quantized — unlike
+# _snap_to_frame's half-a-frame window, which round() can never actually exceed and which
+# would silently pull an off-grid boundary onto the nearest frame.
+_FRAME_EPSILON = 1e-6
+
+
+def _exact_frame(sec, frame_seconds, context):
+    """Convert an ALREADY frame-quantized float-seconds boundary to its exact frame time.
+    Refuses anything off the grid rather than rounding it — a reorder that resizes a span
+    by a fraction of a frame would desync picture from the cut list it was derived from."""
+    if not isinstance(sec, (int, float)) or isinstance(sec, bool):
+        raise ManifestError(f"{context}: expected a number of seconds, got {sec!r}")
+    idx = round(sec / float(frame_seconds))
+    exact = idx * frame_seconds
+    drift = abs(float(exact) - float(sec))
+    if drift > _FRAME_EPSILON:
+        raise ManifestError(
+            f"{context}: {sec}s is not frame-aligned (nearest frame {idx} = {float(exact)}s, "
+            f"off by {drift}s; frameDuration is {float(frame_seconds)}s)")
+    return idx, exact
+
+
+def _validate_sequence(sequence_raw, cuts, frame_seconds, total_declared):
+    """Validate the playback order loudly. Returns [(s, e) Fraction global secs] in PLAYBACK
+    order.
+
+    A reorder's freedom is WHERE footage plays and where it is divided, never WHICH footage
+    exists: the spans must PARTITION the survivors of the cuts. They may split a survivor run
+    at any frame the user dragged to (clip edges have nothing to do with cut boundaries), but
+    joined back together they must cover exactly the complement of the cuts — so a span may
+    not overlap another, leave a gap, or reach into cut material. A violation means the
+    frontend and the export disagree about what survives, and since a collapsed timeline
+    looks perfectly well-formed either way, nothing downstream would catch it. Refuse."""
+    if not isinstance(sequence_raw, list):
+        raise ManifestError("sequence must be a JSON array of {start, end} spans")
+    if not sequence_raw:
+        raise ManifestError(
+            "empty sequence: a reorder must list every surviving span (omit 'sequence' "
+            "entirely to keep source order)")
+    spans = []
+    for i, sp in enumerate(sequence_raw):
+        if not isinstance(sp, dict):
+            raise ManifestError(f"sequence span #{i} is not an object with start/end")
+        _si, s = _exact_frame(sp.get('start'), frame_seconds, f"sequence span #{i} start")
+        _ei, e = _exact_frame(sp.get('end'), frame_seconds, f"sequence span #{i} end")
+        if s >= e:
+            raise ManifestError(
+                f"sequence span #{i} is empty or reversed: start {float(s)}s >= end {float(e)}s")
+        if s < 0 or e > total_declared:
+            raise ManifestError(
+                f"sequence span #{i} [{float(s)}..{float(e)}]s lies outside the concatenated "
+                f"timeline [0..{float(total_declared)}]s")
+        spans.append((s, e))
+
+    ordered = sorted(spans)
+    for i in range(1, len(ordered)):
+        if ordered[i][0] < ordered[i - 1][1]:
+            raise ManifestError(
+                f"sequence spans overlap: a span starts at {float(ordered[i][0])}s, before the "
+                f"previous one ends at {float(ordered[i - 1][1])}s — a reorder plays every "
+                "surviving frame exactly once")
+    survivors = _complement([(cs, ce) for (_sf, _ef, cs, ce) in cuts],
+                            Fraction(0), total_declared)
+    # Joining touching spans back up must reproduce the survivors exactly. That single
+    # comparison catches a gap (footage silently dropped), a span reaching into a cut
+    # (footage the user removed reappearing) and any span outside the survivors — while
+    # still allowing a run to be divided anywhere, which is the whole point of a reorder.
+    if _merge_intervals(ordered) != survivors:
+        got = [(float(s), float(e)) for (s, e) in _merge_intervals(ordered)]
+        want = [(float(s), float(e)) for (s, e) in survivors]
+        raise ManifestError(
+            "sequence must partition the footage the cuts leave behind: the spans may divide a "
+            "survivor run at any frame and play the pieces in any order, but joined together "
+            f"they must cover exactly the survivors. Joined spans are {got}, survivors of the "
+            f"cuts are {want}")
+    return spans
+
+
+def _order_kept(kept, spans):
+    """Intersect one story's kept intervals with the sequence spans and return the pieces in
+    PLAYBACK order. Spans may now divide a survivor run anywhere, so a kept interval can
+    STRADDLE two spans — it has to be divided there too, otherwise its far half would ride
+    along with the near half wherever that lands.
+
+    The spans partition the survivors and kept ⊆ survivors, so the pieces must account for
+    every kept frame; if they don't, the kept intervals and the sequence came from different
+    cut lists and we would silently drop footage -> raise."""
+    out = []
+    for span in spans:
+        for iv in kept:
+            s = max(iv[0], span[0])
+            e = min(iv[1], span[1])
+            if s < e:
+                out.append((s, e))
+    covered = sum((e - s for (s, e) in out), Fraction(0))
+    want = sum((e - s for (s, e) in kept), Fraction(0))
+    if covered != want:
+        raise ManifestError(
+            f"internal error: sequence spans cover {float(covered)}s of the kept "
+            f"{float(want)}s — kept intervals and sequence disagree about what survives")
+    return out
 
 
 def _validate_stories(stories_raw, frame_seconds, total_declared):
@@ -525,40 +672,46 @@ def _validate_stories(stories_raw, frame_seconds, total_declared):
     return out
 
 
-def _build_story_project(story, kept, collapse, total, parts, frame_seconds, check_align, seq_template, entry_name):
-    """Build one <project> for a story from its kept global intervals, using the story's
-    pre-built collapse ripple. Returns the <project> Element, or None if it keeps nothing."""
-    if not kept:
+def _build_story_project(story, placements, total, parts, frame_seconds, check_align, seq_template, entry_name):
+    """Build one <project> for a story from its placements — (start, end, out_offset) keep-
+    windows in playback order (see _placements). Returns the <project> Element, or None if it
+    keeps nothing.
+
+    ONE window at a time is deliberate. Feeding the whole kept set to _complement at once
+    glues windows that touch, and split_spine_element would then never cut between them: two
+    windows the order wants in different places would leave as a single piece carrying only
+    the first one's offset. Per window, the map is the uniform shift t -> t - ks + out_offset,
+    which is exactly what _trim_children's anchored-child arithmetic assumes."""
+    if not placements:
         return None
 
     new_children = []
-    base = Fraction(0)
-    for part in parts:
-        declared = part['declared']
-        # Kept intervals overlapping this part, mapped to part-LOCAL [0, declared).
-        part_kept = []
-        for (ks, ke) in kept:
+    for (ks, ke, out_offset) in placements:
+        base = Fraction(0)
+        for part in parts:
+            declared = part['declared']
+            # This window's overlap with this part, in part-LOCAL [0, declared).
             s = max(ks - base, Fraction(0))
             e = min(ke - base, declared)
             if s < e:
-                part_kept.append((s, e))
-        if not part_kept:
+                local_cuts = _complement([(s, e)], Fraction(0), declared)
+                # A part-local t is global base + t, so the window's uniform output shift is
+                # out_offset + base - ks. Bind it by value: base moves under the closure.
+                ripple = (lambda sh: (lambda t: t + sh))(out_offset + base - ks)
+                context = f"{entry_name}: story {story['title']!r} @ part {part['name']!r}"
+                for ch in list(part['spine']):
+                    if ch.tag not in TIMELINE_TAGS:
+                        raise ManifestError(
+                            f"{context}: unexpected non-timeline spine child <{ch.tag}>; "
+                            f"cannot split it safely")
+                    for piece in split_spine_element(ch, local_cuts, ripple, frame_seconds,
+                                                     check_align, context):
+                        new_children.append(piece)
             base += declared
-            continue
-        local_cuts = _complement(part_kept, Fraction(0), declared)
-        # Capture base by value; ripple maps a part-local survivor start to global collapsed.
-        ripple = (lambda b: (lambda s: collapse(b + s)))(base)
-        context = f"{entry_name}: story {story['title']!r} @ part {part['name']!r}"
-        for ch in list(part['spine']):
-            if ch.tag not in TIMELINE_TAGS:
-                raise ManifestError(
-                    f"{context}: unexpected non-timeline spine child <{ch.tag}>; cannot split it safely")
-            for piece in split_spine_element(ch, local_cuts, ripple, frame_seconds, check_align, context):
-                new_children.append(piece)
-        base += declared
 
-    # Collapsed pieces must be pairwise non-overlapping and ascending (parts and pieces are in
-    # ascending order and collapse is monotone). HOLES are expected and legitimate: within a
+    # Collapsed pieces must be pairwise non-overlapping (the windows partition the kept
+    # footage and each lands in its own stretch of output). HOLES are expected and legitimate:
+    # within a
     # kept region that spans a part seam, the earlier part's spine ends before its DECLARED
     # length (trailing padding), so the collapsed timeline has an empty stretch there. A bare
     # offset-hole in a spine is invalid FCPX, so every leading/internal hole is filled with an
@@ -571,6 +724,13 @@ def _build_story_project(story, kept, collapse, total, parts, frame_seconds, che
         sequence.set(k, v)          # inherit format/tcStart/tcFormat/audioLayout/audioRate
     sequence.set('duration', format_time(total))
     spine = ET.SubElement(sequence, 'spine')
+
+    # Pieces come out window by window in PLAYBACK order, and a window's output offset is the
+    # summed length of the windows before it — so they already ascend, reorder or not, and
+    # this sort is a no-op today. It stays because the gap-filling loop below can only fill
+    # holes and detect overlap correctly on an ascending list: that must be guaranteed here,
+    # not inherited from the emission order of the loop above.
+    new_children.sort(key=lambda el: parse_rational(el.get('offset'), 'collapsed piece offset'))
 
     cursor = Fraction(0)
     for piece in new_children:
@@ -645,18 +805,16 @@ def _speaker_map(tracks):
     return out
 
 
-def _build_story_transcript(story, kept, total, sidecar, speaker_map):
+def _build_story_transcript(story, kept, total, sidecar, speaker_map, order=None):
     """Build the Content Studio import doc for one story: keep every word whose MIDPOINT lands
     in a kept interval (the sidecar's own cut convention) and rebase its times to the story's
-    0-based collapsed timeline by that interval's constant collapse shift."""
+    0-based collapsed timeline by that interval's constant collapse shift. `order` carries the
+    reorder: the shifts come from the same cumulative offsets the spine uses, and the final
+    sort by rebased start puts the words in the order the picture will actually play."""
     import bisect
     starts = [float(s) for (s, _e) in kept]
     ends = [float(e) for (_s, e) in kept]
-    cum = []
-    acc = Fraction(0)
-    for (s, e) in kept:
-        cum.append(acc)
-        acc += (e - s)
+    cum, _acc = _cumulative_offsets(kept, order)
     shifts = [float(cum[i] - kept[i][0]) for i in range(len(kept))]  # constant per interval
     total_f = float(total)
 
@@ -742,16 +900,21 @@ def _story_kepts(stories, global_cuts):
     return out
 
 
-def apply_stories(tree, entry_name, cuts_raw, stories_raw):
+def apply_stories(tree, entry_name, cuts_raw, stories_raw, sequence_raw=None):
     """Mutate `tree` in place: replace the part <project>s under <event> with one <project>
     per story (regions minus cuts, collapsed to 0, named by title, ordered by number), PLUS
     a final "Scrap" project holding every stretch of the timeline no story claimed (minus
     cuts) — so nothing the user didn't explicitly cut is lost. Returns per-story result
-    dicts (Scrap included, flagged 'scrap')."""
+    dicts (Scrap included, flagged 'scrap').
+
+    With a `sequence`, each story's own content plays in the sequence's RELATIVE order: the
+    reorder is a property of the timeline, so it must survive the split into stories."""
     root = tree.getroot()
     parts, frame_seconds, total_declared = _collect_parts(root, entry_name)
     cuts = _validate_cuts(cuts_raw, frame_seconds, total_declared, allow_empty=True)
     stories = _validate_stories(stories_raw, frame_seconds, total_declared)
+    spans = (None if sequence_raw is None
+             else _validate_sequence(sequence_raw, cuts, frame_seconds, total_declared))
     check_align = _inputs_frame_aligned(parts, frame_seconds)
     if not check_align:
         print(f"[editor_export] {entry_name}: source spine values are not all frame-aligned; "
@@ -781,9 +944,12 @@ def apply_stories(tree, entry_name, cuts_raw, stories_raw):
     results = []
     for story, kept in with_kepts:
         if kept:
-            collapse, total = _make_collapse(kept)
+            # The sequence may divide a kept interval, so ordering it can produce MORE
+            # intervals than the story had; the divided set is what gets placed.
+            order = _order_kept(kept, spans) if spans else None
+            placements, total = _placements(sorted(order) if order else kept, order)
             project = _build_story_project(
-                story, kept, collapse, total, parts, frame_seconds, check_align, seq_template, entry_name)
+                story, placements, total, parts, frame_seconds, check_align, seq_template, entry_name)
             projects.append((story['number'], project))
         else:
             total = Fraction(0)
@@ -810,6 +976,53 @@ def apply_stories(tree, entry_name, cuts_raw, stories_raw):
     return results
 
 
+def _merged_project_name(parts):
+    """Name for the single reordered project. It replaces the N part projects, so it cannot
+    honestly carry any one part's name; the generators name parts '<session> dc part K', so
+    strip that suffix — otherwise a reordered whole-session timeline shows up in FCP labelled
+    'part 1'. A name that doesn't match the convention is used as-is."""
+    name = parts[0]['name']
+    m = re.match(r'^(.*?)\s+part\s+\d+$', name, re.IGNORECASE)
+    return m.group(1) if (m and len(parts) > 1) else name
+
+
+def apply_sequence(tree, entry_name, cuts_raw, sequence_raw):
+    """Mutate `tree` in place for the REORDERED master export: replace the part <project>s
+    with ONE collapsed project whose spine plays the survivors in `sequence` order. Returns
+    (new_total: Fraction, cuts_applied: int).
+
+    apply_cuts cannot do this: it ripples each part in place, so survivors can only ever move
+    left within their own part. The story machinery already places an arbitrary set of kept
+    intervals at arbitrary collapsed offsets, so a reorder is just that machinery driven by a
+    single 'story' that covers every survivor, with the playback order handed to the collapse
+    map."""
+    root = tree.getroot()
+    parts, frame_seconds, total_declared = _collect_parts(root, entry_name)
+    # A pure reorder with no cuts is a real edit, so the empty-cuts refusal (which exists to
+    # reject a no-op cut export) must not fire here: the sequence itself is the edit.
+    cuts = _validate_cuts(cuts_raw, frame_seconds, total_declared, allow_empty=True)
+    order = _validate_sequence(sequence_raw, cuts, frame_seconds, total_declared)
+    check_align = _inputs_frame_aligned(parts, frame_seconds)
+    if not check_align:
+        print(f"[editor_export] {entry_name}: source spine values are not all frame-aligned; "
+              "frame-alignment assertions on computed values are disabled", file=sys.stderr)
+
+    placements, total = _placements(sorted(order), order)
+    pseudo = {'number': 0, 'title': _merged_project_name(parts), 'slug': 'sequence'}
+    project = _build_story_project(pseudo, placements, total, parts, frame_seconds,
+                                   check_align, parts[0]['sequence'], entry_name)
+    if project is None:
+        raise ManifestError("sequence keeps no content: nothing to export")
+
+    event = root.find('.//event')
+    if event is None:
+        raise ManifestError(f"{entry_name}: no <event> element to hold the reordered project")
+    for p in event.findall('project'):
+        event.remove(p)
+    event.append(project)
+    return total, len(cuts)
+
+
 def _parse_master_tree(zip_path):
     """Open the zip, locate the master hybrid entry, and parse it. Shared by all exports."""
     zp = Path(zip_path)
@@ -828,11 +1041,11 @@ def _parse_master_tree(zip_path):
     return zp, entry, tree
 
 
-def export_stories(zip_path, cuts_raw, stories_raw):
+def export_stories(zip_path, cuts_raw, stories_raw, sequence_raw=None):
     """Master FCPXML split by stories: one <project> per story + a Scrap project of the
     unclaimed remainder. Writes ONLY the fcpxml (transcripts are a separate export)."""
     zp, entry, tree = _parse_master_tree(zip_path)
-    results = apply_stories(tree, entry, cuts_raw, stories_raw)
+    results = apply_stories(tree, entry, cuts_raw, stories_raw, sequence_raw)
 
     # Land the story projects in their OWN event, distinctly named. FCP merges imports into
     # an existing same-named event, so keeping the generators' 'Auto-Editor Media Group'
@@ -858,7 +1071,7 @@ def export_stories(zip_path, cuts_raw, stories_raw):
     }
 
 
-def export_transcripts(zip_path, cuts_raw, stories_raw):
+def export_transcripts(zip_path, cuts_raw, stories_raw, sequence_raw=None):
     """Per-story Content Studio transcript files ONLY (no fcpxml). The transcript sidecar is
     REQUIRED — exporting transcripts without one is a caller error, not a silent no-op."""
     zp, entry, tree = _parse_master_tree(zip_path)
@@ -872,6 +1085,10 @@ def export_transcripts(zip_path, cuts_raw, stories_raw):
 
     cuts = _validate_cuts(cuts_raw, frame_seconds, total_declared, allow_empty=True)
     stories = _validate_stories(stories_raw, frame_seconds, total_declared)
+    # The transcript must be rebased by the SAME order the fcpxml uses, or the words would
+    # describe a timeline that no longer exists.
+    spans = (None if sequence_raw is None
+             else _validate_sequence(sequence_raw, cuts, frame_seconds, total_declared))
     global_cuts = [(cs, ce) for (_sf, _ef, cs, ce) in cuts]
 
     tx_dir = zp.parent / f"{_session_name(zip_path)}_stories_transcripts"
@@ -881,8 +1098,12 @@ def export_transcripts(zip_path, cuts_raw, stories_raw):
         result = {'number': story['number'], 'title': story['title'], 'slug': story['slug'],
                   'emitted': bool(kept)}
         if kept:
-            _collapse, total = _make_collapse(kept)
-            doc = _build_story_transcript(story, kept, total, sidecar, speaker_map)
+            # Same division as the fcpxml: a kept interval cut by a span boundary becomes two,
+            # each rebased by its own shift, so the words follow the picture across the seam.
+            order = _order_kept(kept, spans) if spans else None
+            divided = sorted(order) if order else kept
+            _cum, total = _cumulative_offsets(divided, order)
+            doc = _build_story_transcript(story, divided, total, sidecar, speaker_map, order)
             tx_dir.mkdir(exist_ok=True)
             tx_path = tx_dir / f"{story['number']:02d}-{story['slug']}.json"
             tmp = tx_path.with_suffix('.json.tmp')
@@ -912,7 +1133,7 @@ def export_transcripts(zip_path, cuts_raw, stories_raw):
     }
 
 
-def export(zip_path, cuts_raw):
+def export(zip_path, cuts_raw, sequence_raw=None):
     zp = Path(zip_path)
     if not zp.is_file():
         raise ManifestError(f"zip not found: {zip_path}")
@@ -928,7 +1149,12 @@ def export(zip_path, cuts_raw):
             except ET.ParseError as e:
                 raise ManifestError(f"{entry}: XML parse error: {e}")
 
-    new_total, cuts_applied = apply_cuts(tree, entry, cuts_raw)
+    # No sequence -> the historical in-place ripple, untouched. A sequence needs the survivors
+    # placed at arbitrary offsets, which only the collapse path can do.
+    if sequence_raw is None:
+        new_total, cuts_applied = apply_cuts(tree, entry, cuts_raw)
+    else:
+        new_total, cuts_applied = apply_sequence(tree, entry, cuts_raw, sequence_raw)
 
     out_path = zp.parent / f"{_session_name(zip_path)} master edited.fcpxml"
     if out_path.exists():
@@ -946,10 +1172,13 @@ def export(zip_path, cuts_raw):
 
 
 def _read_payload_from_stdin():
-    """Parse the stdin JSON. Returns (cuts, stories, output). stories is None on the plain
-    cut-export path; when present, 'output' must name what to produce ('fcpxml' — the
+    """Parse the stdin JSON. Returns (cuts, stories, output, sequence). stories is None on the
+    plain cut-export path; when present, 'output' must name what to produce ('fcpxml' — the
     story-split master project, or 'transcripts' — Content Studio files only). Requiring the
-    caller to say which (no default) keeps the contract unambiguous."""
+    caller to say which (no default) keeps the contract unambiguous.
+
+    'sequence' is optional and stays None when absent — that None is what preserves the
+    historical export path byte for byte for every caller that never sends one."""
     raw = sys.stdin.read()
     if not raw.strip():
         raise ManifestError("no JSON received on stdin (expected {\"cuts\": [...]})")
@@ -961,8 +1190,11 @@ def _read_payload_from_stdin():
         raise ManifestError("stdin JSON must be an object with a 'cuts' array")
     stories = payload.get('stories')
     output = payload.get('output')
+    sequence = payload.get('sequence')
     if stories is not None and not isinstance(stories, list):
         raise ManifestError("stdin 'stories', when present, must be an array")
+    if sequence is not None and not isinstance(sequence, list):
+        raise ManifestError("stdin 'sequence', when present, must be an array of {start, end}")
     if stories:
         if output not in ('fcpxml', 'transcripts'):
             raise ManifestError(
@@ -970,7 +1202,7 @@ def _read_payload_from_stdin():
                 f"(got {output!r})")
     elif output is not None:
         raise ManifestError("'output' is only meaningful together with a 'stories' array")
-    return payload['cuts'], stories, output
+    return payload['cuts'], stories, output, sequence
 
 
 def main(argv=None):
@@ -981,13 +1213,13 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     try:
-        cuts_raw, stories_raw, output = _read_payload_from_stdin()
+        cuts_raw, stories_raw, output, sequence_raw = _read_payload_from_stdin()
         if stories_raw and output == 'transcripts':
-            result = export_transcripts(args.zip_path, cuts_raw, stories_raw)
+            result = export_transcripts(args.zip_path, cuts_raw, stories_raw, sequence_raw)
         elif stories_raw:
-            result = export_stories(args.zip_path, cuts_raw, stories_raw)
+            result = export_stories(args.zip_path, cuts_raw, stories_raw, sequence_raw)
         else:
-            result = export(args.zip_path, cuts_raw)
+            result = export(args.zip_path, cuts_raw, sequence_raw)
     except ManifestError as e:
         sys.stdout.write(json.dumps({'type': 'error', 'message': str(e)}) + '\n')
         sys.stdout.flush()

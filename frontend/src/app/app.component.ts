@@ -59,6 +59,14 @@ export class AppComponent implements OnInit {
     if (this.electronService.isElectron()) {
       this.appVersion = await this.electronService.getAppVersion();
 
+      // "Send to Titles" from the editor window: the main process focuses this window and
+      // pushes the subject list. Route to the Metadata tab (which absorbed the Titles page)
+      // so the user lands where they asked to go — the tab itself pulls the payload, cached
+      // in ElectronService, so there is no ordering race.
+      this.electronService.getTitleSubjectsHandoff().subscribe(() => {
+        if (!this.isChromeless) this.router.navigate(['/metadata']);
+      });
+
       // Listen for dependency status updates
       (window as any).electron?.onDependencyStatus?.((status: any) => {
         console.log('[Dependency Status]', status);

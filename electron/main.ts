@@ -6,6 +6,7 @@ import { WindowService } from './services/window-service';
 import { PythonService } from './services/python-service';
 import { DependencyService } from './services/dependency-service';
 import { setupIpcHandlers } from './ipc/ipc-handlers';
+import * as ollamaService from './services/ollama-service';
 
 /**
  * Main application entry point
@@ -145,13 +146,50 @@ app.on('window-all-closed', () => {
   }
 });
 
-// Cleanup before quitting
-app.on('before-quit', () => {
-  log.info('Application is quitting...');
+/**
+ * Quit cleanup. An LLM left resident is 9-20 GB of the user's memory held by an app that is no
+ * longer running, so the model is ALWAYS evicted on the way out — normal quit, window close, or a
+ * termination signal.
+ *
+ * The eviction is async, so the first 'before-quit' is deferred once to let it finish. It is
+ * bounded twice over (a 3 s HTTP timeout inside, a 4 s race here) and `quitting` guarantees the
+ * deferral happens at most once: a hung or absent Ollama can slow the quit by a few seconds, never
+ * block it.
+ */
+let quitting = false;
+
+async function shutdownCleanup(): Promise<void> {
   if (pythonService) {
     pythonService.killAllProcesses();
   }
+  try {
+    await Promise.race([
+      ollamaService.unloadLastUsed(),
+      new Promise<void>(resolve => setTimeout(resolve, 4000)),
+    ]);
+  } catch (err) {
+    log.warn('Ollama unload on quit failed:', err);
+  }
+}
+
+app.on('before-quit', (event) => {
+  if (quitting) return;          // second pass — let the quit proceed
+  quitting = true;
+  log.info('Application is quitting...');
+  event.preventDefault();
+  void shutdownCleanup().finally(() => app.quit());
 });
+
+// Termination signals bypass 'before-quit' entirely, so they get their own path. app.quit() then
+// runs the handler above, which is already past its guard and lets the quit through.
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, () => {
+    log.info(`Received ${sig} — cleaning up before exit`);
+    if (quitting) return;
+    quitting = true;
+    void shutdownCleanup().finally(() => app.quit());
+  });
+}
 
 // Handle uncaught exceptions
 process.on('uncaughtException', (error) => {

@@ -174,6 +174,34 @@
   }
 }
 
+/* Story right-click menu. Fixed-positioned at the cursor so one menu serves both the story list
+   and the timeline ribbon, which live in different scroll containers. */
+.story-ctx {
+  position: fixed;
+  z-index: 60;
+  min-width: 170px;
+  background: #2c2c30;
+  border: 1px solid #0d0d0e;
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+
+  button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    font-size: 12px;
+    color: #e2e2e6;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 10px;
+    cursor: pointer;
+    &:hover:not(:disabled) { background: #3a7bd0; color: #fff; }
+    &:disabled { opacity: 0.4; cursor: default; }
+  }
+}
+
 /* Invisible full-window backdrop that captures an outside click to close the File menu. */
 .menu-backdrop {
   position: fixed;
@@ -236,17 +264,41 @@
       cursor: pointer;
       &:hover { background: #34343a; color: #fff; }
     }
-    .story-analyze {
+    /* Analyze and Merge share a shape; only the emphasis differs — Merge is a repair, not the
+       primary action, so it stays quiet. */
+    .story-analyze, .story-merge {
       flex: 0 0 auto;
       font-size: 11px;
       font-weight: 600;
-      color: #fff;
-      background: #3a7bd0;
-      border: 1px solid #2b5ea0;
       border-radius: 4px;
       padding: 4px 10px;
       cursor: pointer;
+      &:disabled { opacity: 0.45; cursor: default; }
+    }
+    .story-analyze {
+      color: #fff;
+      background: #3a7bd0;
+      border: 1px solid #2b5ea0;
       &:hover:not(:disabled) { background: #4589e0; }
+    }
+    .story-merge {
+      color: #c4c4ca;
+      background: #2b2b30;
+      border: 1px solid #3a3a40;
+      &:hover:not(:disabled) { background: #34343a; color: #fff; }
+    }
+    /* Hand-off to the main window's Titles tab — same quiet weight as Merge. */
+    .story-titles {
+      flex: 0 0 auto;
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 4px;
+      padding: 4px 10px;
+      cursor: pointer;
+      color: #c4c4ca;
+      background: #2b2b30;
+      border: 1px solid #3a3a40;
+      &:hover:not(:disabled) { background: #34343a; color: #fff; }
       &:disabled { opacity: 0.45; cursor: default; }
     }
   }
@@ -271,6 +323,15 @@
       background: #1b2740;
       box-shadow: inset 2px 0 0 #4a9eff;
     }
+    /* ⌘-picked for merging. An outline, not a box-shadow, so it stacks with the active/selected
+       left rails instead of replacing one — a story can be all three at once. */
+    &.merge-picked {
+      outline: 2px solid #4a9eff;
+      outline-offset: -2px;
+      background: #1b2740;
+    }
+    /* The row being dragged fades so the insertion line is what the eye follows. */
+    &.dragging { opacity: 0.4; }
 
     /* Color notch — clickable, selects the whole story. */
     .story-swatch {
@@ -282,7 +343,7 @@
       &:hover { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25); }
     }
 
-    /* Sequential number — a plain label now (no longer editable). */
+    /* Sequential number — also the reorder handle, since the number IS the export sequence. */
     .story-num {
       flex: 0 0 auto;
       width: 20px;
@@ -291,6 +352,9 @@
       font-weight: 600;
       font-variant-numeric: tabular-nums;
       color: #9a9aa2;
+      cursor: grab;
+      &:active { cursor: grabbing; }
+      &:hover { color: #e2e2e6; }
     }
 
     /* Inline-editable title keeps the dark field look. */
@@ -316,7 +380,28 @@
       white-space: nowrap;
     }
 
-    .story-split {
+    /* Chapter-marker count. Deliberately understated — it reports state, it does not invite
+       action. Borrows .story-empty's badge shape; only the palette differs. */
+    .story-chapters, .story-empty {
+      flex: 0 0 auto;
+      font-size: 9.5px;
+      font-weight: 600;
+      border-radius: 3px;
+      padding: 1px 5px;
+    }
+    .story-chapters { color: #7f9ec4; background: #24303c; }
+    /* Stale (the story's regions moved, or the markers came from the whole-recording pass) and
+       absent. Both are re-derived on demand, so they drain toward the row's own muted grey rather
+       than warning in a colour that would read as broken. */
+    .story-chapters.stale { color: #8a8a92; background: #2b2b30; }
+    .story-chapters.missing { color: #6d6d75; background: transparent; padding-inline: 2px; }
+    /* Approximate chapter starts. The one badge here that IS a warning — it reports precision the
+       user has already lost and cannot see anywhere else — so it is the only one given a colour. */
+    .story-chapters.approx { color: #d4a24c; background: #3a2f1c; }
+
+
+    /* Split and "→ Titles" (T) share the quiet per-row button shape. */
+    .story-split, .story-titles {
       flex: 0 0 auto;
       font-size: 10px;
       font-weight: 600;
@@ -331,14 +416,9 @@
     }
 
     .story-empty {
-      flex: 0 0 auto;
-      font-size: 9.5px;
-      font-weight: 600;
       text-transform: uppercase;
       color: #201800;
       background: #d8a24a;
-      border-radius: 3px;
-      padding: 1px 5px;
     }
 
     .story-del {
@@ -354,6 +434,18 @@
       &:hover { color: #e08a7a; }
     }
   }
+
+  /* Insertion indicator while reordering. A separate element between rows rather than a border on
+     one, so it cannot collide with the active/selected/picked rails a row may already carry. */
+  .story-drop-line {
+    height: 2px;
+    margin: 1px 4px;
+    border-radius: 1px;
+    background: #4a9eff;
+  }
+
+  /* Catches a drop below the last row (moving a story to the end). */
+  .story-drop-tail { min-height: 14px; }
 }
 
 /* Export result modal: dim backdrop + centered FCP-dark card (success or verbatim error). */
@@ -1331,9 +1423,27 @@
       color: #dcdce0;
     }
     .activity-task-pct {
+      /* Pinned to the right rather than left to the row's space-between: on the analysis task a
+         third child (the stop button) follows, which would otherwise strand the percentage in the
+         middle of the row instead of at the end of its bar. */
+      margin-left: auto;
       font-size: 11px;
       font-variant-numeric: tabular-nums;
       color: #8f8f97;
+    }
+    /* Stop button on a running analysis. Sits after the percentage; quiet until hovered, since a
+       run is normally left alone — but always present, because a run is 25 minutes on a long
+       recording and the user must be able to take the machine back. */
+    .activity-stop {
+      margin-left: 6px;
+      padding: 0 5px;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: #82828a;
+      font-size: 14px;
+      cursor: pointer;
+      &:hover { background: #5a2b2b; color: #ff9c9c; }
     }
     .activity-task-sub {
       font-size: 11px;
@@ -1368,6 +1478,44 @@
     color: #6c6c72;
     text-align: center;
     padding: 6px 0 2px;
+  }
+
+  /* Queued story-analysis rows, under the running entry inside the same .activity-task. Flat by
+     design — no bar, no stop button: they are what is coming, and only the running story is
+     actionable (its × stops the whole run). Dimmer than the running row so the eye lands on top. */
+  .activity-wait {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 11.5px;
+    color: #74747c;
+
+    .activity-wait-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .activity-wait-tag {
+      flex: none;
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #5c5c63;
+    }
+    /* The tail count when the queue is longer than the dock can list. */
+    &.more {
+      justify-content: flex-start;
+      font-style: italic;
+      color: #5c5c63;
+    }
+  }
+
+  /* Hairline between the running entry's sub-line and the queue waiting behind it. */
+  .activity-task-sub + .activity-wait {
+    margin-top: 4px;
+    padding-top: 7px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
   }
 }
 
@@ -1478,6 +1626,21 @@
       }
     }
     .split-progress-pct { font-size: 11px; color: #7a7a80; text-align: center; font-variant-numeric: tabular-nums; }
+
+    /* Stop for a chapter detection — spelled out rather than an ×, because this dialog already has
+       an × that means "close". */
+    .split-stop {
+      align-self: center;
+      margin-top: 10px;
+      padding: 4px 14px;
+      border: 1px solid #5a3030;
+      border-radius: 5px;
+      background: #2a1e1e;
+      color: #ff9c9c;
+      font-size: 11.5px;
+      cursor: pointer;
+      &:hover { background: #3a2626; }
+    }
   }
 
   .split-body {

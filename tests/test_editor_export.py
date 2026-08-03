@@ -31,8 +31,9 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from cli.editor_manifest import build_manifest, ManifestError  # noqa: E402
 from cli.editor_export import (  # noqa: E402
-    export, apply_cuts, subtract_cuts, make_ripple, format_time,
+    export, export_stories, apply_cuts, subtract_cuts, make_ripple, format_time,
 )
+from core.xml_utils import FCPXMLUtils  # noqa: E402
 import xml.etree.ElementTree as ET  # noqa: E402
 
 FRAME = Fraction(1001, 30000)          # 29.97 NDF frame duration
@@ -158,6 +159,30 @@ def _segs_to_frames(segments):
     return out
 
 
+def _expected_after_sequence(orig_segments, spans_frames):
+    """Reference model for a REORDERED export: each span lands at the summed length of the
+    spans BEFORE it in playback order, and every original segment contributes the part of
+    itself that falls inside each span. Built from frame arithmetic only — it never touches
+    the export's own collapse machinery, so agreement is real evidence."""
+    cum, acc = {}, 0
+    for sp in spans_frames:
+        cum[sp] = acc
+        acc += sp[1] - sp[0]
+    expected = set()
+    for s in orig_segments:
+        ts = round(s['timelineStart'] / FRAME_F)
+        dur = round(s['duration'] / FRAME_F)
+        src = round(s['sourceStart'] / FRAME_F)
+        a0, a1 = ts, ts + dur
+        for (ss, se) in spans_frames:
+            x, y = max(a0, ss), min(a1, se)
+            if x >= y:
+                continue
+            expected.add((s['trackId'], cum[(ss, se)] + (x - ss), y - x,
+                          src + (x - a0), s['file'], s['label']))
+    return expected
+
+
 def _expected_after_cuts(orig_segments, cuts_frames):
     cuts = [(sf, ef) for (sf, ef) in cuts_frames]
     expected = set()
@@ -251,7 +276,7 @@ class EditorExportTest(unittest.TestCase):
         ]
         orig, edited = self._assert_export_matches_ripple(parts, 600, [(150, 250)])
         # Each part lost 50 frames -> new sequence durations 150 each, total 300.
-        edited_path = Path(self.tmp) / 'Session_HYBRID_edited.fcpxml'
+        edited_path = Path(self.tmp) / 'Session master edited.fcpxml'
         root = ET.parse(edited_path).getroot()
         durs = [Fraction(*_parse_ts(seq.get('duration'))) / FRAME
                 for seq in root.findall('.//project/sequence')]
@@ -314,6 +339,233 @@ class EditorExportTest(unittest.TestCase):
         pieces = split_spine_element_ext(parent, cuts, ripple)
         self.assertEqual(len(pieces), 1)             # survivor [50,100)
         self.assertEqual(pieces[0].findall('ref-clip'), [])  # short child dropped
+
+    # -- reorder: the OPTIONAL 'sequence' payload ---------------------------
+    def _assert_export_matches_sequence(self, parts, compound_frames, cuts_frames, spans_frames):
+        """Property test for a reorder: the edited file, re-flattened by the manifest builder,
+        must equal the original segments cut apart at the span boundaries and re-laid in
+        playback order. Returns (orig_manifest, edited_manifest, spine)."""
+        zip_path = self._build(parts, compound_frames)
+        orig = build_manifest(str(zip_path))
+
+        cuts = [{'startFrame': sf, 'endFrame': ef} for (sf, ef) in cuts_frames]
+        result = export(str(zip_path), cuts, [_span(a, b) for (a, b) in spans_frames])
+        self.assertEqual(result['type'], 'export_result')
+        edited_path = Path(result['path'])
+        self.assertTrue(edited_path.is_file())
+
+        edited = build_manifest(str(self._rezip_edited(edited_path)))
+        self.assertEqual(_segs_to_frames(edited['segments']),
+                         _expected_after_sequence(orig['segments'], spans_frames),
+                         "reordered segments must equal the survivors re-laid in playback order")
+
+        # Length is a property of WHICH footage survives, never of its order.
+        total_kept = sum(b - a for (a, b) in spans_frames)
+        self.assertEqual(round(edited['timelineDuration'] / FRAME_F), total_kept)
+
+        # ONE project replaces the parts, and its spine is contiguous and ascending.
+        root = ET.parse(edited_path).getroot()
+        projects = root.findall('.//project')
+        self.assertEqual(len(projects), 1, "a reorder collapses every part into one project")
+        seq = projects[0].find('sequence')
+        self.assertEqual(Fraction(*_parse_ts(seq.get('duration'))), total_kept * FRAME)
+        # Inherited sequence attributes keep the file importable.
+        self.assertEqual(seq.get('format'), 'r1')
+        self.assertEqual(seq.get('tcFormat'), 'NDF')
+        spine = seq.find('spine')
+        self.assertEqual(_spine_layout(spine), _contiguous_layout(spine),
+                         "spine offsets must be ascending, gap-free and non-overlapping")
+        return orig, edited, spine
+
+    def test_absent_sequence_is_the_untouched_ripple_path(self):
+        # Regression guard for the whole feature: with no 'sequence' the export must still be
+        # apply_cuts' in-place ripple, byte for byte — same parts, same names, same bytes.
+        parts = [[(0, 100, 0), (100, 100, 100)], [(0, 100, 300), (100, 100, 400)]]
+        zip_path = self._build(parts, 600)
+        cuts = [{'startFrame': 150, 'endFrame': 250}]
+        got = Path(export(str(zip_path), cuts)['path']).read_bytes()
+
+        with zipfile.ZipFile(zip_path) as zf:
+            tree = ET.parse(zf.open('Session/Session_HYBRID.fcpxml'))
+        apply_cuts(tree, 'reference', cuts)
+        ref = Path(self.tmp) / 'reference.fcpxml'
+        FCPXMLUtils.save_fcpxml(tree, str(ref))
+        self.assertEqual(got, ref.read_bytes())
+        self.assertEqual(got, Path(export(str(zip_path), cuts, None)['path']).read_bytes())
+        self.assertEqual(len(ET.parse(ref).getroot().findall('.//project')), 2)
+
+    def test_reverse_two_spans(self):
+        # Cut [100,150) leaves survivors [0,100) and [150,300); play the tail first.
+        _orig, _edited, spine = self._assert_export_matches_sequence(
+            self._PARTS, self._COMPOUND, [(100, 150)], [(150, 300), (0, 100)])
+        # [150,300) is 150f of footage (the second half of clip B + clip C), then [0,100).
+        self.assertEqual(_spine_layout(spine),
+                         [(0, 50), (50, 100), (150, 100)])
+
+    def test_identity_sequence_matches_the_cut_export(self):
+        # The survivors in SOURCE order: a different code path (collapse, one project) that
+        # must land exactly the footage the ripple path lands.
+        zip_path = self._build(self._PARTS, self._COMPOUND)
+        orig = build_manifest(str(zip_path))
+        _o, edited, spine = self._assert_export_matches_sequence(
+            self._PARTS, self._COMPOUND, [(100, 150)], [(0, 100), (150, 300)])
+        self.assertEqual(_segs_to_frames(edited['segments']),
+                         _expected_after_cuts(orig['segments'], [(100, 150)]))
+        self.assertEqual(_spine_layout(spine), [(0, 100), (100, 50), (150, 100)])
+
+    def test_drag_second_half_in_front_with_no_cuts(self):
+        # The headline case: no cuts at all, the user drags the back half of the timeline in
+        # front of the front half. The split at 150 is a clip edge, not a cut boundary, so
+        # nothing in the cut list marks it — the sequence alone says where to divide.
+        _o, edited, spine = self._assert_export_matches_sequence(
+            self._PARTS, self._COMPOUND, [], [(150, 300), (0, 150)])
+        self.assertEqual(_spine_layout(spine),
+                         [(0, 50), (50, 100), (150, 100), (250, 50)])
+        self.assertEqual(_start_frac(list(spine)[0]), 150 * FRAME)   # tail half plays first
+        self.assertEqual(round(edited['timelineDuration'] / FRAME_F), 300)
+
+    def test_split_at_a_non_cut_boundary_with_cuts_elsewhere(self):
+        # One cut at the head; the survivor run [20,300) is then divided at 150 — a boundary
+        # the cut list knows nothing about — and the halves are swapped.
+        _o, edited, spine = self._assert_export_matches_sequence(
+            self._PARTS, self._COMPOUND, [(0, 20)], [(150, 300), (20, 150)])
+        self.assertEqual(_spine_layout(spine), [(0, 50), (50, 100), (150, 80), (230, 50)])
+        self.assertEqual(round(edited['timelineDuration'] / FRAME_F), 280)
+
+    def test_three_way_split_of_one_survivor_run_permuted(self):
+        # No cuts: one survivor run divided in three and permuted C, B, A. Both boundaries
+        # (50, 250) fall MID-CLIP, where nothing in the source already splits the spine — so
+        # only the sequence can put them there. No two spans are adjacent in the source AND
+        # consecutive in playback, so all three divisions really have to be made.
+        _o, edited, spine = self._assert_export_matches_sequence(
+            self._PARTS, self._COMPOUND, [], [(250, 300), (50, 250), (0, 50)])
+        self.assertEqual(_spine_layout(spine),
+                         [(0, 50), (50, 50), (100, 100), (200, 50), (250, 50)])
+        self.assertEqual([_start_frac(el) for el in spine],
+                         [250 * FRAME, 50 * FRAME, 100 * FRAME, 200 * FRAME, Fraction(0)])
+        self.assertEqual(round(edited['timelineDuration'] / FRAME_F), 300)
+
+    def test_spans_left_in_order_are_not_split(self):
+        # Dividing the run at 150 but leaving the halves in place is a no-op edit: the export
+        # must not introduce a cut point the order does not need. Three clip pieces, not four.
+        zip_path = self._build(self._PARTS, self._COMPOUND)
+        result = export(str(zip_path), [], [_span(0, 150), _span(150, 300)])
+        spine = ET.parse(result['path']).getroot().find('.//project/sequence/spine')
+        self.assertEqual(_spine_layout(spine), [(0, 100), (100, 100), (200, 100)])
+        self.assertAlmostEqual(result['newDurationSeconds'], float(300 * FRAME), places=9)
+
+    def test_permutation_across_a_part_seam(self):
+        # Two 200f parts (400f concatenated). The cut leaves [0,50) and [100,400) — the second
+        # span straddles the part seam at 200 — and the reorder puts that straddling span first.
+        parts = [
+            [(0, 100, 0), (100, 100, 100)],       # part 1: declared 200
+            [(0, 100, 300), (100, 100, 400)],     # part 2: declared 200
+        ]
+        _o, edited, spine = self._assert_export_matches_sequence(
+            parts, 600, [(50, 100)], [(100, 400), (0, 50)])
+        self.assertEqual(round(edited['timelineDuration'] / FRAME_F), 350)
+        # part1's [100,200) then all of part2, then the head span [0,50).
+        self.assertEqual(_spine_layout(spine),
+                         [(0, 100), (100, 100), (200, 100), (300, 50)])
+
+    def test_permutation_preserves_total_duration(self):
+        parts, cuts = self._PARTS, [(100, 150)]
+        spans = [(0, 100), (150, 300)]
+        for order in (spans, [spans[1], spans[0]]):
+            zip_path = self._build(parts, self._COMPOUND)
+            r = export(str(zip_path), [{'startFrame': sf, 'endFrame': ef} for (sf, ef) in cuts],
+                       [_span(a, b) for (a, b) in order])
+            self.assertAlmostEqual(r['newDurationSeconds'], float(250 * FRAME), places=9,
+                                   msg="reordering moves footage; it never changes length")
+
+    def test_per_story_export_honors_the_order(self):
+        # Story A owns [0,50) and [200,250) — one piece in each survivor span. With the spans
+        # reversed, A's own timeline must play its [200,250) piece first.
+        zip_path = self._build(self._PARTS, self._COMPOUND)
+        stories = [{'number': 1, 'title': 'Story A',
+                    'regions': [{'start': _s(0), 'end': _s(50)},
+                                {'start': _s(200), 'end': _s(250)}]}]
+        result = export_stories(
+            str(zip_path), [{'startFrame': 100, 'endFrame': 150}], stories,
+            [_span(150, 300), _span(0, 100)])
+        self.assertEqual(result['type'], 'story_export_result')
+        root = ET.parse(result['path']).getroot()
+        proj = [p for p in root.findall('.//project') if p.get('name') == 'Story A']
+        self.assertEqual(len(proj), 1)
+        spine = proj[0].find('sequence/spine')
+        self.assertEqual(_spine_layout(spine), [(0, 50), (50, 50)])
+        # The piece now at offset 0 is the one sourced from frame 200.
+        self.assertEqual(_start_frac(list(spine)[0]), 200 * FRAME)
+
+    def test_per_story_kept_interval_divided_by_a_span_boundary(self):
+        # No cuts, spans swapped at 150. Story A owns [100,200), which STRADDLES that
+        # boundary: its two halves must be divided and swapped inside the story's own
+        # timeline too, or the far half would ride along with the near half.
+        zip_path = self._build(self._PARTS, self._COMPOUND)
+        stories = [{'number': 1, 'title': 'Story A',
+                    'regions': [{'start': _s(100), 'end': _s(200)}]}]
+        result = export_stories(str(zip_path), [], stories, [_span(150, 300), _span(0, 150)])
+        root = ET.parse(result['path']).getroot()
+        spine = [p for p in root.findall('.//project')
+                 if p.get('name') == 'Story A'][0].find('sequence/spine')
+        self.assertEqual(_spine_layout(spine), [(0, 50), (50, 50)])
+        self.assertEqual([_start_frac(el) for el in spine], [150 * FRAME, 100 * FRAME])
+        self.assertAlmostEqual([r for r in result['stories'] if r['number'] == 1][0]
+                               ['durationSeconds'], float(100 * FRAME), places=9)
+
+    # -- reorder rejection (loud, whole export refused) ----------------------
+    def _expect_sequence_error(self, cuts, sequence, needle):
+        zip_path = self._build(self._PARTS, self._COMPOUND)
+        with self.assertRaises(ManifestError) as ctx:
+            export(str(zip_path), cuts, sequence)
+        self.assertIn(needle, str(ctx.exception))
+
+    def test_reject_unaligned_sequence_span(self):
+        self._expect_sequence_error(
+            [], [{'start': _s(0) + FRAME_F / 3, 'end': _s(300)}], 'not frame-aligned')
+
+    def test_reject_sequence_span_crossing_a_cut(self):
+        # [0,150) swallows the cut at [100,150): footage the user removed would come back.
+        self._expect_sequence_error(
+            [{'startFrame': 100, 'endFrame': 150}],
+            [_span(0, 150), _span(150, 300)], 'partition')
+
+    def test_reject_sequence_with_a_gap(self):
+        # [100,200) is claimed by no span and was never cut — it would vanish silently.
+        self._expect_sequence_error([], [_span(0, 100), _span(200, 300)], 'partition')
+
+    def test_reject_overlapping_sequence_spans(self):
+        self._expect_sequence_error([], [_span(0, 200), _span(100, 300)], 'overlap')
+
+    def test_reject_sequence_span_out_of_range(self):
+        self._expect_sequence_error([], [_span(0, 400)], 'outside the concatenated timeline')
+
+    def test_reject_reversed_sequence_span(self):
+        self._expect_sequence_error([], [_span(300, 0)], 'empty or reversed')
+
+    def test_reject_empty_sequence(self):
+        self._expect_sequence_error([], [], 'empty sequence')
+
+    def test_cli_accepts_sequence(self):
+        zip_path = self._build(self._PARTS, self._COMPOUND)
+        proc = subprocess.run(
+            [sys.executable, str(CLI), '--zip', str(zip_path)],
+            input=json.dumps({'cuts': [{'startFrame': 100, 'endFrame': 150}],
+                              'sequence': [_span(150, 300), _span(0, 100)]}),
+            capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, f"stderr:\n{proc.stderr}")
+        payload = json.loads([ln for ln in proc.stdout.splitlines() if ln.strip()][0])
+        self.assertEqual(payload['type'], 'export_result')
+        self.assertAlmostEqual(payload['newDurationSeconds'], float(250 * FRAME), places=9)
+
+    def test_cli_rejects_non_array_sequence(self):
+        zip_path = self._build(self._PARTS, self._COMPOUND)
+        proc = subprocess.run(
+            [sys.executable, str(CLI), '--zip', str(zip_path)],
+            input=json.dumps({'cuts': [], 'sequence': {'start': 0, 'end': 1}}),
+            capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn('must be an array', json.loads(proc.stdout.splitlines()[0])['message'])
 
     # -- input rejection (loud, whole export refused) -----------------------
     def _expect_error(self, cuts, needle):
@@ -399,6 +651,31 @@ def _parse_ts(s):
 def _start_frac(el):
     v = el.get('start')
     return Fraction(*_parse_ts(v)) if v else Fraction(0)
+
+
+def _s(frames):
+    """Frames -> the float seconds the frontend sends in a 'sequence' span."""
+    return float(frames * FRAME)
+
+
+def _span(a, b):
+    return {'start': _s(a), 'end': _s(b)}
+
+
+def _spine_layout(spine):
+    """[(offset, duration)] in frames for every spine child, in document order."""
+    return [(int(Fraction(*_parse_ts(el.get('offset'))) / FRAME),
+             int(Fraction(*_parse_ts(el.get('duration'))) / FRAME)) for el in spine]
+
+
+def _contiguous_layout(spine):
+    """What the layout WOULD be if the same durations were laid end to end from 0 — equal to
+    the real layout exactly when the spine ascends with no gap and no overlap."""
+    out, cursor = [], 0
+    for (_off, dur) in _spine_layout(spine):
+        out.append((cursor, dur))
+        cursor += dur
+    return out
 
 
 def split_spine_element_ext(el, cuts, ripple):
