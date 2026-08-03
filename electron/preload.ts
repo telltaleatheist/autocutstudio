@@ -100,6 +100,37 @@ export interface ElectronAPI {
   }) => Promise<{ titles: string[]; subjects: string[]; model: string }>;
   cancelTitles: () => Promise<{ stopped: boolean }>;
   unloadTitleModel: (payload?: { model?: string; host?: string }) => Promise<{ ok: boolean }>;
+  /**
+   * Persist one finished titling run into the metadata report store, so the Reports page
+   * lists it. The shape is the store's — `items[]`, `_title`, `titles[]` — because the
+   * Reports page reads it unchanged; see services/metadata/title-report.service.ts, whose
+   * TitleReport this MIRRORS (it cannot be imported: the preload tsconfig compiles this file
+   * alone). `saved: false` means no output directory was configured, which is not an error:
+   * the titles are on screen either way.
+   */
+  saveTitleReport: (report: {
+    job_id: string;
+    job_name: string;
+    created_at: string;
+    txt_folder: string;
+    txt_files: string[];
+    status: string;
+    kind: 'story-titles';
+    generator: string;
+    items: Array<{
+      _title: string;
+      titles: string[];
+      generator: string;
+      kind: 'story-titles';
+      model: string;
+      format: 'normal' | 'livestream';
+      target: string;
+      subjects: string[];
+      titleBand: { min: number; max: number };
+      outOfBand: number[];
+      generatedAt: string;
+    }>;
+  }) => Promise<{ saved: true; path: string } | { saved: false; reason: string }>;
   onTitlesProgress: (callback: (p: { done: number; total: number; title?: string }) => void) => void;
   removeTitlesProgressListener: () => void;
   // Editor → Titles handoff (cross-window): the editor pushes, the main window receives.
@@ -269,6 +300,7 @@ const electronAPI: ElectronAPI = {
   generateTitles: (payload) => ipcRenderer.invoke('titles:generate', payload),
   cancelTitles: () => ipcRenderer.invoke('titles:cancel'),
   unloadTitleModel: (payload) => ipcRenderer.invoke('titles:unload', payload),
+  saveTitleReport: (report) => ipcRenderer.invoke('titles:save-report', report),
   onTitlesProgress: (callback) => {
     ipcRenderer.on('titles:progress', (_event, p) => callback(p));
   },

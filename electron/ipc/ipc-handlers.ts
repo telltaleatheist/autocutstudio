@@ -22,6 +22,7 @@ import {
   TranscriptSliceCut,
 } from '../services/metadata/transcript-import.service';
 import { EpisodeSplitterService } from '../services/metadata/episode-splitter.service';
+import { saveTitleReport, TitleReport } from '../services/metadata/title-report.service';
 import type { ChapterPipelineResult } from '../services/metadata/chapter-pipeline.service';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -1964,17 +1965,29 @@ function setupMetadataHandlers(windowService: WindowService): void {
 
   // ==================== SETTINGS ====================
 
+  /**
+   * The output directory every metadata-store reader and writer must agree on: the stored
+   * setting, or the default when it has never been set.
+   *
+   * Single source of truth for that default. 'get-settings' returns it (which is what the
+   * Metadata and Reports pages read), and 'titles:save-report' writes into it — the two
+   * MUST resolve identically or a titling report would land somewhere the Reports page
+   * never looks.
+   * NOTE: must stay in sync with MetadataGeneratorService.getDefaultOutputPath() in
+   * electron/services/metadata/metadata-generator.service.ts, which fills the same gap for
+   * the generation pipeline.
+   */
+  const resolveOutputDirectory = (): string =>
+    (store as any).store.outputDirectory || path.join(os.homedir(), 'Documents', 'AutoCutStudio Output');
+
   ipcMain.handle('get-settings', async () => {
     try {
       const settings = { ...(store as any).store };
 
-      // Single source of truth for the default output directory. The frontend no
-      // longer hardcodes a fallback, so populate it here when unset. This is NOT
+      // The frontend no longer hardcodes a fallback, so populate it when unset. This is NOT
       // persisted to disk — it only fills the returned object.
-      // NOTE: must stay in sync with MetadataGeneratorService.getDefaultOutputPath()
-      // in electron/services/metadata/metadata-generator.service.ts.
       if (!settings.outputDirectory) {
-        settings.outputDirectory = path.join(os.homedir(), 'Documents', 'AutoCutStudio Output');
+        settings.outputDirectory = resolveOutputDirectory();
       }
 
       return settings;
@@ -2559,6 +2572,52 @@ function setupMetadataHandlers(windowService: WindowService): void {
   });
 
   // ==================== JOB HISTORY (persisted reports) ====================
+
+  /**
+   * Persist ONE completed titling run into the metadata report store, so a set of titles can
+   * be found again weeks later instead of living only in a queue row that a reload clears.
+   *
+   * Registered here rather than beside the other 'titles:*' channels in setupTitleHandlers
+   * because it needs THIS block's settings store — the same store 'get-settings' answers
+   * from, so the report is written to exactly the directory the Reports page reads.
+   *
+   * The record is the renderer's, verbatim: it is the only side that knows the story's name,
+   * the band its badges were drawn against, and the generation order the user saw. What this
+   * handler owns is where it lands.
+   *
+   * No output directory → { saved: false, reason: 'no-output-directory' }, NOT a throw: a
+   * titling run is deliberately allowed to proceed without one (its output is on screen), and
+   * a failed save must never read as a failed run. Note that with the default above,
+   * resolveOutputDirectory() always answers, so this branch is a guard rather than a state
+   * the app reaches today.
+   *
+   * A genuine write failure DOES throw, with the real error, so the renderer can say what
+   * went wrong.
+   */
+  ipcMain.handle('titles:save-report', async (_event, report: TitleReport) => {
+    if (!report || typeof report !== 'object') {
+      throw new Error('titles:save-report requires a report object');
+    }
+    if (!Array.isArray(report.items) || report.items.length === 0) {
+      throw new Error('titles:save-report requires a non-empty items array');
+    }
+    if (!report.job_name) {
+      throw new Error('titles:save-report requires a job_name (it names the file and the report row)');
+    }
+    if (isNaN(new Date(report.created_at).getTime())) {
+      throw new Error(`titles:save-report created_at is not a date: ${report.created_at}`);
+    }
+
+    const outputDirectory = resolveOutputDirectory();
+    if (!outputDirectory) {
+      log.warn('[Titles] No output directory configured — the titling report was not saved.');
+      return { saved: false, reason: 'no-output-directory' };
+    }
+
+    const result = saveTitleReport(outputDirectory, report);
+    log.info(`[Titles] Report saved: ${result.path}`);
+    return result;
+  });
 
   // Returns only text/subject-input jobs from the last 4 weeks.
   // Auto-prunes older job metadata files.

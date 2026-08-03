@@ -4,6 +4,7 @@ import {
   ElectronService,
   TitleFormat,
   TitleHandoff,
+  TitleReport,
   TitleTarget,
 } from '../../services/electron.service';
 import { InputItem, InputsStateService } from '../../services/inputs-state';
@@ -88,10 +89,9 @@ export class MetadataComponent implements OnInit, OnDestroy {
 
   private processingInterval: any = null;
 
+  /** Still loaded although the page no longer offers a prompt-set CHOICE: the queue rows label
+   *  each job with its set's name and icon, and that lookup needs the installed list. */
   availablePromptSets = signal<PromptSetOption[]>([]);
-  /** Set when the selected prompt set is not installed. Blocks generation rather than substituting
-   *  another set — a run in the wrong editorial voice looks like a success and is not recoverable. */
-  promptSetError = signal<string | null>(null);
 
   isDraggingOver = signal(false);
 
@@ -119,6 +119,9 @@ export class MetadataComponent implements OnInit, OnDestroy {
   private titleJobId: string | null = null;
   /** Set by Cancel, so the abort that follows is read as a stop and not reported as a failure. */
   private stopRequested = false;
+  /** "No output directory, so the titles were not saved" is a fact about the SETTING, not about
+   *  the job — said once per queue run rather than once per story. Reset at Start Queue. */
+  private titlesUnsavedNoticeShown = false;
 
   constructor(
     private electron: ElectronService,
@@ -210,20 +213,22 @@ export class MetadataComponent implements OnInit, OnDestroy {
       const sets = result.promptSets || [];
       this.availablePromptSets.set(sets);
 
-      // Check the selection against what is actually installed, and REFUSE if it is missing —
-      // never quietly substitute another set. Prompt sets are the editorial voice; silently
-      // generating a run against a different one produces plausible output in the wrong voice,
-      // which is worse than no output because nothing downstream reveals the swap. Say what is
-      // wrong, name what IS installed, and let the user choose.
+      // Check the stored selection against what is actually installed and SAY SO if it is
+      // missing — never quietly substitute another set. Prompt sets are the editorial voice;
+      // generating against a different one produces plausible output in the wrong voice, which
+      // is worse than no output because nothing downstream reveals the swap.
+      //
+      // The message names the missing set and what IS installed, but no longer says "pick one":
+      // this page has no prompt-set picker any more (the titling model needs no prompt choice),
+      // so the fix is restoring the .yml to the prompt_sets folder, not a click here.
       const current = this.inputsState.masterPromptSet();
       if (sets.length && !sets.some((ps) => ps.id === current)) {
-        this.promptSetError.set(
-          `Prompt set “${current}” is not installed. Pick one of: ` +
-          sets.map((ps) => ps.id).join(', ')
+        this.notify(
+          'error',
+          'Prompt sets',
+          `Prompt set “${current}” is not installed — installed: ${sets.map((ps) => ps.id).join(', ')}. ` +
+          `Titling jobs are unaffected; file and compilation jobs use this set.`
         );
-        this.notify('error', 'Prompt sets', this.promptSetError()!);
-      } else {
-        this.promptSetError.set(null);
       }
     } catch (err: any) {
       this.notify('error', 'Prompt sets', `Failed to load prompt sets: ${err?.message || err}`);
@@ -272,27 +277,17 @@ export class MetadataComponent implements OnInit, OnDestroy {
     this.inputsState.inputItems.set(updated);
   }
 
-  /** Master prompt set change rewrites EVERY item, compilation mode or not — the per-item
-   *  dropdowns are merely disabled in compilation mode, not ignored. */
-  onMasterPromptSetChange(promptSetId: string): void {
-    this.inputsState.masterPromptSet.set(promptSetId);
-    this.inputsState.inputItems.update((items) => items.map((item) => ({ ...item, promptSet: promptSetId })));
-  }
-
+  /**
+   * Compilation mode is about GROUPING — one job and one report from every checked item —
+   * so it survives the removal of the prompt-set dropdowns. It still stamps the master set
+   * onto every item because a compilation is a single job with a single set.
+   */
   onCompilationModeChange(isCompilation: boolean): void {
     this.inputsState.compilationMode.set(isCompilation);
     if (isCompilation) {
       const master = this.inputsState.masterPromptSet();
       this.inputsState.inputItems.update((items) => items.map((item) => ({ ...item, promptSet: master })));
     }
-  }
-
-  updateItemPromptSet(index: number, promptSetId: string): void {
-    const items = this.inputsState.inputItems();
-    if (!items[index]) return;
-    const updated = [...items];
-    updated[index] = { ...updated[index], promptSet: promptSetId };
-    this.inputsState.inputItems.set(updated);
   }
 
   removeInput(index: number): void {
@@ -546,6 +541,15 @@ export class MetadataComponent implements OnInit, OnDestroy {
 
   // ── Queue ──────────────────────────────────────────────────────────────────
 
+  /**
+   * Every item still carries a `promptSet` even though the page no longer lets anyone choose
+   * one: it is stamped with the stored master set when the item is created, and passed
+   * through to the job here. The generateMetadata path (files, transcripts, compilations)
+   * reads it, and that path is dormant only until the description adapter ships — dropping
+   * the field would quietly send those jobs with no editorial voice at all. The titling path
+   * never looks at it: the fine-tuned model needs no prompt choice, which is why the
+   * dropdowns went.
+   */
   addToQueue(): void {
     const items = this.selectedItems;
     if (items.length === 0) return;
@@ -571,6 +575,9 @@ export class MetadataComponent implements OnInit, OnDestroy {
     // Claim the guard immediately so a rapid double-click can't launch two queue processor
     // loops during the awaits below. Reset on every early-return path so the user can retry.
     this.queueStarted.set(true);
+    // A new run gets to say the "titles were not saved" notice once more: the user may well
+    // have gone and set the output directory since the last one.
+    this.titlesUnsavedNoticeShown = false;
 
     // Lock this run's target: while any pending jobs exist we transcribe them (Stage 1 when
     // "Transcribe only" is on, a full run when off). Only once there are no pending jobs
@@ -1059,6 +1066,12 @@ export class MetadataComponent implements OnInit, OnDestroy {
         'Titles ready',
         `“${job.name}” — ${titles.length} title(s) in ${processingTime.toFixed(1)}s`
       );
+
+      // Persist AFTER the row is finalized: the titles are the run's output and they are
+      // already on screen, so nothing about saving them may change whether the job counts as
+      // done. Awaited (not fired and forgotten) so a failure is reported against this job
+      // rather than landing on screen during the next one.
+      await this.saveTitleReport(job, res, format);
     } catch (err: any) {
       const processingTime = (Date.now() - startTime) / 1000;
       const cancelled = this.isStopError(err);
@@ -1080,6 +1093,84 @@ export class MetadataComponent implements OnInit, OnDestroy {
       this.titleJobId = null;
       this.stopRequested = false;
       if (opts.advanceQueue) this.processNextJob();
+    }
+  }
+
+  /**
+   * Write one finished titling run into the metadata report store, so the candidates survive
+   * the queue row (which a reload clears) and can be found in the Reports tab a month later.
+   *
+   * The record is generation order plus the band verdict, NOT the in-band-first order the row
+   * shows: display is a view, the report is the record of what the model produced.
+   *
+   * Two failure modes, both of which leave the job completed — the titles are on screen, and
+   * a lost save must not read as a lost run:
+   *   - no output directory: ONE notice per queue run, because a batch of ten stories with the
+   *     same setting unset would otherwise stack ten identical notices;
+   *   - a write that threw: a warning carrying the real message, per occurrence, because each
+   *     one is a different file that did not get written.
+   */
+  private async saveTitleReport(
+    job: QueuedJob,
+    res: { titles: string[]; subjects: string[]; model: string },
+    format: TitleFormat
+  ): Promise<void> {
+    const band = LENGTH_RANGE[format];
+    const generatedAt = new Date().toISOString();
+
+    const report: TitleReport = {
+      job_id: job.id,
+      job_name: job.name,
+      // The store's own field, and what the Reports list sorts and dates rows by.
+      created_at: generatedAt,
+      // A titling run writes no TXT and owns no folder; the viewer reads both defensively and
+      // falls back to the JSON itself for "Show in folder".
+      txt_folder: '',
+      txt_files: [],
+      status: 'completed',
+      kind: 'story-titles',
+      generator: 'headline-14b-titles',
+      items: [
+        {
+          // What the Reports list shows as the row title.
+          _title: job.name,
+          titles: res.titles,
+          generator: 'headline-14b-titles',
+          kind: 'story-titles',
+          // The model the main process actually ran, not the constant this page assumes.
+          model: res.model,
+          format,
+          target: TITLE_TARGET,
+          // The subject lines the model saw, as the main process parsed them — the input is
+          // half of what makes a saved title set re-readable.
+          subjects: res.subjects,
+          titleBand: band,
+          outOfBand: res.titles
+            .map((t, i) => (t.length < band.min || t.length > band.max ? i : -1))
+            .filter((i) => i !== -1),
+          generatedAt,
+        },
+      ],
+    };
+
+    try {
+      const result = await this.electron.saveTitleReport(report);
+      if (!result.saved) {
+        if (!this.titlesUnsavedNoticeShown) {
+          this.titlesUnsavedNoticeShown = true;
+          this.notify(
+            'warning',
+            'Titles not saved',
+            'Titles were generated but not saved — set an output directory in Settings to keep them.'
+          );
+        }
+      }
+    } catch (err: any) {
+      this.notify(
+        'warning',
+        'Titles not saved',
+        `“${job.name}” finished, but writing its report failed: ${err?.message || err}`
+      );
     }
   }
 
@@ -1349,6 +1440,26 @@ export class MetadataComponent implements OnInit, OnDestroy {
     return job.inputs[0]?.titleFormat ?? 'normal';
   }
 
+  /**
+   * The candidates in DISPLAY order: inside the trained length band first, outside after,
+   * generation order preserved within each group.
+   *
+   * This is a render-time view and nothing else. `job.titles` stays in generation order —
+   * that is the order the model produced and the order the persisted report records, and
+   * rewriting it here would destroy information the report is supposed to keep. Everything
+   * the row shows (the number, the copy click) is indexed against THIS array, so the number
+   * beside a title is always its position on screen.
+   *
+   * The band is a length check, not a quality score: the model does not rank its own output
+   * and no ranking is invented here.
+   */
+  orderedTitles(job: QueuedJob): string[] {
+    const titles = job.titles || [];
+    const inBand = titles.filter((t) => this.isTitleInBand(job, t));
+    const outOfBand = titles.filter((t) => !this.isTitleInBand(job, t));
+    return [...inBand, ...outOfBand];
+  }
+
   /** Advisory only — a title outside the trained band still generated, it is just off-pattern. */
   isTitleInBand(job: QueuedJob, title: string): boolean {
     const r = LENGTH_RANGE[this.titleFormatOf(job)];
@@ -1364,8 +1475,10 @@ export class MetadataComponent implements OnInit, OnDestroy {
     return this.copiedKey === `${jobId}:${index}`;
   }
 
+  /** `index` is the DISPLAY position (see orderedTitles) — the same one the row numbers by,
+   *  so clicking the title labelled 3 copies the title labelled 3. */
   async copyCandidate(job: QueuedJob, index: number): Promise<void> {
-    const title = job.titles?.[index];
+    const title = this.orderedTitles(job)[index];
     if (!title) return;
     try {
       await navigator.clipboard.writeText(title);

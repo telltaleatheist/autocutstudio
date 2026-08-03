@@ -3824,20 +3824,21 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   /**
-   * Send the WHOLE session as a livestream: one subject line per story, in story order. This is
-   * the "title the stream itself" case, where the model picks the strongest story to lead with.
+   * Send EVERY story to the Metadata queue, each as its own item — every story is its own
+   * upload, so each arrives with its own chapter list and queues for its own title run.
+   * Same all-or-nothing readiness path as the right-click send: chapters are derived where
+   * missing or stale, and the first story that refuses abandons the whole send.
+   *
+   * (This button used to send ONE livestream handoff made of the story TITLES — "title the
+   * stream itself". That predates the per-story queue; if stream-titling is wanted again it
+   * needs its own affordance, not this button.)
    */
   async sendAllStoriesToTitles(): Promise<void> {
-    const subjects = this.stories
-      .map(s => s.title.trim())
-      .filter(t => t.length > 0);
-    if (!subjects.length) {
-      this.transportError = 'No story titles to send — name at least one story first.';
+    if (!this.stories.length) {
+      this.transportError = 'No stories to send — define at least one story first.';
       return;
     }
-    await this.pushHandoffsToTitles([
-      { subjects, format: 'livestream', source: this.sessionName || 'this session' },
-    ]);
+    await this.sendStoriesToTitles(this.stories);
   }
 
   /** The one wire call: a batch of handoffs, one per upload. Sent whole or not at all. */

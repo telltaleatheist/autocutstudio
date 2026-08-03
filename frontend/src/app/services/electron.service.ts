@@ -8,6 +8,48 @@ export type TitleFormat = 'normal' | 'livestream';
 /** How good a title the model is asked to aim for. `top-decile` is the working default. */
 export type TitleTarget = 'top-decile' | 'strong' | 'typical' | 'weak';
 
+/**
+ * One story's title candidates as they are PERSISTED — the record the Metadata page writes
+ * to `<outputDirectory>/.contentstudio/metadata/` when a titling job finishes.
+ *
+ * The field names are the metadata report store's (`items[]`, `_title`, `titles[]`), because
+ * the Reports page parses them and is not changed for this. Everything alongside `titles` is
+ * provenance that the Reports viewer ignores. Mirrors TitleReport in
+ * electron/services/metadata/title-report.service.ts.
+ */
+export interface TitleReportItem {
+  /** The story's name — the Reports list shows this as the row title. */
+  _title: string;
+  /** GENERATION order, not the in-band-first order the page displays. */
+  titles: string[];
+  generator: string;
+  kind: 'story-titles';
+  model: string;
+  format: TitleFormat;
+  target: TitleTarget;
+  /** The subject lines the model actually saw, as the main process parsed them. */
+  subjects: string[];
+  titleBand: { min: number; max: number };
+  /** Indexes into `titles` that fell outside the band. */
+  outOfBand: number[];
+  generatedAt: string;
+  // RESERVED and deliberately absent until their adapters ship: description, tags, chapters
+  // (chapters will be rendered INTO the description).
+}
+
+export interface TitleReport {
+  job_id: string;
+  job_name: string;
+  created_at: string;
+  /** Empty on purpose: a titling run writes no TXT files and owns no output folder. */
+  txt_folder: string;
+  txt_files: string[];
+  status: string;
+  kind: 'story-titles';
+  generator: string;
+  items: TitleReportItem[];
+}
+
 /** A subject list handed from the editor window to the main window's Titles tab. */
 export interface TitleHandoff {
   subjects: string[];
@@ -353,6 +395,19 @@ export class ElectronService {
   async cancelTitles(): Promise<{ stopped: boolean }> {
     if (!this.isElectron()) throw new Error('Not running in Electron');
     return this.bridge.cancelTitles();
+  }
+
+  /**
+   * Persist a finished titling run into the metadata report store, so the Reports page lists
+   * it long after the queue row is gone.
+   *
+   * `saved: false` is NOT an error — it means no output directory is configured, and a
+   * titling run is allowed to happen without one. A real write failure REJECTS with the
+   * main process's message.
+   */
+  async saveTitleReport(report: TitleReport): Promise<{ saved: true; path: string } | { saved: false; reason: string }> {
+    if (!this.isElectron()) throw new Error('Not running in Electron');
+    return this.bridge.saveTitleReport(report);
   }
 
   /** Evict the title model from Ollama's memory (leaving the tab). Never throws in main. */

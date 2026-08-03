@@ -51,15 +51,8 @@
         <span>Select all</span>
       </label>
 
-      <div class="control-group">
-        <label class="control-label" for="master-prompt">Prompt set</label>
-        <select id="master-prompt" class="select"
-                [value]="inputsState.masterPromptSet()"
-                (change)="onMasterPromptSetChange($any($event.target).value)">
-          <option *ngFor="let ps of availablePromptSets(); trackBy: trackByIndex" [value]="ps.id">{{ ps.name }}</option>
-        </select>
-      </div>
-
+      <!-- No prompt-set picker, here or per item: the titling model is fine-tuned and takes no
+           prompt choice, and the file/compilation path keeps using the stored default set. -->
       <label class="check"
              title="One job, one report, from every checked item together — rather than one report each">
         <input type="checkbox" [checked]="inputsState.compilationMode()"
@@ -93,14 +86,6 @@
           <span class="item-title">{{ item.displayName }}</span>
           <span class="item-subtitle">{{ item.type }}</span>
         </span>
-
-        <select class="select compact"
-                [value]="item.promptSet"
-                [disabled]="inputsState.compilationMode()"
-                (change)="updateItemPromptSet(i, $any($event.target).value)"
-                title="Prompt set for this item">
-          <option *ngFor="let ps of availablePromptSets(); trackBy: trackByIndex" [value]="ps.id">{{ ps.name }}</option>
-        </select>
 
         <button class="box-toggle" *ngIf="isTextSubject(item)" (click)="openEditTextSubjectModal(i)"
                 title="Edit the text">Edit</button>
@@ -199,12 +184,15 @@
 
             <div class="titles-note" *ngIf="job.titles?.length">
               Click a title to copy it. The badge is its character count — lit means inside the
-              trained band ({{ titleBandHint(job) }}).
+              trained band ({{ titleBandHint(job) }}), and those are listed first. It is a length
+              check, not a score.
             </div>
 
+            <!-- In-band first, generation order within each group. The numbering follows what is
+                 on screen; job.titles itself stays in generation order for the saved report. -->
             <div class="title-candidates" *ngIf="job.titles?.length">
               <button class="title-candidate"
-                      *ngFor="let t of job.titles; let i = index; trackBy: trackByIndex"
+                      *ngFor="let t of orderedTitles(job); let i = index; trackBy: trackByIndex"
                       [class.copied]="isCandidateCopied(job.id, i)"
                       (click)="copyCandidate(job, i)"
                       title="Copy this title">

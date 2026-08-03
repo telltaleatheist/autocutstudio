@@ -213,11 +213,22 @@
   margin-left: auto;
 }
 
+// The two Add Content buttons share the full card width, evenly and centered — they are
+// the page's front door and were huddling in the corner at their natural size.
 .button-group {
   display: flex;
-  gap: 10px;
+  gap: 24px;
   flex-wrap: wrap;
+  justify-content: center;
   margin-bottom: 14px;
+}
+
+.button-group .btn-primary {
+  flex: 1 1 0;
+  min-width: 180px;
+  padding: 14px 18px;
+  text-align: center;
+  font-size: 15px;
 }
 
 .icon-btn {
@@ -276,43 +287,10 @@
 }
 
 // ── Form controls ────────────────────────────────────────────────────────────
-.select {
-  padding: 9px 10px;
-  border-radius: var(--border-radius);
-  border: 1px solid var(--border-color);
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  font-family: var(--font-family);
-  font-size: 13px;
-  cursor: pointer;
-  max-width: 220px;
-}
-
-.select:disabled {
-  cursor: default;
-  opacity: 0.6;
-}
-
-.select.compact {
-  padding: 6px 8px;
-  font-size: 12px;
-  max-width: 150px;
-}
-
-.control-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.control-label {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-}
-
+// There are no <select>s on this page any more — the prompt-set dropdowns were the only
+// ones, and they went with the prompt-set choice itself. .select / .select.compact /
+// .control-group / .control-label went with them; every rule here is still flat, so
+// nothing was re-parented by the deletion.
 .hint {
   color: var(--text-muted);
   font-size: 13px;

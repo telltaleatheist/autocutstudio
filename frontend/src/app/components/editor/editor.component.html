@@ -327,8 +327,8 @@
             Merge{{ storyMergeIds.size >= 2 ? ' ' + storyMergeIds.size : '' }}
           </button>
           <button class="story-titles" *ngIf="hasStories()" (click)="sendAllStoriesToTitles()"
-                  title="Send every story title to the Titles tab as a livestream subject list">
-            → Titles
+                  title="Send every story to the Metadata queue — each becomes its own item carrying its own chapter list. Chapters are derived first where missing or stale.">
+            → Metadata
           </button>
         </div>
         <div class="stories-hint" *ngIf="storyMergeIds.size">
