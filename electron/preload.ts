@@ -79,7 +79,7 @@ export interface ElectronAPI {
   // out on the payload because the degradation is invisible downstream — a description built from
   // approximate starts reads exactly like a good one. No handler change needed; the handler
   // returns whatever analyzeChapters produced.
-  analyzeStoryChapters: (payload: { segments: Array<{ text: string; startSeconds: number; endSeconds: number }>; model: string; host?: string; consolidate?: boolean }) => Promise<{ chapters: Array<{ index: number; startSeconds: number; endSeconds: number; label: string; verbalCue: boolean; startApprox?: boolean; subChapters: Array<{ startSeconds: number; endSeconds: number; label: string; startApprox?: boolean }> }> }>;
+  analyzeStoryChapters: (payload: { segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>; model: string; host?: string; consolidate?: boolean }) => Promise<{ chapters: Array<{ index: number; startSeconds: number; endSeconds: number; label: string; verbalCue: boolean; startApprox?: boolean; subChapters: Array<{ startSeconds: number; endSeconds: number; label: string; startApprox?: boolean }> }> }>;
   // `text` takes a SUBJECT LIST (a story's chapter labels, in order) as well as transcript text —
   // suggestTitle() picks its prompt from the shape. The array is what the fine-tuned titling
   // adapter conditions on, so it is the preferred shape, not a convenience.
@@ -129,6 +129,8 @@ export interface ElectronAPI {
       titleBand: { min: number; max: number };
       outOfBand: number[];
       generatedAt: string;
+      /** The video's chapter list, story-relative — the Reports viewer's chapters shape. */
+      chapters?: Array<{ timestamp: string; title: string; sequence: number }>;
     }>;
   }) => Promise<{ saved: true; path: string } | { saved: false; reason: string }>;
   onTitlesProgress: (callback: (p: { done: number; total: number; title?: string }) => void) => void;
@@ -137,9 +139,12 @@ export interface ElectronAPI {
   // A BATCH of handoffs, one per story — the editor can send several picked stories at once,
   // and each is its own upload with its own subject list. Both the push and the pull carry the
   // main process's whole undelivered queue; an empty array from the pull means nothing waited.
-  sendSubjectsToTitles: (payload: { handoffs: { subjects: string[]; format?: 'normal' | 'livestream'; source?: string }[] }) => Promise<{ success: boolean }>;
-  takePendingTitleSubjects: () => Promise<{ subjects: string[]; format: 'normal' | 'livestream'; source?: string }[]>;
-  onTitlesSubjects: (callback: (p: { subjects: string[]; format: 'normal' | 'livestream'; source?: string }[]) => void) => void;
+  // `chapters` (optional) is the story's chapter list with times relative to that story's own
+  // exported video. It travels for the SAVED REPORT only — the titling model's input is the
+  // subject lines and nothing else, and no timestamp is ever added to them.
+  sendSubjectsToTitles: (payload: { handoffs: { subjects: string[]; format?: 'normal' | 'livestream'; source?: string; chapters?: { timestamp: string; title: string }[] }[] }) => Promise<{ success: boolean }>;
+  takePendingTitleSubjects: () => Promise<{ subjects: string[]; format: 'normal' | 'livestream'; source?: string; chapters?: { timestamp: string; title: string }[] }[]>;
+  onTitlesSubjects: (callback: (p: { subjects: string[]; format: 'normal' | 'livestream'; source?: string; chapters?: { timestamp: string; title: string }[] }[]) => void) => void;
   removeTitlesSubjectsListener: () => void;
 
   // Metadata page (ported from ContentStudio — channel names and payload shapes are that

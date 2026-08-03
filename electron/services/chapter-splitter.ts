@@ -50,6 +50,15 @@ export interface Segment {
   text: string;
   startSeconds: number;
   endSeconds: number;
+  /**
+   * Which side of the commentary this segment is: the host's own mic, or the footage being
+   * reacted to. Stage 4 renders its transcript with HOST:/CLIP: line tags built from this,
+   * because without them the model cannot tell the host's verdict from the footage's claim —
+   * audition3 (2026-08-03, scratchpad audition3*.js) showed it inverting attribution on a real
+   * chapter ("racist flight attendant" where the host is calling the PASSENGER racist).
+   * Stages 1-3 never see the tags; their sealed prompts read the bare text.
+   */
+  speaker: 'host' | 'clip';
 }
 
 /**
@@ -301,6 +310,19 @@ function textForRange(segments: Segment[], start: number, end: number): string {
     .trim();
 }
 
+/**
+ * Stage-4 rendering of the same range: one line per segment, each carrying its speaker tag.
+ * ONLY summarize sees this — every other stage keeps the untagged text its sealed prompt was
+ * tested on.
+ */
+function taggedTextForRange(segments: Segment[], start: number, end: number): string {
+  return segments
+    .filter(s => s.startSeconds >= start - 0.001 && s.startSeconds < end)
+    .map(s => `${s.speaker === 'host' ? 'HOST:' : 'CLIP:'} ${s.text.trim()}`)
+    .join('\n')
+    .trim();
+}
+
 /** Last-resort label from a stretch's opening words — only used when a model call failed, and
  *  always logged when it happens. */
 function deriveLabel(text: string): string {
@@ -473,11 +495,19 @@ Return JSON only:
 interface PlacementResult { start_phrase?: unknown }
 
 // ── Stage 4 — summarize each chapter (one call per chapter) ──────────────────
+// Revised 2026-08-03 (audition3 A–E, scratchpad audition3*.js, real 2026-08-02 chapters): the
+// original "say what happens, plainly" wording sanitized the host's framing out of every label
+// ("Passenger kicked off plane for preaching" for a chapter that is the host calling the
+// passenger a lying racist). The transcript is now HOST:/CLIP:-tagged and three bullets carry
+// the host's verdict, correct attribution, and host-only stretches. Variant history: untagged
+// tone bullet made "Host" the subject of 4/10 labels; tags without the attribution bullet
+// inverted who did what. This wording is the tested artifact — do not "tidy" it.
 function buildSummaryPrompt(start: string, end: string, transcript: string): string {
   return `Below is one chapter of a YouTube commentary video - the stretch from ${start} to ${end}.
 It is one subject; the boundaries have already been decided.
 
-TRANSCRIPT OF THIS CHAPTER:
+TRANSCRIPT OF THIS CHAPTER (HOST: lines are the video's host speaking; CLIP: lines are the
+footage the host is reacting to):
 ${transcript}
 
 Describe what this chapter covers, in 4 to 8 words.
@@ -489,6 +519,20 @@ Describe what this chapter covers, in 4 to 8 words.
   mention a person or story that this transcript does not.
 - Cover the whole stretch, not just its opening. Where it genuinely moves through more than one
   thing, name what it spends most of itself on.
+- The host's verdict is part of what happens. When the HOST lines dispute, debunk, mock or condemn
+  what the CLIP lines claim, carry that verdict in how the story is described: "Mayor Ellison lies
+  about the bridge contract", not "Mayor Ellison discusses the bridge contract"; "street closure
+  rumour debunked", not "the host disputes claims about street closures". Keep the story as the
+  subject - the words "host", "creator" and "commentary" must not appear in your answer; name what
+  is shown, framed the way the host frames it. If the host takes no position, do not invent one.
+- Attribute words and deeds to the right person. A claim in a CLIP line belongs to the person in
+  the footage, and stays THEIR claim - if the clip's speaker says the inspector took a bribe and
+  the host shows that claim is false, the chapter says the speaker lied about the inspector, not
+  that the inspector took a bribe. When you cannot tell who did what, describe it neutrally
+  rather than guess.
+- A stretch that is only HOST lines (a sponsor read, a sign-up attempt, links, a sign-off) is
+  named by the activity itself: "Patreon plug and channel links", not "Host promotes his
+  Patreon".
 - Say what happens, plainly. A viewer reads this as a chapter marker before clicking, and another
   model is handed it afterwards, so it has to carry the actual content. No headline writing, no
   teasing, no colons, no "Part 1".
@@ -582,8 +626,20 @@ export async function analyzeChapters(
   const spanEnd = segments.reduce((mx, s) => Math.max(mx, s.endSeconds), 0);
   const spanDuration = Math.max(0, spanEnd - spanStart);
 
+  // Stage 4's speaker tags are only as good as the caller's labelling, so it is checked here,
+  // not defaulted — an untagged segment silently rendered as CLIP would put the host's own
+  // words in the footage's mouth.
+  const badSpeaker = segments.findIndex(s => s.speaker !== 'host' && s.speaker !== 'clip');
+  if (badSpeaker !== -1) {
+    throw new Error(
+      `Segment ${badSpeaker + 1} of ${segments.length} has speaker ` +
+      `"${(segments[badSpeaker] as { speaker?: unknown }).speaker}" — every segment must be ` +
+      `tagged 'host' (mic track) or 'clip' (screen track) by the caller.`
+    );
+  }
+
   const rel: Segment[] = segments
-    .map(s => ({ text: s.text, startSeconds: s.startSeconds - spanStart, endSeconds: s.endSeconds - spanStart }))
+    .map(s => ({ text: s.text, speaker: s.speaker, startSeconds: s.startSeconds - spanStart, endSeconds: s.endSeconds - spanStart }))
     .sort((a, b) => a.startSeconds - b.startSeconds);
 
   // 14B is the floor. A full run on a 3B produced mega-chapters (one 32-minute chapter swallowing
@@ -815,14 +871,32 @@ export async function analyzeChapters(
       log.warn(`[ChapterSplitter] ${label}: no transcript between ${secondsToClock(chapter.startSeconds)} and ${secondsToClock(chapter.endSeconds)}`);
       return 'Untitled';
     }
-    const numCtx = chapterNumCtx(transcript, drafts.indexOf(chapter) + 1);
-    const result = await askJson<SummaryResult>(
-      generate,
-      buildSummaryPrompt(secondsToClock(chapter.startSeconds), secondsToClock(chapter.endSeconds), transcript),
-      { numPredict: 120, numCtx, signal },
-      label,
-    );
-    if (result && typeof result.about === 'string' && result.about.trim()) return result.about.trim();
+    const tagged = taggedTextForRange(rel, chapter.startSeconds, chapter.endSeconds);
+    const numCtx = chapterNumCtx(tagged, drafts.indexOf(chapter) + 1);
+    const prompt = buildSummaryPrompt(secondsToClock(chapter.startSeconds), secondsToClock(chapter.endSeconds), tagged);
+    const result = await askJson<SummaryResult>(generate, prompt, { numPredict: 120, numCtx, signal }, label);
+    let about = result && typeof result.about === 'string' ? result.about.trim() : '';
+    if (about && /\b(host|creator)\b/i.test(about)) {
+      // The prompt bans naming the host; cogito:14b still writes "Host discusses X" on some
+      // host-only stretches (3 of 10 chapters in audition3, stable across three prompt
+      // variants — more wording did not move it). One corrective re-ask fixed all three, so
+      // that is the enforcement: the prompt's own rule, restated once with the offending
+      // answer. If the model insists a second time, its answer stands and the log says so.
+      const corrective =
+        prompt +
+        `\n\nYour previous answer was "${about}". It broke the rule against the word "host". ` +
+        `Rewrite it: name the activity or story itself, 4 to 8 words.`;
+      const retry = await askJson<SummaryResult>(
+        generate, corrective, { numPredict: 120, numCtx, signal }, `${label} host-name retry`,
+      );
+      if (retry && typeof retry.about === 'string' && retry.about.trim()) {
+        about = retry.about.trim();
+        if (/\b(host|creator)\b/i.test(about)) {
+          log.warn(`[ChapterSplitter] ${label}: still names the host after the corrective retry — keeping "${about}"`);
+        }
+      }
+    }
+    if (about) return about;
     log.warn(`[ChapterSplitter] ${label} failed — using the chapter's opening words`);
     return deriveLabel(transcript);
   };

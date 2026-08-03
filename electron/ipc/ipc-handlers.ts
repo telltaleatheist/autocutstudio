@@ -204,8 +204,18 @@ function setupStoryAnalysisHandlers(): void {
   });
 }
 
-/** One story's subject list on its way to the Metadata page. The wire carries a batch of these. */
-type TitleHandoff = { subjects: string[]; format: titleGenerator.TitleFormat; source?: string };
+/** One story's subject list on its way to the Metadata page. The wire carries a batch of these.
+ *
+ *  `chapters` (optional) is that story's chapter list with times relative to the story's OWN
+ *  exported video. It is carried for the SAVED TITLE REPORT only: the titling model sees
+ *  `subjects` and nothing else, and no timestamp is ever folded into them (the
+ *  headline-integration contract strips clocks in code). Nothing on this path may join the two. */
+type TitleHandoff = {
+  subjects: string[];
+  format: titleGenerator.TitleFormat;
+  source?: string;
+  chapters?: { timestamp: string; title: string }[];
+};
 
 /**
  * Titles tab handlers — YouTube title suggestions from a subject list, via the local
@@ -309,7 +319,14 @@ function setupTitleHandlers(windowService: WindowService): void {
     'titles:send-subjects',
     async (
       _event,
-      payload: { handoffs: { subjects: string[]; format?: titleGenerator.TitleFormat; source?: string }[] }
+      payload: {
+        handoffs: {
+          subjects: string[];
+          format?: titleGenerator.TitleFormat;
+          source?: string;
+          chapters?: { timestamp: string; title: string }[];
+        }[];
+      }
     ) => {
       const incoming = payload?.handoffs;
       if (!Array.isArray(incoming) || incoming.length === 0) {
@@ -318,15 +335,40 @@ function setupTitleHandlers(windowService: WindowService): void {
       // Validated in full BEFORE anything is parked or pushed, so a bad batch cannot leave half
       // of itself queued for a tab that will then show stories the sender was told never went.
       const batch: TitleHandoff[] = incoming.map((h, i) => {
+        const from = h?.source ? ` (“${h.source}”)` : '';
         const subjects = h?.subjects;
         if (!Array.isArray(subjects) || subjects.length === 0) {
-          throw new Error(`titles:send-subjects handoff at index ${i} has a missing or empty subjects array`);
+          throw new Error(`titles:send-subjects handoff at index ${i}${from} has a missing or empty subjects array`);
         }
         const bad = subjects.findIndex((s) => typeof s !== 'string');
         if (bad !== -1) {
-          throw new Error(`titles:send-subjects handoff at index ${i}: subject at index ${bad} is not a string`);
+          throw new Error(`titles:send-subjects handoff at index ${i}${from}: subject at index ${bad} is not a string`);
         }
-        return { subjects, format: h?.format === 'livestream' ? 'livestream' : 'normal', source: h?.source };
+        // Chapters are OPTIONAL (the editor's title-only fallback sends none), but a malformed
+        // list rejects the WHOLE batch like everything else here: half a chapter list saved into
+        // a title report is a record that lies about the video it names.
+        const chapters = h?.chapters;
+        if (chapters !== undefined) {
+          if (!Array.isArray(chapters)) {
+            throw new Error(`titles:send-subjects handoff at index ${i}${from}: chapters is not an array`);
+          }
+          chapters.forEach((c, j) => {
+            const ok = (v: any) => typeof v === 'string' && v.trim().length > 0;
+            if (!c || typeof c !== 'object' || !ok(c.timestamp) || !ok(c.title)) {
+              throw new Error(
+                `titles:send-subjects handoff at index ${i}${from}: chapter at index ${j} needs a ` +
+                `non-empty timestamp and title`
+              );
+            }
+          });
+        }
+        return {
+          subjects,
+          format: h?.format === 'livestream' ? 'livestream' : 'normal',
+          source: h?.source,
+          // Passed through untouched — this never reaches the model, only the saved report.
+          ...(chapters !== undefined ? { chapters } : {}),
+        };
       });
 
       const main = windowService.getMainWindow();
@@ -2607,6 +2649,25 @@ function setupMetadataHandlers(windowService: WindowService): void {
     if (isNaN(new Date(report.created_at).getTime())) {
       throw new Error(`titles:save-report created_at is not a date: ${report.created_at}`);
     }
+    // `chapters` is optional on an item, but a malformed one is refused rather than written:
+    // the report is the record of what was published, and the Reports viewer would render a
+    // half-formed chapter as "0:00 — Untitled" without ever saying the record was broken.
+    report.items.forEach((item, i) => {
+      const chapters = (item as any)?.chapters;
+      if (chapters === undefined) return;
+      if (!Array.isArray(chapters)) {
+        throw new Error(`titles:save-report item ${i}: chapters is not an array`);
+      }
+      chapters.forEach((c: any, j: number) => {
+        const ok = (v: any) => typeof v === 'string' && v.trim().length > 0;
+        if (!c || typeof c !== 'object' || !ok(c.timestamp) || !ok(c.title) || typeof c.sequence !== 'number') {
+          throw new Error(
+            `titles:save-report item ${i}: chapter at index ${j} needs a non-empty timestamp, a ` +
+            `non-empty title and a numeric sequence`
+          );
+        }
+      });
+    });
 
     const outputDirectory = resolveOutputDirectory();
     if (!outputDirectory) {

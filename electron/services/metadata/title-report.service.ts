@@ -41,13 +41,26 @@ export interface TitleReportItem {
   /** Indexes INTO `titles` (generation order) that fell outside `titleBand`. */
   outOfBand: number[];
   generatedAt: string;
+  /**
+   * This video's chapter list, with timestamps relative to THIS video (the story's own export),
+   * not the timeline it was cut from. The shape is the Reports viewer's own
+   * (`ParsedMetadata.chapters` in components/metadata-reports) — it is passed through
+   * unnormalized, which is why `sequence` is carried even though the viewer renders in array
+   * order. Absent when the run had no chapters (a hand-typed subject list, or the editor's
+   * title-only fallback).
+   *
+   * Report-only, and it must stay that way: the titling model is never shown a timestamp
+   * (the headline-integration contract strips clocks), so this never joins `subjects`.
+   */
+  chapters?: Array<{ timestamp: string; title: string; sequence: number }>;
 
   // RESERVED, and deliberately ABSENT until the adapters that fill them ship:
   //   description  — the written description for this video
   //   tags         — its tag list
-  //   chapters     — its chapter list, which will be rendered INTO the description
-  // The Reports viewer already renders all three when present (each section is *ngIf'd on
-  // its own field), so adding them later is a writer change only.
+  // The Reports viewer already renders both when present (each section is *ngIf'd on its own
+  // field), so adding them later is a writer change only. `chapters` above was the third of
+  // these and is now LIVE; when the description adapter ships it will render those same
+  // chapters INTO the description.
 }
 
 /** The job wrapper. Field names are the metadata store's, because the Reports page reads them. */

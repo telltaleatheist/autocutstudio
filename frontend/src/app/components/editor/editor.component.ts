@@ -3648,7 +3648,12 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // Appended to every refusal in the multi-story case: the user pressed one button and needs
     // told that NOTHING went, not just that one story had a problem.
     const nothingSent = many ? ' Nothing was sent.' : '';
-    const handoffs: { subjects: string[]; format: 'normal'; source: string }[] = [];
+    const handoffs: {
+      subjects: string[];
+      format: 'normal';
+      source: string;
+      chapters?: { timestamp: string; title: string }[];
+    }[] = [];
 
     for (const story of stories) {
       const name = story.title.trim() || `Story ${story.number}`;
@@ -3672,7 +3677,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         this.cdr.detectChanges();
         return;
       }
-      const labels = chapters.map(c => c.label.trim()).filter(l => l.length > 0);
+      // Kept as CHAPTERS, not just labels, so the timestamped list written into the title report
+      // is the same set of chapters the model's subject lines came from, in the same order.
+      const titled = chapters.filter(c => c.label.trim().length > 0);
+      const labels = titled.map(c => c.label.trim());
       // PRE-EXISTING FALLBACK: no chapters ⇒ send the bare story title as a one-line subject list.
       // The receiving Titles tab cannot tell a one-subject story from a story whose chaptering
       // failed, so what it produces is a title written from a title. Left as found and flagged.
@@ -3684,10 +3692,117 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         this.cdr.detectChanges();
         return;
       }
-      handoffs.push({ subjects, format: 'normal', source: name });
+      // The chapter list rides ALONGSIDE the subjects, for the saved title report only — the
+      // titling model must never see a timestamp (headline-integration contract), and nothing
+      // downstream appends this to `subjects`. The fallback branch above sends no chapters:
+      // a story title is not a chapter and has no time in the story's own video.
+      let chapterList: { timestamp: string; title: string }[] | undefined;
+      if (labels.length) {
+        try {
+          chapterList = this.storyChapterTimestamps(story, titled);
+        } catch (err: any) {
+          // A chapter that maps nowhere is a wiring fault, not a user error — but it still has to
+          // be SEEN, so it is shown the way every other refusal on this path is and the whole send
+          // is abandoned. Never sent with the bad timestamp dropped or clamped.
+          this.transportError = (err?.message || String(err)) + nothingSent;
+          this.cdr.detectChanges();
+          return;
+        }
+      }
+      handoffs.push({ subjects, format: 'normal', source: name, ...(chapterList ? { chapters: chapterList } : {}) });
     }
 
     await this.pushHandoffsToTitles(handoffs);
+  }
+
+  /**
+   * The story's chapters as `{ timestamp, title }`, timestamped against THE STORY'S OWN exported
+   * video rather than the timeline it was cut out of.
+   *
+   * A chapter's `startSeconds` is a TIMELINE time (same frame as `story.regions`). What the story
+   * exports is its regions MINUS the user's cuts, played in sequence order and rebased to 0 —
+   * cli/editor_export.py builds each story's kept set with `subtract_cuts(rs, re, global_cuts)`
+   * and lays the survivors out in playback order. So the mapping has to be the same one the
+   * timeline itself uses: project each region onto the EDITED timeline (editedRangesForOriginal,
+   * which is cut- and reorder-aware), and a chapter's position is how much of the story has
+   * already played by its edited time. Summing raw region lengths instead would push every marker
+   * after a cut late by the whole cut — a real session had a 5m26s cut mid-story.
+   *
+   * A start just OUTSIDE every piece is snapped to the nearest piece edge, within EDGE_SNAP.
+   * Chapter boundaries are placed from a mapped quote, and segmentsForRegions hands a region the
+   * segments whose spans STRADDLE its edges — a segment belongs to both sides — so a boundary can
+   * legitimately land a fraction of a second before a region starts or after it ends. (Seen in
+   * real edits: a first chapter at 1767.835 against a first region starting at 1768.2665.) Two
+   * seconds is comfortably clear of that fuzz and far below the ~45 s stretch the placement works
+   * in, so it can never hide a marker that is genuinely in the wrong place.
+   *
+   * Further out than that, the chapter belongs to a span this story does not export, which is a
+   * wiring fault: it THROWS naming the story and the time. It is not clamped to the nearest piece
+   * and not dropped — a chapter list is what the user clicks in the published video, and a marker
+   * quietly moved to a plausible-looking time is worse than a send that refuses.
+   *
+   * A chapter whose content was entirely CUT lands on the seam the cut left, because that is where
+   * originalToEdited puts it and it is the only honest answer: the material it named is not in the
+   * video. The subject line still goes to the titler, exactly as it does today.
+   */
+  private storyChapterTimestamps(
+    story: Story,
+    chapters: StoryChapter[]
+  ): { timestamp: string; title: string }[] {
+    const name = story.title.trim() || `Story ${story.number}`;
+    // The story's surviving footage in PLAYBACK order: edited time is sequence order by
+    // construction (rebuildEditedModel accumulates `es` walking the sequence), so sorting by `lo`
+    // is the order the exporter concatenates these pieces in.
+    const pieces = this.mergeRegions(story.regions)
+      .flatMap(r => this.editedRangesForOriginal(r.start, r.end))
+      .sort((a, b) => a.lo - b.lo);
+    if (!pieces.length) {
+      throw new Error(
+        `“${name}” keeps no footage once its cuts are applied, so its chapters have nowhere to ` +
+        `land — remove the cut or redraw the story.`
+      );
+    }
+    // Piece ends are frame-quantized, so a chapter sitting exactly on one can miss it by a hair's
+    // breadth of floating point. 10 ms is under half a frame.
+    const EDGE = 0.01;
+    const EDGE_SNAP = 2.0;   // see the doc comment: quote-placement fuzz at a region edge
+
+    // Output position of an edited time known to sit inside `pieces[index]`.
+    const outputAt = (index: number, edited: number): number => {
+      let before = 0;
+      for (let i = 0; i < index; i++) before += pieces[i].hi - pieces[i].lo;
+      return before + Math.max(0, Math.min(edited, pieces[index].hi) - pieces[index].lo);
+    };
+
+    return chapters.map(c => {
+      // POINT map — a chapter start is a point, so the non-monotonic reorder caveat on
+      // originalToEdited does not apply.
+      const et = this.originalToEdited(c.startSeconds);
+      const inside = pieces.findIndex(p => et >= p.lo - EDGE && et <= p.hi + EDGE);
+      if (inside !== -1) {
+        return { timestamp: this.formatRulerLabel(Math.floor(outputAt(inside, et))), title: c.label.trim() };
+      }
+
+      // Outside every piece: snap to the nearest EDGE if it is within the placement fuzz.
+      let best = -1;
+      let bestGap = Infinity;
+      let bestTime = 0;
+      pieces.forEach((p, i) => {
+        for (const edge of [p.lo, p.hi]) {
+          const gap = Math.abs(et - edge);
+          if (gap < bestGap) { bestGap = gap; best = i; bestTime = edge; }
+        }
+      });
+      if (best !== -1 && bestGap <= EDGE_SNAP) {
+        return { timestamp: this.formatRulerLabel(Math.floor(outputAt(best, bestTime))), title: c.label.trim() };
+      }
+
+      throw new Error(
+        `Chapter “${c.label.trim()}” of “${name}” starts at ${c.startSeconds.toFixed(2)}s, which is ` +
+        `outside every part of that story the export keeps — its position in the exported video ` +
+        `cannot be worked out.`
+      );
+    });
   }
 
   /**
@@ -3843,7 +3958,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   /** The one wire call: a batch of handoffs, one per upload. Sent whole or not at all. */
   private async pushHandoffsToTitles(
-    handoffs: { subjects: string[]; format: 'normal' | 'livestream'; source: string }[]
+    handoffs: {
+      subjects: string[];
+      format: 'normal' | 'livestream';
+      source: string;
+      /** Story-relative chapter times, for the saved title report only — never model input. */
+      chapters?: { timestamp: string; title: string }[];
+    }[]
   ): Promise<void> {
     this.transportError = '';
     try {
@@ -4094,7 +4215,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * Built per track (so two people talking at once don't interleave mid-sentence) and then merged
    * in timeline order — the same ordering the group-level view uses, just at sentence granularity.
    */
-  private segmentsForRegions(regions: { start: number; end: number }[]): { text: string; startSeconds: number; endSeconds: number }[] {
+  private segmentsForRegions(regions: { start: number; end: number }[]): { text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }[] {
     const words = (this.transcript?.words || []).filter(w =>
       regions.some(r => w.timelineEnd > r.start + this.EPS && w.timelineStart < r.end - this.EPS)
     );
@@ -4107,8 +4228,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       arr.push(w);
     }
 
-    const out: { text: string; startSeconds: number; endSeconds: number }[] = [];
-    for (const arr of byTrack.values()) {
+    const out: { text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }[] = [];
+    for (const [trackId, arr] of byTrack.entries()) {
+      const speaker = this.speakerForTrack(trackId);
       arr.sort((a, b) => a.timelineStart - b.timelineStart);
       let buf: TranscriptWord[] = [];
       const flush = () => {
@@ -4119,6 +4241,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
             text,
             startSeconds: buf[0].timelineStart,
             endSeconds: buf[buf.length - 1].timelineEnd,
+            speaker,
           });
         }
         buf = [];
@@ -4136,6 +4259,24 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
     out.sort((a, b) => a.startSeconds - b.startSeconds);
     return out;
+  }
+
+  /**
+   * Which side of the commentary a transcript track records: the host's mic, or the screen
+   * capture of the footage being reacted to. Chapter naming (stage 4) renders its transcript
+   * with HOST:/CLIP: tags built from this — without them the model cannot tell the host's
+   * verdict from the footage's claim and misattributes who said what (audition3, 2026-08-03).
+   * A track that is neither is a labelling gap this cannot paper over, so it refuses and
+   * names the track rather than guessing a side.
+   */
+  private speakerForTrack(trackId: string): 'host' | 'clip' {
+    const label = (this.transcriptTracks.find(t => t.id === trackId)?.label || '').toLowerCase();
+    if (label.includes('mic')) return 'host';
+    if (label.includes('screen')) return 'clip';
+    throw new Error(
+      `Transcript track "${trackId}"${label ? ` (“${label}”)` : ''} is neither a mic nor a ` +
+      `screen track — cannot tell host speech from footage for chapter analysis.`
+    );
   }
 
   /** Concatenated transcript text for a set of ORIGINAL-second regions (for title suggestion). */

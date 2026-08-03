@@ -29,6 +29,10 @@ export interface InputItem {
   /** Which trained title prompt a queued titling run uses for this item. Carried over from the
    *  editor handoff so a livestream send keeps its format; absent means 'normal'. */
   titleFormat?: 'normal' | 'livestream';
+  /** The story's chapter list, timestamped against the story's OWN exported video. Carried over
+   *  from the editor handoff and written into the saved title report; NEVER model input — the
+   *  titling model only ever sees `textContent`. Absent on hand-typed subjects. */
+  chapters?: { timestamp: string; title: string }[];
 }
 
 export interface GenerationState {

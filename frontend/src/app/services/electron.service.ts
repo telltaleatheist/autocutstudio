@@ -33,8 +33,14 @@ export interface TitleReportItem {
   /** Indexes into `titles` that fell outside the band. */
   outOfBand: number[];
   generatedAt: string;
-  // RESERVED and deliberately absent until their adapters ship: description, tags, chapters
-  // (chapters will be rendered INTO the description).
+  /**
+   * The video's chapter list, story-relative — the Reports viewer's own `ParsedMetadata.chapters`
+   * shape. Absent when the run had none (a typed subject list, or the editor's title-only
+   * fallback). Report-only: the titling model never sees a timestamp.
+   */
+  chapters?: Array<{ timestamp: string; title: string; sequence: number }>;
+  // RESERVED and deliberately absent until their adapters ship: description and tags
+  // (the description adapter will later render `chapters` INTO the description).
 }
 
 export interface TitleReport {
@@ -56,6 +62,12 @@ export interface TitleHandoff {
   format: TitleFormat;
   /** Human label for where it came from (a story title), shown as provenance in the tab. */
   source?: string;
+  /**
+   * The story's chapters with times relative to THAT story's exported video. Rides alongside
+   * `subjects` for the saved title report only — it is never added to the model's input, which
+   * stays timestamp-free. Absent when the editor sent a title-only fallback.
+   */
+  chapters?: { timestamp: string; title: string }[];
 }
 
 @Injectable({
@@ -314,7 +326,7 @@ export class ElectronService {
    * so every merge it makes flattens two real chapters into one and costs the user a marker.
    */
   async analyzeStoryChapters(payload: {
-    segments: Array<{ text: string; startSeconds: number; endSeconds: number }>;
+    segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
     model: string;
     host?: string;
     consolidate?: boolean;
@@ -433,9 +445,17 @@ export class ElectronService {
    * Editor-window side of the handoff: push one handoff per story to the main window's Titles
    * tab. Sent as a batch so several picked stories arrive as one delivery — the main process
    * queues them and the tab adds each as its own item.
+   *
+   * `chapters` rides along for the saved title report only; it is never joined to `subjects`,
+   * which are the only lines the titling model is shown.
    */
   async sendSubjectsToTitles(payload: {
-    handoffs: { subjects: string[]; format?: TitleFormat; source?: string }[];
+    handoffs: {
+      subjects: string[];
+      format?: TitleFormat;
+      source?: string;
+      chapters?: { timestamp: string; title: string }[];
+    }[];
   }): Promise<{ success: boolean }> {
     if (!this.isElectron()) throw new Error('Not running in Electron');
     return this.bridge.sendSubjectsToTitles(payload);

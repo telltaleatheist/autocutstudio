@@ -1117,6 +1117,14 @@ export class MetadataComponent implements OnInit, OnDestroy {
   ): Promise<void> {
     const band = LENGTH_RANGE[format];
     const generatedAt = new Date().toISOString();
+    // A titling job is ONE text subject (isTitleJob), so its chapters — when the editor sent
+    // any — are that one item's. `sequence` is 1-based list order: the order the editor derived
+    // them in is the order they run in the video.
+    const chapters = job.inputs[0]?.chapters?.map((c, i) => ({
+      timestamp: c.timestamp,
+      title: c.title,
+      sequence: i + 1,
+    }));
 
     const report: TitleReport = {
       job_id: job.id,
@@ -1149,6 +1157,9 @@ export class MetadataComponent implements OnInit, OnDestroy {
             .map((t, i) => (t.length < band.min || t.length > band.max ? i : -1))
             .filter((i) => i !== -1),
           generatedAt,
+          // Absent, not empty, when the run had no chapters — the viewer's section is *ngIf'd on
+          // the field, and an empty array would render a "Chapters 0" heading over nothing.
+          ...(chapters?.length ? { chapters } : {}),
         },
       ],
     };
@@ -1520,6 +1531,10 @@ export class MetadataComponent implements OnInit, OnDestroy {
         textContent: text,
         // Carried so a livestream send is still titled as a livestream when its job runs.
         titleFormat: h.format === 'livestream' ? 'livestream' : 'normal',
+        // Carried so the saved title report can record WHICH chapters this video has and where
+        // they fall in it. Deliberately not folded into `textContent`: that is the model's input
+        // and it stays timestamp-free.
+        ...(h.chapters ? { chapters: h.chapters } : {}),
       });
     }
     const added = this.inputsState.inputItems().length - before;
