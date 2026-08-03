@@ -1445,6 +1445,19 @@
       cursor: pointer;
       &:hover { background: #5a2b2b; color: #ff9c9c; }
     }
+    // Per-story cancel on the RUNNING row — dimmer than the run-level stop so the two ×s read
+    // as different weights: this one drops a story, that one ends the run.
+    .activity-skip {
+      flex: none;
+      padding: 0 4px;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: #5c5c63;
+      font-size: 13px;
+      cursor: pointer;
+      &:hover { background: #4a3a2b; color: #ffc98c; }
+    }
     .activity-task-sub {
       font-size: 11px;
       color: #82828a;
@@ -1502,6 +1515,17 @@
       letter-spacing: 0.04em;
       text-transform: uppercase;
       color: #5c5c63;
+    }
+    .activity-skip {
+      flex: none;
+      padding: 0 4px;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: #5c5c63;
+      font-size: 12px;
+      cursor: pointer;
+      &:hover { background: #4a3a2b; color: #ffc98c; }
     }
     /* The tail count when the queue is longer than the dock can list. */
     &.more {

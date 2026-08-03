@@ -79,7 +79,7 @@ export interface ElectronAPI {
   // out on the payload because the degradation is invisible downstream — a description built from
   // approximate starts reads exactly like a good one. No handler change needed; the handler
   // returns whatever analyzeChapters produced.
-  analyzeStoryChapters: (payload: { segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>; model: string; host?: string; consolidate?: boolean }) => Promise<{ chapters: Array<{ index: number; startSeconds: number; endSeconds: number; label: string; verbalCue: boolean; startApprox?: boolean; subChapters: Array<{ startSeconds: number; endSeconds: number; label: string; startApprox?: boolean }> }> }>;
+  analyzeStoryChapters: (payload: { segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>; model: string; host?: string; consolidate?: boolean }) => Promise<{ chapters: Array<{ index: number; startSeconds: number; endSeconds: number; label: string; detail: string; verbalCue: boolean; startApprox?: boolean; subChapters: Array<{ startSeconds: number; endSeconds: number; label: string; detail: string; startApprox?: boolean }> }> }>;
   // `text` takes a SUBJECT LIST (a story's chapter labels, in order) as well as transcript text —
   // suggestTitle() picks its prompt from the shape. The array is what the fine-tuned titling
   // adapter conditions on, so it is the preferred shape, not a convenience.

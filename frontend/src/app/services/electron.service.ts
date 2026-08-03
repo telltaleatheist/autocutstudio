@@ -331,14 +331,14 @@ export class ElectronService {
     host?: string;
     consolidate?: boolean;
   }): Promise<{ chapters: Array<{
-    index: number; startSeconds: number; endSeconds: number; label: string; verbalCue: boolean;
+    index: number; startSeconds: number; endSeconds: number; label: string; detail: string; verbalCue: boolean;
     /** This start is a raw ±45 s junction, not a mapped quote — no quote for it could be located.
      *  Surface it: a description built from approximate starts is indistinguishable from a good
      *  one, and the only symptom is a viewer landing half a minute off the marker they clicked. */
     startApprox?: boolean;
     /** The pre-consolidation chapters this one was merged from — the fine tier, retained for
      *  YouTube description markers and title-model conditioning. Length 1 = never merged. */
-    subChapters: Array<{ startSeconds: number; endSeconds: number; label: string; startApprox?: boolean }>;
+    subChapters: Array<{ startSeconds: number; endSeconds: number; label: string; detail: string; startApprox?: boolean }>;
   }> }> {
     if (!this.isElectron()) throw new Error('Not running in Electron');
     return this.bridge.analyzeStoryChapters(payload);

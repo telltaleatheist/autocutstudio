@@ -199,6 +199,9 @@ export interface ChatOptions {
   temperature?: number;
   /** Nucleus sampling (`top_p`). Omitted from the request when undefined so Ollama's default holds. */
   topP?: number;
+  /** `top_k`. Omitted when undefined so the MODELFILE's value holds (headline's carries top_k 20);
+   *  pass 0 to disable top-k entirely for that call. */
+  topK?: number;
   numPredict?: number;
   numCtx?: number;
   timeoutMs?: number;
@@ -232,6 +235,7 @@ export async function chat(model: string, messages: ChatMessage[], opts: ChatOpt
   const {
     temperature = 0.7,
     topP,
+    topK,
     numPredict = 256,
     timeoutMs = 300000,
     host,
@@ -261,6 +265,7 @@ export async function chat(model: string, messages: ChatMessage[], opts: ChatOpt
             num_ctx: numCtx,
             num_predict: numPredict,
             ...(topP === undefined ? {} : { top_p: topP }),
+            ...(topK === undefined ? {} : { top_k: topK }),
           },
         }),
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),

@@ -160,8 +160,12 @@
       <div class="activity-task" *ngIf="analyzing && activityRunning">
         <div class="activity-task-row">
           <span class="activity-task-name">{{ activityRunning.label }}</span>
+          <!-- Per-story cancel, shown only while other stories wait — with one story left it
+               would just be a second stop button. -->
+          <button class="activity-skip" *ngIf="activityQueue.length > 1" (click)="skipRunningActivity()"
+                  title="Cancel just this story — the rest of the queue continues">×</button>
           <span class="activity-task-pct" *ngIf="aiProgressTotal > 0">{{ aiProgressPct }}%</span>
-          <button class="activity-stop" (click)="stopAnalysis()" title="Stop the analysis">×</button>
+          <button class="activity-stop" (click)="stopAnalysis()" title="Stop the whole run">×</button>
         </div>
         <div class="activity-bar" *ngIf="aiProgressTotal > 0"><div class="activity-bar-fill" [style.width.%]="aiProgressPct"></div></div>
         <div class="activity-bar indeterminate" *ngIf="aiProgressTotal <= 0"><div class="activity-bar-fill"></div></div>
@@ -169,6 +173,8 @@
         <div class="activity-wait" *ngFor="let q of activityPending">
           <span class="activity-wait-name">{{ q.label }}</span>
           <span class="activity-wait-tag">waiting</span>
+          <button class="activity-skip" (click)="cancelPendingActivity(q.id)"
+                  title="Drop this story from the queue — the others still run">×</button>
         </div>
         <div class="activity-wait more" *ngIf="activityPendingMore > 0">+{{ activityPendingMore }} more</div>
       </div>
@@ -396,7 +402,7 @@
           <span class="story-empty" *ngIf="isStoryEmpty(s)" title="No regions">empty</span>
           <button class="story-titles" (click)="sendStoryToTitles(s); $event.stopPropagation()"
                   [disabled]="!canSendStoryToTitles(s)"
-                  title="Send this story’s chapters to the Titles tab in the main window. Chapters are derived first if it has none, and re-derived if the story’s regions changed since they were.">T</button>
+                  title="Send just this story to the Metadata queue. Its chapters are derived first if it has none, and re-derived if its regions changed since they were.">→ M</button>
           <button class="story-split" (click)="openSplitModal(s); $event.stopPropagation()"
                   [disabled]="isStoryEmpty(s) || transcriptState !== 'ready'"
                   title="Split this story into chapters">Split</button>

@@ -173,8 +173,17 @@ export interface TitleRunOptions {
 /**
  * Sampling parameters. Fixed, not exposed: they are part of the method the model was tuned
  * against, and a slider on them would make one user's results incomparable to another's.
+ *
+ * RETUNED for the DPO adapter (2026-08-03). The SFT-era contract said 0.7/0.9, but DPO
+ * concentrates probability mass, and with the Modelfile's top_k 20 on top the ten candidates
+ * came out as ten near-identical restatements (measured: 3 distinct opening words across 6
+ * samples). A sweep on real story subjects found t0.9 / top_p 0.95 / top_k DISABLED restores
+ * genuine variety with zero off-story fabrications across 14 validation samples; hotter
+ * (t1.1) started inventing whole stories and misspelling, and merely unpinning top_k at 0.7
+ * fabricated too. topK: 0 is load-bearing — without it the Modelfile's top_k 20 silently
+ * applies.
  */
-const SAMPLING: ChatOptions = { temperature: 0.7, topP: 0.9, numPredict: 64 };
+const SAMPLING: ChatOptions = { temperature: 0.9, topP: 0.95, topK: 0, numPredict: 64 };
 
 /**
  * Run `count` independent title completions and return the unique ones in completion order.

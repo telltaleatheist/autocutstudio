@@ -74,6 +74,14 @@ export interface SubChapter {
   endSeconds: number;
   label: string;
   /**
+   * One or two description-grade sentences about this chapter — names, claims, outcomes, the
+   * host's framing. Written by the same stage-4 call as `label`. This is what the titling model
+   * is fed (it was trained on real video DESCRIPTIONS, 60–2200 chars of prose — 4-8 word labels
+   * sit far below that distribution and starve it of specifics). Empty string when stage 4
+   * fell back to a derived label.
+   */
+  detail: string;
+  /**
    * This start is a raw junction, not a mapped quote — accurate to ±45 s rather than the ~5 s the
    * method targets, because no quote for it could be located in the word stream.
    *
@@ -90,6 +98,8 @@ export interface Chapter {
   startSeconds: number;
   endSeconds: number;
   label: string;
+  /** Description-grade sentences for this chapter — see SubChapter.detail. */
+  detail: string;
   verbalCue: boolean;
   /** Start placed from a raw ±45 s junction rather than a mapped quote — see SubChapter. */
   startApprox?: boolean;
@@ -501,7 +511,15 @@ interface PlacementResult { start_phrase?: unknown }
 // passenger a lying racist). The transcript is now HOST:/CLIP:-tagged and three bullets carry
 // the host's verdict, correct attribution, and host-only stretches. Variant history: untagged
 // tone bullet made "Host" the subject of 4/10 labels; tags without the attribution bullet
-// inverted who did what. This wording is the tested artifact — do not "tidy" it.
+// inverted who did what. Same day, variant F added the "detail" field: the titling model was
+// trained on real video descriptions (60–2200 chars of prose), so it is fed description-grade
+// sentences, not the 4-8 word marker. Variants G/H harden against two failures F exposed on a
+// story about an unnamed mayor: the example name leaking into output ("Mayor Ellison on
+// Netanyahu arrest warrant" — hence the inoculation parenthetical, the de-named contrast pair,
+// and the code-side `instructionNamed` retry, because the leak survived even the inoculation
+// once) and outside-knowledge fabrication ("Mayor Eric Adams" for a transcript that names only
+// Zoran Mamdani — reduced but NOT eliminated; details remain titler input that the user reviews,
+// never published text). This wording is the tested artifact — do not "tidy" it.
 function buildSummaryPrompt(start: string, end: string, transcript: string): string {
   return `Below is one chapter of a YouTube commentary video - the stretch from ${start} to ${end}.
 It is one subject; the boundaries have already been decided.
@@ -513,16 +531,18 @@ ${transcript}
 Describe what this chapter covers, in 4 to 8 words.
 
 - Name the person, organisation, story or claim IF the transcript names one: "Mayor Ellison on the
-  bridge contract scandal", not "a local corruption argument".
+  bridge contract scandal", not "a local corruption argument". (Ellison is invented for this
+  instruction - never copy a name from these instructions into your answer.)
 - If it names nobody, do not supply a name - describe what is there in its own words. A sponsor
   read, a Patreon plug, a sign-off or a channel promo should simply say that it is one. Never
-  mention a person or story that this transcript does not.
+  mention a person or story that this transcript does not - not even one you are sure of from
+  outside knowledge. If the transcript only ever says "the mayor", write "the mayor".
 - Cover the whole stretch, not just its opening. Where it genuinely moves through more than one
   thing, name what it spends most of itself on.
 - The host's verdict is part of what happens. When the HOST lines dispute, debunk, mock or condemn
-  what the CLIP lines claim, carry that verdict in how the story is described: "Mayor Ellison lies
-  about the bridge contract", not "Mayor Ellison discusses the bridge contract"; "street closure
-  rumour debunked", not "the host disputes claims about street closures". Keep the story as the
+  what the CLIP lines claim, carry that verdict in how the story is described: "lies about
+  the depot contract", not "discusses the depot contract"; "street closure rumour debunked", not
+  "disputes claims about street closures". Keep the story as the
   subject - the words "host", "creator" and "commentary" must not appear in your answer; name what
   is shown, framed the way the host frames it. If the host takes no position, do not invent one.
 - Attribute words and deeds to the right person. A claim in a CLIP line belongs to the person in
@@ -539,11 +559,16 @@ Describe what this chapter covers, in 4 to 8 words.
 - Never "Introduction", "Overview", "Background", "Conclusion", "Discussion", "Analysis",
   "Continued", "More on this".
 
+Also write "detail": one or two sentences a video description would use for this chapter - every
+name, organisation, claim and outcome that matters, using only names this transcript itself
+provides, framed the way the host frames it, 20 to 45 words. All the rules above apply to it
+too: right attribution, the host's verdict carried, no timestamps, no teasing.
+
 Return JSON only:
-{"about": "<4 to 8 words>"}`;
+{"about": "<4 to 8 words>", "detail": "<one or two sentences, 20 to 45 words>"}`;
 }
 
-interface SummaryResult { about?: unknown }
+interface SummaryResult { about?: unknown; detail?: unknown }
 
 /**
  * Context needed to summarize a chapter, bucketed for Ollama. Estimated as words × 1.4 + 600.
@@ -552,7 +577,9 @@ interface SummaryResult { about?: unknown }
  */
 function chapterNumCtx(transcript: string, chapterIndex: number): number {
   const words = transcript.split(/\s+/).filter(Boolean).length;
-  const needed = Math.ceil(words * 1.4 + 600);
+  // +900, not the original +600: the prompt grew three bullets and the completion grew a
+  // 20-45 word detail field (numPredict 240).
+  const needed = Math.ceil(words * 1.4 + 900);
   if (needed > CHAPTER_CTX_MAX) {
     throw new Error(
       `Chapter ${chapterIndex} needs a ${needed}-token context to summarize (limit ${CHAPTER_CTX_MAX}). ` +
@@ -593,6 +620,7 @@ interface DraftChapter {
   startSeconds: number;   // rebased
   endSeconds: number;
   about: string;
+  detail: string;         // description-grade sentences from the same stage-4 call as `about`
   merged: boolean;        // true once it has absorbed a neighbour → needs a re-summary
   startApprox: boolean;   // start is a raw ±45 s junction, not a mapped quote
   /** The pre-consolidation chapters this draft covers, in time order. Seeded with itself after
@@ -859,55 +887,71 @@ export async function analyzeChapters(
     startSeconds: p.time,
     endSeconds: i < placed.length - 1 ? placed[i + 1].time : spanDuration,
     about: '',
+    detail: '',
     merged: false,
     startApprox: p.approx,
     members: [],
   }));
 
-  const summarize = async (chapter: DraftChapter, label: string): Promise<string> => {
+  const hostNamed = (s: string) => /\b(host|creator)\b/i.test(s);
+  // "Ellison" exists only as the prompt's invented example. A real Ellison in a transcript is
+  // possible in principle, but a label copying the example is the overwhelmingly likelier read —
+  // audition3g produced "Mayor Ellison on Netanyahu arrest warrant" for a story whose transcript
+  // names no Ellison, on the first story that happened to be about an unnamed mayor.
+  const instructionNamed = (s: string) => /\bellison\b/i.test(s);
+  const ruleBroken = (s: string) => hostNamed(s) || instructionNamed(s);
+  const summarize = async (chapter: DraftChapter, label: string): Promise<{ about: string; detail: string }> => {
     const transcript = textForRange(rel, chapter.startSeconds, chapter.endSeconds);
     if (!transcript) {
       // A silent stretch inside the span — nothing to summarize, and nothing to invent either.
       log.warn(`[ChapterSplitter] ${label}: no transcript between ${secondsToClock(chapter.startSeconds)} and ${secondsToClock(chapter.endSeconds)}`);
-      return 'Untitled';
+      return { about: 'Untitled', detail: '' };
     }
     const tagged = taggedTextForRange(rel, chapter.startSeconds, chapter.endSeconds);
     const numCtx = chapterNumCtx(tagged, drafts.indexOf(chapter) + 1);
     const prompt = buildSummaryPrompt(secondsToClock(chapter.startSeconds), secondsToClock(chapter.endSeconds), tagged);
-    const result = await askJson<SummaryResult>(generate, prompt, { numPredict: 120, numCtx, signal }, label);
+    const result = await askJson<SummaryResult>(generate, prompt, { numPredict: 240, numCtx, signal }, label);
     let about = result && typeof result.about === 'string' ? result.about.trim() : '';
-    if (about && /\b(host|creator)\b/i.test(about)) {
-      // The prompt bans naming the host; cogito:14b still writes "Host discusses X" on some
-      // host-only stretches (3 of 10 chapters in audition3, stable across three prompt
-      // variants — more wording did not move it). One corrective re-ask fixed all three, so
-      // that is the enforcement: the prompt's own rule, restated once with the offending
-      // answer. If the model insists a second time, its answer stands and the log says so.
+    let detail = result && typeof result.detail === 'string' ? result.detail.trim() : '';
+    if (about && (ruleBroken(about) || ruleBroken(detail))) {
+      // The prompt bans naming the host, and bans copying the instructions' invented example
+      // name; cogito:14b still breaks each on occasion ("Host discusses X" on 3 of 10 chapters
+      // in audition3, stable across three prompt variants — more wording did not move it). One
+      // corrective re-ask fixed every case tried, so that is the enforcement: the prompt's own
+      // rule, restated once with the offending answer. If the model insists a second time, its
+      // answer stands and the log says so.
+      const offending = ruleBroken(about) ? about : detail;
+      const rule = hostNamed(offending)
+        ? 'the rule against the word "host". Rewrite both fields: name the activity or story itself'
+        : 'the rule against copying names from these instructions (Ellison is invented). Rewrite both fields using only names the transcript provides';
       const corrective =
-        prompt +
-        `\n\nYour previous answer was "${about}". It broke the rule against the word "host". ` +
-        `Rewrite it: name the activity or story itself, 4 to 8 words.`;
+        prompt + `\n\nYour previous answer was "${offending}". It broke ${rule}.`;
       const retry = await askJson<SummaryResult>(
-        generate, corrective, { numPredict: 120, numCtx, signal }, `${label} host-name retry`,
+        generate, corrective, { numPredict: 240, numCtx, signal }, `${label} rule retry`,
       );
       if (retry && typeof retry.about === 'string' && retry.about.trim()) {
         about = retry.about.trim();
-        if (/\b(host|creator)\b/i.test(about)) {
-          log.warn(`[ChapterSplitter] ${label}: still names the host after the corrective retry — keeping "${about}"`);
+        detail = typeof retry.detail === 'string' ? retry.detail.trim() : detail;
+        if (ruleBroken(about) || ruleBroken(detail)) {
+          log.warn(`[ChapterSplitter] ${label}: still rule-breaking after the corrective retry — keeping "${about}"`);
         }
       }
     }
-    if (about) return about;
+    if (about) return { about, detail };
     log.warn(`[ChapterSplitter] ${label} failed — using the chapter's opening words`);
-    return deriveLabel(transcript);
+    return { about: deriveLabel(transcript), detail: '' };
   };
 
   for (let i = 0; i < drafts.length; i++) {
-    drafts[i].about = await summarize(drafts[i], `chapter ${i + 1}/${drafts.length} summary`);
+    const named = await summarize(drafts[i], `chapter ${i + 1}/${drafts.length} summary`);
+    drafts[i].about = named.about;
+    drafts[i].detail = named.detail;
     // Snapshot the fine tier the moment it is named — BEFORE consolidation can splice it away.
     drafts[i].members = [{
       startSeconds: drafts[i].startSeconds,
       endSeconds: drafts[i].endSeconds,
       label: drafts[i].about,
+      detail: drafts[i].detail,
       startApprox: drafts[i].startApprox,
     }];
     step(`Naming chapter ${i + 1} of ${drafts.length}`);
@@ -971,7 +1015,9 @@ export async function analyzeChapters(
   const mergedIndices = drafts.map((c, idx) => (c.merged ? idx : -1)).filter(idx => idx >= 0);
   if (mergedIndices.length > 0) total += mergedIndices.length;
   for (const idx of mergedIndices) {
-    drafts[idx].about = await summarize(drafts[idx], `merged chapter ${idx + 1} re-summary`);
+    const renamed = await summarize(drafts[idx], `merged chapter ${idx + 1} re-summary`);
+    drafts[idx].about = renamed.about;
+    drafts[idx].detail = renamed.detail;
     step(`Re-naming merged chapter ${idx + 1}`);
   }
 
@@ -985,6 +1031,7 @@ export async function analyzeChapters(
     startSeconds: c.startSeconds + spanStart,
     endSeconds: c.endSeconds + spanStart,
     label: c.about || deriveLabel(textForRange(rel, c.startSeconds, c.endSeconds)),
+    detail: c.detail,
     verbalCue: false,
     // Only ever set, never cleared: a merged chapter keeps the LEFT side's start, so it keeps the
     // left side's placement accuracy too.
@@ -997,6 +1044,7 @@ export async function analyzeChapters(
         startSeconds: m.startSeconds + spanStart,
         endSeconds: m.endSeconds + spanStart,
         label: m.label,
+        detail: m.detail,
         ...(m.startApprox ? { startApprox: true } : {}),
       })),
   }));
@@ -1088,7 +1136,12 @@ export async function suggestTitle(input: string | string[], generate: Generate)
   }
 
   const prompt = subjects ? buildSubjectTitlePrompt(subjects) : buildTitlePrompt(text);
-  const response = await generate(prompt, { numPredict: 256 });
+  // 0.2 ON PURPOSE (was silently inheriting ollama-service's default of the same value): this is
+  // a one-shot working title for the story list — exactly one sample is taken, so temperature
+  // buys variance with no selection step to spend it on. Not 0 like the sealed pipeline (this is
+  // not a measurement), not 0.7 like the headline titler (which samples many and lets the user
+  // pick).
+  const response = await generate(prompt, { numPredict: 256, temperature: 0.2 });
   const match = response.match(/\{[\s\S]*\}/);
   if (match) {
     try {

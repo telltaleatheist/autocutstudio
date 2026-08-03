@@ -153,6 +153,14 @@ export interface StoryChapter {
   endSeconds: number;
   label: string;
   /**
+   * One or two description-grade sentences from the same naming call as `label` — names, claims,
+   * outcomes, the host's framing. This, not the 4-8 word label, is what a titling handoff sends
+   * as the subject line: the headline model was trained on real video descriptions (60–2200
+   * chars of prose) and terse labels starve it. Absent on chapters derived before this field
+   * existed — the send path treats those as needing re-derivation.
+   */
+  detail?: string;
+  /**
    * This start was placed from the raw junction, not a mapped quote — accurate to ±45 s instead of
    * the ~5 s the method targets. Shown in the story list because it is otherwise invisible: the
    * description looks identical either way, and the user only finds out by clicking the marker in
@@ -552,6 +560,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // The story-analysis queue: one entry per story a run will visit, [0] running, the rest waiting.
   // Emptied whenever a run ends (finished, failed or stopped) so ghost rows cannot outlive it.
   activityQueue: ActivityEntry[] = [];
+  // Stories the user X'd out of the CURRENT run — a per-story cancel, as opposed to the dock's
+  // stop button which ends the whole run. A pending story in here is simply never visited; the
+  // running one is aborted the same way a stop aborts it, and the loops tell the two intents
+  // apart by looking here. Cleared whenever a new run seeds the queue.
+  activitySkipRequested = new Set<string>();
   // The dock is 360px wide and shares it with transcription/export/waveform blocks, so a 40-story
   // session lists the next few and counts the rest.
   private readonly ACTIVITY_PENDING_SHOWN = 6;
@@ -3666,6 +3679,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         this.cdr.detectChanges();
         return;
       }
+      // The user X'd this story's derivation in the dock mid-send: theirs to drop. It leaves the
+      // batch; the remaining stories still go. (Distinct from a FAILED derivation, which refuses
+      // the whole send below — a skip is a choice, not a fault.)
+      if (this.activitySkipRequested.has(story.id)) continue;
       // ensureStoryChapters reports a failed re-derivation and hands back the old list (a
       // pre-existing fallback, left as found). That list is still stale, and stale is the one thing
       // this send must not do — so the send stops here rather than shipping markers for a span the
@@ -3681,10 +3698,24 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       // is the same set of chapters the model's subject lines came from, in the same order.
       const titled = chapters.filter(c => c.label.trim().length > 0);
       const labels = titled.map(c => c.label.trim());
+      // The SUBJECTS are the chapters' DETAIL sentences, not their 4-8 word labels — the titling
+      // model was trained on real video descriptions (prose), and terse labels starve it of the
+      // names and specifics titles are made of. A chapter without a detail predates the field
+      // (or its naming call failed); ensureStoryChapters re-derives those, so reaching here
+      // without details means that re-derivation failed — refuse rather than quietly downgrade
+      // the model's input to labels.
+      const details = titled.map(c => (c.detail || '').trim());
+      if (labels.length && details.some(d => d.length === 0)) {
+        this.transportError =
+          `Not sent: “${name}” has chapters without detail lines (derived before chapter ` +
+          `details existed, and re-deriving them failed — see the activity dock).` + nothingSent;
+        this.cdr.detectChanges();
+        return;
+      }
       // PRE-EXISTING FALLBACK: no chapters ⇒ send the bare story title as a one-line subject list.
       // The receiving Titles tab cannot tell a one-subject story from a story whose chaptering
       // failed, so what it produces is a title written from a title. Left as found and flagged.
-      const subjects = labels.length ? labels : [story.title.trim()].filter(t => t.length > 0);
+      const subjects = labels.length ? details : [story.title.trim()].filter(t => t.length > 0);
       if (!subjects.length) {
         this.transportError =
           `Nothing to send for “${name}” — give the story a title or split it into chapters first.` +
@@ -3712,6 +3743,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       handoffs.push({ subjects, format: 'normal', source: name, ...(chapterList ? { chapters: chapterList } : {}) });
     }
 
+    // Every story was X'd out of the batch by the user — nothing left to send, and nothing to
+    // report as wrong either.
+    if (!handoffs.length) return;
     await this.pushHandoffsToTitles(handoffs);
   }
 
@@ -3820,16 +3854,21 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    */
   private async ensureStoryChapters(story: Story): Promise<StoryChapter[]> {
     const state = this.storyChapterState(story);
-    if (state === 'fresh') return story.chapters!;
+    // Fresh chapters WITHOUT detail lines were derived before the detail field existed (or their
+    // naming call fell back to opening words). Titling subjects are the details, so a list
+    // without them is as unusable for a send as a stale one — re-derive it the same way.
+    const undetailed = state === 'fresh' && story.chapters!.some(c => !(c.detail || '').trim());
+    if (state === 'fresh' && !undetailed) return story.chapters!;
     if (!this.selectedOllamaModel || this.transcriptState !== 'ready' || this.analyzing) {
-      // STALE and unable to re-derive is a refusal, not a shrug. Handing these back would send
-      // markers that describe a span the user has since redrawn — and because a subject list is
-      // what a title gets written from, the only symptom would be a confidently wrong title for
-      // the wrong story. Say what is missing and stop.
-      if (state === 'stale') {
+      // STALE (or detail-less) and unable to re-derive is a refusal, not a shrug. Handing these
+      // back would send markers that describe a span the user has since redrawn — and because a
+      // subject list is what a title gets written from, the only symptom would be a confidently
+      // wrong title for the wrong story. Say what is missing and stop.
+      if (state === 'stale' || undetailed) {
         throw new Error(
-          `“${story.title || 'This story'}” has chapters from a different span and they cannot be ` +
-          `re-derived right now — ` +
+          `“${story.title || 'This story'}” has ` +
+          (undetailed ? 'chapters without detail lines' : 'chapters from a different span') +
+          ` and they cannot be re-derived right now — ` +
           (this.analyzing ? 'an analysis is already running.'
             : this.transcriptState !== 'ready' ? 'the session has no transcript yet.'
             : 'no Ollama model is selected.')
@@ -3923,6 +3962,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const derived = returned
       .map(c => ({
         startSeconds: c.startSeconds, endSeconds: c.endSeconds, label: this.cleanChapterLabel(c.label),
+        ...((c.detail || '').trim() ? { detail: c.detail.trim() } : {}),
         ...(c.startApprox ? { startApprox: true } : {}),
       }))
       .sort((a, b) => a.startSeconds - b.startSeconds);
@@ -4325,6 +4365,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         const failures: string[] = [];
         for (const s of workable) {
           if (this.analyzeStopRequested) break;   // stop between stories, not just mid-call
+          // X'd while waiting: its dock row is already gone — it is simply never visited. Not a
+          // failure and not advanced (cancelPendingActivity removed the row itself).
+          if (this.activitySkipRequested.has(s.id)) continue;
           // THE BAR IS ONE SCALE: this story's chapter-pipeline call progress, as reported by
           // onStoryAnalyzeProgress. Zeroed here so the previous story's tally can never be read as
           // this one's, and left at 0 (indeterminate) for the stretches that report no calls.
@@ -4367,13 +4410,21 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
               this.requestRender();
             }
           } catch (err: any) {
-            if (this.isStopError(err)) break;
-            if (err?.wiringFault) throw err;
-            failures.push(`${name}: ${err?.message || String(err)}`);
+            if (this.isStopError(err)) {
+              // A per-story X aborts exactly the way a stop does; the intent lives in the skip
+              // set. Skipped ⇒ this story only — fall through to the advance and keep going.
+              // Not in the set ⇒ the stop button — the run ends here.
+              if (!this.activitySkipRequested.has(s.id)) break;
+            } else if (err?.wiringFault) {
+              throw err;
+            } else {
+              failures.push(`${name}: ${err?.message || String(err)}`);
+            }
           }
 
-          // Done with this story — succeeded or skipped after failing (the failure is reported at
-          // the end of the run). Its row drops off the top and the next story becomes running.
+          // Done with this story — succeeded, skipped by its X, or skipped after failing (the
+          // failure is reported at the end of the run). Its row drops off the top and the next
+          // story becomes running.
           this.activityQueueAdvance();
           this.cdr.detectChanges();
         }
@@ -4643,6 +4694,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return subChapters
       .map(c => ({
         startSeconds: c.startSeconds, endSeconds: c.endSeconds, label: this.cleanChapterLabel(c.label),
+        ...((c.detail || '').trim() ? { detail: c.detail!.trim() } : {}),
         ...(c.startApprox ? { startApprox: true } : {}),
       }))
       .sort((a, b) => a.startSeconds - b.startSeconds);
@@ -5258,6 +5310,33 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   /** Seed the queue for a run. The first entry is running; the rest wait in run order. */
   private activityQueueStart(entries: { id: string; label: string }[]): void {
     this.activityQueue = entries.map((e, i) => ({ ...e, state: i === 0 ? 'running' : 'pending' }));
+    this.activitySkipRequested.clear();   // skips belong to the run they were made in
+  }
+
+  /**
+   * X on a WAITING row: drop that one story from the run. The row disappears now; the loop
+   * checks the skip set when it reaches the story and simply never runs it. Nothing is aborted —
+   * the story wasn't running.
+   */
+  cancelPendingActivity(id: string): void {
+    this.activitySkipRequested.add(id);
+    this.activityQueue = this.activityQueue.filter(e => e.state === 'running' || e.id !== id);
+  }
+
+  /**
+   * X on the RUNNING row's name: cancel just this story and let the run move on. Same abort as
+   * the stop button — the difference is intent, recorded in the skip set BEFORE the abort so the
+   * loop's catch can tell "skip this one" from "stop everything".
+   */
+  async skipRunningActivity(): Promise<void> {
+    const head = this.activityQueue[0];
+    if (!head) return;
+    this.activitySkipRequested.add(head.id);
+    try {
+      await this.electron.cancelStoryAnalysis();
+    } catch {
+      // Nothing in flight — the loop-top check still skips it.
+    }
   }
 
   /**
