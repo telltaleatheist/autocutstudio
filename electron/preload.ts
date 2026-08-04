@@ -55,7 +55,10 @@ export interface ElectronAPI {
   getEditorManifest: (zipPath: string) => Promise<any>;
   // `sequence` is the playback ORDER as a partition of the SURVIVORS (the complement of `cuts`),
   // ORIGINAL seconds, frame-aligned; absent means source order.
-  exportEditorCuts: (payload: { zipPath: string; cuts: Array<{ startFrame: number; endFrame: number }>; sequence?: Array<{ start: number; end: number }>; stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }>; output?: 'fcpxml' | 'transcripts' }) => Promise<any>;
+  // `muteMicDuringScreen` disables the mic lane wherever the screen track speaks and the
+  // mic does not (whole blocks, FCPX's enabled="0"); the whole payload object is forwarded
+  // to the handler, so the field survives this hop as long as the type names it.
+  exportEditorCuts: (payload: { zipPath: string; cuts: Array<{ startFrame: number; endFrame: number }>; sequence?: Array<{ start: number; end: number }>; stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }>; output?: 'fcpxml' | 'transcripts'; muteMicDuringScreen?: boolean }) => Promise<any>;
   loadEditorEdits: (payload: { zipPath: string }) => Promise<any | null>;
   saveEditorEdits: (payload: { zipPath: string; edits: any }) => Promise<{ path: string }>;
   onEditorPayload: (callback: (payload: any) => void) => void;

@@ -625,7 +625,11 @@ export class PythonService {
     zipPath: string,
     cuts: Array<{ startFrame: number; endFrame: number }>,
     stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }>,
-    output?: 'fcpxml' | 'transcripts'
+    output?: 'fcpxml' | 'transcripts',
+    // Mute-mic-under-screen-audio pass. Passed EXPLICITLY into the stdin payload below —
+    // this layer historically built the payload from a fixed literal, which is how
+    // `sequence` ends up dropped; a new field only survives if it is written in by hand.
+    muteMicDuringScreen?: boolean
   ): Promise<any> {
     const jobId = `editor_export_${Date.now()}`;
     const mode = stories && stories.length ? `${stories.length} stories → ${output}` : `${cuts.length} cuts`;
@@ -652,7 +656,12 @@ export class PythonService {
       pythonProcess.stdin.on('error', (err) => {
         log.error(`[${jobId}] stdin error:`, err);
       });
-      const payload = stories && stories.length ? { cuts, stories, output } : { cuts };
+      const payload = {
+        ...(stories && stories.length ? { cuts, stories, output } : { cuts }),
+        // Omitted entirely when the caller did not ask, so an older/CLI caller's payload
+        // stays exactly what it was and Python's default (false) applies.
+        ...(muteMicDuringScreen === undefined ? {} : { muteMicDuringScreen }),
+      };
       pythonProcess.stdin.write(JSON.stringify(payload), (err) => {
         if (err) {
           log.error(`[${jobId}] Failed to write export payload to stdin:`, err);

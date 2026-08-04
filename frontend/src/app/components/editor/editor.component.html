@@ -36,6 +36,17 @@
       {{ cuts.length }} {{ cuts.length === 1 ? 'cut' : 'cuts' }} · {{ removedLabel }} removed
     </span>
     <span class="topbar-spacer"></span>
+    <!-- Mic-mute-under-screen-audio master switch. ON by default; turning it off makes the
+         next export leave every mic clip enabled (nothing is muted). Same state as the
+         checkbox in the export chooser — this is just the always-visible handle on it. -->
+    <button class="mic-mute-toggle" [class.off]="!muteMicDuringScreen"
+            [disabled]="!canMuteMicDuringScreen()"
+            (click)="toggleMuteMicDuringScreen()"
+            [title]="canMuteMicDuringScreen()
+              ? 'On exports: wherever the screen audio speaks and the mic does not, the mic clip is split and the block is disabled (darkened in FCPX — press V to bring one back). Turn off to export with nothing muted.'
+              : 'Transcribe the session first — the mute blocks come from the transcript'">
+      Mic mute: {{ muteMicDuringScreen ? 'On' : 'Off' }}
+    </button>
   </header>
 
   <!-- Invisible backdrop: an outside click closes the File menu. -->
@@ -85,6 +96,24 @@
           <span class="chooser-opt-desc" *ngIf="hasStories() && transcriptState !== 'ready'">Transcribe the session first</span>
         </button>
       </div>
+      <!-- Applies to both FCPXML exports (the transcripts-only export writes no FCPXML).
+           Greyed out until the session has a transcript: the mute blocks come from the
+           Whisper word times and there is nothing to derive them from without one. -->
+      <label class="chooser-toggle" [class.disabled]="!canMuteMicDuringScreen()"
+             title="Wherever the screen audio is speaking and this mic is not, the mic clip is split at that stretch's start and end and the middle piece is DISABLED (FCPX's darkened clip — press V on it to bring it back). Whole blocks, no volume keyframes. Applies to the Master FCPXML export.">
+        <input type="checkbox" [(ngModel)]="muteMicDuringScreen"
+               [disabled]="!canMuteMicDuringScreen()" />
+        <span class="chooser-toggle-text">
+          <span class="chooser-toggle-title">Mute mic while screen audio speaks</span>
+          <span class="chooser-toggle-desc" *ngIf="canMuteMicDuringScreen()">
+            Splits the mic lane and disables the blocks where only the screen is talking —
+            re-enable any block in FCPX with V
+          </span>
+          <span class="chooser-toggle-desc" *ngIf="!canMuteMicDuringScreen()">
+            Transcribe the session first — the mute blocks come from the transcript
+          </span>
+        </span>
+      </label>
       <div class="modal-actions">
         <button class="modal-btn" (click)="exportChooserOpen = false">Cancel</button>
       </div>
@@ -98,6 +127,13 @@
       <ng-container *ngIf="exportResultPath">
         <div class="modal-title">Exported</div>
         <div class="modal-path">{{ exportResultPath }}</div>
+        <!-- Reported whenever the mic-mute pass ran, INCLUDING zero: "the host talked over
+             everything" is a real answer and the user should see it, not silence. -->
+        <div class="modal-note" *ngIf="exportMicMuteBlocks !== null">
+          {{ exportMicMuteBlocks }} mic
+          {{ exportMicMuteBlocks === 1 ? 'block' : 'blocks' }} disabled under screen audio<ng-container
+            *ngIf="exportMicMuteBlocks === 0"> — the mic was live everywhere the screen spoke</ng-container>
+        </div>
         <div class="modal-actions">
           <button class="modal-btn primary" (click)="onShowExport()">Show in Folder</button>
           <button class="modal-btn" (click)="closeExportModal()">Done</button>

@@ -428,8 +428,17 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   exporting = false;
   exportResultPath: string | null = null; // set on a successful FCPXML export
   exportError: string | null = null;       // Python's message, verbatim, on failure
+  // Disabled mic blocks the export actually emitted, straight from the result JSON. null =
+  // the mute pass did not run; 0 is a REAL value and is shown as such.
+  exportMicMuteBlocks: number | null = null;
   // File ▸ Export… chooser modal (pick Master FCPXML vs Stories).
   exportChooserOpen = false;
+  // Mute the mic wherever the SCREEN track is speaking and the mic is not. ON by default:
+  // it is the manual cleanup pass this editor exists to remove, and every block it makes is
+  // one FCPX clip you re-enable with a single press of V if it got one wrong. Requires the
+  // transcript sidecar — the export fails loudly (never quietly skips) without one, so the
+  // checkbox is disabled until transcription has run.
+  muteMicDuringScreen = true;
   // Top-bar File menu (Export / Open) open/closed state.
   menuOpen = false;
 
@@ -767,6 +776,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.exportResultPath = null;
     this.exportError = null;
     this.exportChooserOpen = false;
+    this.exportMicMuteBlocks = null;
+    // Back to the default (mute armed) — an "off" choice is per-session state and is
+    // restored from the new session's sidecar, never carried over from the previous one.
+    this.muteMicDuringScreen = true;
     this.menuOpen = false;
     // Stories are per-session and NOT persisted (v1) — a re-init starts with none.
     this.stories = [];
@@ -2908,9 +2921,15 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         throw new Error(`edit-state sidecar 'sequence' does not tile [0, ${dur}] — fix or delete the file`);
       }
     }
+    // Optional like `sequence` (and for the same schema-version reasoning): absence means
+    // the default, mute armed. Only `false` is ever written.
+    if (e.muteMicDuringScreen !== undefined && typeof e.muteMicDuringScreen !== 'boolean') {
+      throw new Error(`edit-state sidecar field 'muteMicDuringScreen' is not a boolean — fix or delete the file`);
+    }
     this.suppressEditsSave = true;
     try {
       this.cuts = e.cuts;
+      this.muteMicDuringScreen = e.muteMicDuringScreen !== false;
       this.bladeBoundaries = e.bladeBoundaries;
       this.sequence = (Array.isArray(e.sequence) && e.sequence.length > 0) ? e.sequence : null;
       this.stories = e.stories;
@@ -2941,6 +2960,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         // Written ONLY when the user has actually reordered something, so an untouched project's
         // sidecar stays byte-identical to what older builds produce and read.
         ...(this.sequence ? { sequence: this.sequence } : {}),
+        // Same rule: only the NON-default (off) is written. Absent means "mute armed", which
+        // is what every sidecar written before this switch existed already says by saying
+        // nothing.
+        ...(this.muteMicDuringScreen ? {} : { muteMicDuringScreen: false }),
         stories: this.stories,
         storyIdCounter: this.storyIdCounter,
         undoStack: this.undoStack,
@@ -2966,6 +2989,26 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.exportChooserOpen = true;
   }
 
+  /**
+   * True when the mic-mute option can be offered at all. The mute blocks are derived from
+   * the Whisper transcript sidecar's word times, so without a ready transcript there is
+   * nothing to derive them FROM — and Python refuses the export rather than exporting
+   * without the muting. Better to grey the checkbox than to hand the user that failure.
+   */
+  canMuteMicDuringScreen(): boolean {
+    return this.transcriptState === 'ready';
+  }
+
+  /**
+   * Top-bar master switch for the mic-mute pass. One state shared with the export-chooser
+   * checkbox; persisted in the edits sidecar so an "off" choice survives reopening the
+   * session (absent from the sidecar = the default, on).
+   */
+  toggleMuteMicDuringScreen(): void {
+    this.muteMicDuringScreen = !this.muteMicDuringScreen;
+    this.scheduleEditsSave();
+  }
+
   /** Chooser modal choice → run that export. */
   onExportChoice(kind: 'fcpxml' | 'transcripts'): void {
     this.exportChooserOpen = false;
@@ -2985,6 +3028,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.exporting = true;
     this.exportError = null;
     this.exportResultPath = null;
+    this.exportMicMuteBlocks = null;
     this.cdr.detectChanges();
     try {
       const stories = this.hasStories() ? this.resolveStoryRegions() : undefined;
@@ -2992,10 +3036,18 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         zipPath: this.currentZipPath!, cuts: this.cuts,
         sequence: this.exportSequence(),
         stories, output: stories ? kind : undefined,
+        // Sent explicitly on BOTH the plain-cuts and the story FCPXML paths (the
+        // transcripts-only export writes no FCPXML, so Python ignores it there). Gated on
+        // the transcript being ready, because the flag has no signal to work from without
+        // one and Python would — correctly — refuse the whole export.
+        muteMicDuringScreen: this.canMuteMicDuringScreen() && this.muteMicDuringScreen,
       });
       const path = res?.path;
       if (!path) throw new Error(res?.message || 'Export did not return an output path.');
       this.exportResultPath = path;
+      // Present only when the mute pass ran. Zero is a real count and must not be coerced
+      // away — the typeof check keeps 0 while turning an absent field into "did not run".
+      this.exportMicMuteBlocks = typeof res?.micMuteBlocks === 'number' ? res.micMuteBlocks : null;
     } catch (err: any) {
       // Python's message is authoritative — show it verbatim.
       this.exportError = err?.message || String(err);
@@ -3053,6 +3105,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   closeExportModal(): void {
     this.exportResultPath = null;
     this.exportError = null;
+    this.exportMicMuteBlocks = null;
   }
 
   // ── Stories (mark / name / number spans) ─────────────────────────────────────

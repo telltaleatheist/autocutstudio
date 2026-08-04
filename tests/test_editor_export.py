@@ -32,6 +32,8 @@ sys.path.insert(0, str(REPO_ROOT))
 from cli.editor_manifest import build_manifest, ManifestError  # noqa: E402
 from cli.editor_export import (  # noqa: E402
     export, export_stories, apply_cuts, subtract_cuts, make_ripple, format_time,
+    MIC_PAD, MIC_MIN_SPEECH, MIC_MIN_WORDS, MIN_MUTE_BLOCK,
+    SCREEN_MERGE_GAP, MIC_MERGE_GAP,
 )
 from core.xml_utils import FCPXMLUtils  # noqa: E402
 import xml.etree.ElementTree as ET  # noqa: E402
@@ -676,6 +678,534 @@ def _contiguous_layout(spine):
         out.append((cursor, dur))
         cursor += dur
     return out
+
+
+# ===========================================================================
+# Mic muting under screen audio (muteMicDuringScreen)
+# ===========================================================================
+# A second, richer fixture: a master project whose spine ref-clips window a CAM compound
+# that really does hold the lane structure the generators emit — a trim-pad <gap>, then a
+# content <gap> (offset==start==trim) carrying a DISABLED master-audio lane at -1, an
+# ENABLED mic lane at -2 and an ENABLED screen lane at -3, each a <clip> whose inner
+# <gap>/<audio> pair spans the FULL source duration (xml_utils.create_clip_with_audio_effects).
+# The mute pass must split the mic lane and only the mic lane.
+
+TRIM_F = 60          # trim-pad frames at the head of the compound (cam_generator's 2s pad)
+COMPOUND_F = 2400    # compound-internal length in frames
+
+
+def make_mute_media_files(dirpath):
+    """master + per-source mic/screen files. Paths are what the sidecar keys tracks on."""
+    d = Path(dirpath)
+    paths = {}
+    for key, name in (('master', 'Session master.mov'),
+                      ('mic', 'Session mic audio_processed.wav'),
+                      ('screen', 'Session screen audio_processed.wav')):
+        p = d / name
+        p.write_text(f'fake-{key}-bytes')
+        paths[key] = str(p)
+    return paths
+
+
+def _lane_clip_xml(lane, name, ref, enabled_attr, volume):
+    """One audio lane inside the compound's content gap — the shape
+    xml_utils.create_clip_with_audio_effects emits: the clip WINDOWS a full-source-length
+    inner gap via its own offset/duration (and a 'start' once it has been split)."""
+    return (
+        f'                    <clip lane="{lane}" offset="{_t(TRIM_F)}" name="{name}" '
+        f'duration="{_t(COMPOUND_F - TRIM_F)}" tcFormat="NDF"{enabled_attr}>\n'
+        f'                        <adjust-volume amount="{volume}" />\n'
+        f'                        <gap name="Gap" offset="0s" duration="{_t(COMPOUND_F)}">\n'
+        f'                            <audio ref="{ref}" lane="-1" offset="0s" '
+        f'duration="{_t(COMPOUND_F)}" role="dialogue.dialogue-1" srcCh="1, 2" />\n'
+        f'                        </gap>\n'
+        f'                        <audio-channel-source srcCh="1, 2" role="dialogue.dialogue-1">\n'
+        f'                            <adjust-voiceIsolation amount="75" />\n'
+        f'                        </audio-channel-source>\n'
+        f'                    </clip>\n'
+    )
+
+
+def mute_master_fcpxml(paths, clips, extra_lane=''):
+    """clips: [(offset, duration, start)] frame specs for the master spine. Each becomes the
+    master_project_generator shape: a srcEnable="video" ref-clip into the CAM compound with an
+    anchored lane -1 srcEnable="audio" ref-clip into the SAME compound (offset == start)."""
+    spine = ''
+    for (o, d, s) in clips:
+        sa = f' start="{_t(s)}"' if s != 0 else ''
+        spine += (
+            f'                    <ref-clip ref="rC" offset="{_t(o)}" name="Hybrid Cam" '
+            f'duration="{_t(d)}" srcEnable="video"{sa}>\n'
+            f'                        <ref-clip ref="rC" lane="-1" offset="{_t(s)}" '
+            f'name="Hybrid Cam" duration="{_t(d)}" srcEnable="audio"{sa} />\n'
+            f'                    </ref-clip>\n')
+    declared = max(o + d for (o, d, _s) in clips)
+    lanes = (
+        # Master audio: present but DISABLED, exactly as cam_generator emits it when there
+        # are external audio sources. It must be skipped (its file is not a transcript track).
+        f'                    <clip lane="-1" offset="{_t(TRIM_F)}" name="Session master" '
+        f'duration="{_t(COMPOUND_F - TRIM_F)}" enabled="0">\n'
+        f'                        <gap name="Gap" offset="0s" duration="{_t(COMPOUND_F)}">\n'
+        f'                            <audio ref="a1" lane="-1" offset="0s" '
+        f'duration="{_t(COMPOUND_F)}" role="dialogue.dialogue-1" />\n'
+        f'                        </gap>\n'
+        f'                    </clip>\n'
+        + _lane_clip_xml(-2, 'Session mic audio_processed', 'aMic', '', '0.0471005dB')
+        + _lane_clip_xml(-3, 'Session screen audio_processed', 'aScr', '', '-6dB')
+        + extra_lane)
+    return f'''<?xml version='1.0' encoding='utf-8'?>
+<fcpxml version="1.13">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p2997" frameDuration="1001/30000s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)" />
+        <asset id="a1" name="MASTER" start="0s" duration="{_t(COMPOUND_F)}" format="r1" hasVideo="1" hasAudio="1" audioSources="1" audioChannels="2">
+            <media-rep kind="original-media" src="file://{paths['master']}" />
+        </asset>
+        <asset id="aMic" name="Mic" start="0s" duration="{_t(COMPOUND_F)}" hasAudio="1" audioSources="1" audioChannels="2">
+            <media-rep kind="original-media" src="file://{paths['mic']}" />
+        </asset>
+        <asset id="aScr" name="Screen" start="0s" duration="{_t(COMPOUND_F)}" hasAudio="1" audioSources="1" audioChannels="2">
+            <media-rep kind="original-media" src="file://{paths['screen']}" />
+        </asset>
+        <asset id="aSfx" name="Sfx" start="0s" duration="{_t(COMPOUND_F)}" hasAudio="1" audioSources="1" audioChannels="2">
+            <media-rep kind="original-media" src="file://{paths.get('sfx', paths['screen'])}" />
+        </asset>
+        <media id="rC" name="Hybrid Cam" uid="CMP" modDate="2026-07-15 18:58:52 -0400">
+            <sequence format="r1" duration="{_t(COMPOUND_F)}" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                <spine>
+                    <gap name="Gap" offset="0s" duration="{_t(TRIM_F)}" />
+                    <gap name="Gap" offset="{_t(TRIM_F)}" duration="{_t(COMPOUND_F - TRIM_F)}" start="{_t(TRIM_F)}">
+                        <video ref="a1" lane="1" name="MASTER" offset="{_t(TRIM_F)}" start="{_t(TRIM_F)}" duration="{_t(COMPOUND_F - TRIM_F)}" />
+{lanes}                    </gap>
+                </spine>
+            </sequence>
+        </media>
+    </resources>
+    <library location="file:///tmp/x.fcpbundle/">
+        <event name="Auto-Editor Media Group" uid="EVT">
+            <project name="Session dc part 1" uid="PRJ0">
+                <sequence format="r1" duration="{_t(declared)}" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+{spine}                    </spine>
+                </sequence>
+            </project>
+        </event>
+    </library>
+</fcpxml>
+'''
+
+
+def _words(track, start, end, step=0.4, dur=0.3):
+    """Evenly spaced words tiling [start, end). The inter-word gap (step - dur) is well under
+    both merge gaps, so one call produces exactly ONE merged active span — and the last
+    word is stretched to land exactly on `end` so that span is precisely [start, end)."""
+    out = []
+    t = start
+    while t < end - 1e-9:
+        out.append({'track': track, 'text': 'w',
+                    'timelineStart': round(t, 6), 'timelineEnd': round(min(t + dur, end), 6),
+                    'fileStart': 0.0, 'fileEnd': 0.0, 'group': 0})
+        t += step
+    if out:
+        out[-1]['timelineEnd'] = round(end, 6)
+    return out
+
+
+def _sidecar(paths, words, tracks=None):
+    return {
+        'schemaVersion': 1, 'session': 'Session', 'model': 'test', 'calibration': 'none',
+        'frameSeconds': FRAME_F,
+        'tracks': tracks if tracks is not None else [
+            {'id': 't0', 'label': 'mic audio_processed', 'file': paths['mic']},
+            {'id': 't1', 'label': 'screen audio_processed', 'file': paths['screen']},
+        ],
+        'words': words,
+    }
+
+
+def _ceil_f(sec):
+    """Seconds -> the first frame index at or after `sec` (the mute pass snaps starts UP)."""
+    import math
+    return math.ceil(sec / FRAME_F)
+
+
+def _floor_f(sec):
+    """Seconds -> the last frame index at or before `sec` (the mute pass snaps ends DOWN)."""
+    import math
+    return math.floor(sec / FRAME_F)
+
+
+class MicMuteTest(unittest.TestCase):
+    """muteMicDuringScreen: split the mic lane inside the compound and disable the blocks
+    where the screen talks and the mic does not."""
+
+    # One 60.06s spine clip windowing compound-local [TRIM_F, TRIM_F+1800). Global t maps to
+    # compound-local t + TRIM_F, so every expected boundary below is a frame count + 60.
+    TIMELINE_F = 1800
+    ONE_WINDOW = [(0, TIMELINE_F, TRIM_F)]
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.paths = make_mute_media_files(self.tmp)
+
+    # -- fixture helpers ----------------------------------------------------
+    def _build(self, words, clips=None, tracks=None, sidecar=True, extra_lane=''):
+        zip_path = Path(self.tmp) / 'Session_compounds.zip'
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr('Session/Session_HYBRID.fcpxml',
+                        mute_master_fcpxml(self.paths, clips or self.ONE_WINDOW, extra_lane))
+        tx = Path(self.tmp) / 'Session_transcript.json'
+        if sidecar:
+            tx.write_text(json.dumps(_sidecar(self.paths, words, tracks)))
+        elif tx.exists():
+            tx.unlink()
+        return zip_path
+
+    @staticmethod
+    def _lanes(path, lane):
+        """Every <clip> on `lane` inside the compound, in document order, as
+        (offset_frames, start_frames, duration_frames, disabled_bool)."""
+        root = ET.parse(path).getroot()
+        gap = root.find(".//media[@id='rC']/sequence/spine/gap[@start]")
+        out = []
+        for el in gap.findall('clip'):
+            if el.get('lane') != str(lane):
+                continue
+            out.append((int(Fraction(*_parse_ts(el.get('offset'))) / FRAME),
+                        int(_start_frac(el) / FRAME),
+                        int(Fraction(*_parse_ts(el.get('duration'))) / FRAME),
+                        el.get('enabled') == '0'))
+        return out
+
+    def _export(self, zip_path, mute=True, cuts=None):
+        return export(str(zip_path), cuts or [{'startFrame': 0, 'endFrame': 10}], None, mute)
+
+    # -- (a)(b)(c) splits land frame-snapped, disabled, and exactly adjacent ---
+    def test_single_mute_block_splits_the_mic_lane(self):
+        # Screen talks 5..25s; the mic talks 0..4s and 30..40s, so the whole screen stretch
+        # is mic-idle and becomes ONE mute block.
+        words = (_words('t1', 5.0, 25.0) + _words('t0', 0.0, 4.0) + _words('t0', 30.0, 40.0))
+        zip_path = self._build(words)
+        result = self._export(zip_path)
+        self.assertEqual(result['micMuteBlocks'], 1)
+
+        s, e = _ceil_f(5.0), _floor_f(25.0)          # (a) snapped INWARD onto the frame grid
+        self.assertEqual(self._lanes(result['path'], -2), [
+            (TRIM_F, 0, s, False),
+            (TRIM_F + s, s, e - s, True),            # (b) only the middle piece is disabled
+            (TRIM_F + e, e, COMPOUND_F - TRIM_F - e, False),
+        ])
+
+    def test_pieces_are_exactly_adjacent_and_preserve_total_duration(self):
+        # (c) Fraction-exact tiling: piece k+1's offset/start is piece k's end, and the
+        # summed duration is the unsplit lane's duration. Read from the raw attributes so a
+        # rounding error anywhere would show up.
+        words = (_words('t1', 5.0, 25.0) + _words('t0', 0.0, 4.0) + _words('t0', 35.0, 45.0))
+        result = self._export(self._build(words))
+        root = ET.parse(result['path']).getroot()
+        gap = root.find(".//media[@id='rC']/sequence/spine/gap[@start]")
+        pieces = [el for el in gap.findall('clip') if el.get('lane') == '-2']
+        self.assertGreater(len(pieces), 1)
+
+        off0 = Fraction(*_parse_ts(pieces[0].get('offset')))
+        cursor_off = off0
+        cursor_start = _start_frac(pieces[0])
+        total = Fraction(0)
+        for el in pieces:
+            self.assertEqual(Fraction(*_parse_ts(el.get('offset'))), cursor_off)
+            self.assertEqual(_start_frac(el), cursor_start)
+            dur = Fraction(*_parse_ts(el.get('duration')))
+            cursor_off += dur
+            cursor_start += dur
+            total += dur
+        self.assertEqual(off0, TRIM_F * FRAME)
+        self.assertEqual(total, (COMPOUND_F - TRIM_F) * FRAME,
+                         "splitting must not change the lane's total duration")
+
+    def test_screen_lane_and_disabled_master_lane_are_untouched(self):
+        words = (_words('t1', 5.0, 25.0) + _words('t0', 0.0, 4.0))
+        result = self._export(self._build(words))
+        # The screen lane is the SOURCE of the muting, never a target.
+        self.assertEqual(self._lanes(result['path'], -3),
+                         [(TRIM_F, 0, COMPOUND_F - TRIM_F, False)])
+        # The disabled master-audio lane stays one clip, still disabled.
+        self.assertEqual(self._lanes(result['path'], -1),
+                         [(TRIM_F, 0, COMPOUND_F - TRIM_F, True)])
+
+    # -- (d) cough / hallucination filtering ---------------------------------
+    def test_short_word_poor_mic_span_is_treated_as_noise_and_still_muted(self):
+        # ONE 0.3s word at 12s, mid screen speech: shorter than MIC_MIN_SPEECH AND fewer than
+        # MIC_MIN_WORDS words -> a cough, not speech. The mute block must NOT be broken by it.
+        self.assertLess(0.3, MIC_MIN_SPEECH)
+        self.assertLess(1, MIC_MIN_WORDS)
+        cough = [{'track': 't0', 'text': 'ahem', 'timelineStart': 12.0, 'timelineEnd': 12.3,
+                  'fileStart': 0.0, 'fileEnd': 0.0, 'group': 0}]
+        words = _words('t1', 5.0, 25.0) + _words('t0', 0.0, 4.0) + cough
+        result = self._export(self._build(words))
+        self.assertEqual(result['micMuteBlocks'], 1)
+        s, e = _ceil_f(5.0), _floor_f(25.0)
+        self.assertEqual(self._lanes(result['path'], -2), [
+            (TRIM_F, 0, s, False),
+            (TRIM_F + s, s, e - s, True),
+            (TRIM_F + e, e, COMPOUND_F - TRIM_F - e, False),
+        ])
+
+    # -- (e) padding ---------------------------------------------------------
+    def test_real_mic_speech_splits_the_block_and_is_padded(self):
+        # FOUR words in 0.55s at 12.0: still shorter than MIC_MIN_SPEECH, but MIC_MIN_WORDS
+        # words is enough to count as speech (the rule is long ENOUGH or wordy enough). The
+        # single mute block therefore breaks in two — and the hole is MIC_PAD wider on each
+        # side than the speech itself, so the host's first and last word survive.
+        talk = [{'track': 't0', 'text': 'w', 'timelineStart': 12.0 + i * 0.15,
+                 'timelineEnd': 12.1 + i * 0.15, 'fileStart': 0.0, 'fileEnd': 0.0, 'group': 0}
+                for i in range(MIC_MIN_WORDS + 1)]
+        speech_start, speech_end = 12.0, 12.1 + MIC_MIN_WORDS * 0.15
+        self.assertLess(speech_end - speech_start, MIC_MIN_SPEECH)
+        words = _words('t1', 5.0, 25.0) + _words('t0', 0.0, 4.0) + talk
+        result = self._export(self._build(words))
+        self.assertEqual(result['micMuteBlocks'], 2)
+
+        a0, a1 = _ceil_f(5.0), _floor_f(speech_start - MIC_PAD)
+        b0, b1 = _ceil_f(speech_end + MIC_PAD), _floor_f(25.0)
+        self.assertEqual(self._lanes(result['path'], -2), [
+            (TRIM_F, 0, a0, False),
+            (TRIM_F + a0, a0, a1 - a0, True),
+            (TRIM_F + a1, a1, b0 - a1, False),
+            (TRIM_F + b0, b0, b1 - b0, True),
+            (TRIM_F + b1, b1, COMPOUND_F - TRIM_F - b1, False),
+        ])
+        # The live hole really is wider than the speech, on BOTH sides, by ~MIC_PAD.
+        self.assertLess(a1 * FRAME_F, speech_start)
+        self.assertGreater(b0 * FRAME_F, speech_end)
+        self.assertAlmostEqual(speech_start - a1 * FRAME_F, MIC_PAD, delta=FRAME_F)
+        self.assertAlmostEqual(b0 * FRAME_F - speech_end, MIC_PAD, delta=FRAME_F)
+
+    def test_mute_block_shorter_than_the_minimum_is_dropped(self):
+        # Screen talks for a second only — below MIN_MUTE_BLOCK, so nothing is emitted and
+        # the lane is left whole. An empty mute set is a legitimate outcome, not an error.
+        self.assertLess(1.0, MIN_MUTE_BLOCK)
+        words = _words('t1', 5.0, 6.0) + _words('t0', 20.0, 30.0)
+        result = self._export(self._build(words))
+        self.assertEqual(result['micMuteBlocks'], 0)
+        self.assertEqual(self._lanes(result['path'], -2),
+                         [(TRIM_F, 0, COMPOUND_F - TRIM_F, False)])
+
+    def test_host_talks_over_everything_yields_no_blocks(self):
+        words = _words('t1', 5.0, 25.0) + _words('t0', 0.0, 40.0)
+        result = self._export(self._build(words))
+        self.assertEqual(result['micMuteBlocks'], 0)
+        self.assertEqual(self._lanes(result['path'], -2),
+                         [(TRIM_F, 0, COMPOUND_F - TRIM_F, False)])
+
+    def test_screen_pauses_shorter_than_the_merge_gap_do_not_fragment_the_block(self):
+        # Two screen stretches a second apart (< SCREEN_MERGE_GAP) are ONE stretch of screen
+        # speech, so the mic is muted straight across the pause instead of flickering back on.
+        self.assertLess(1.0, SCREEN_MERGE_GAP)
+        words = _words('t1', 5.0, 12.0) + _words('t1', 13.0, 25.0) + _words('t0', 30.0, 40.0)
+        result = self._export(self._build(words))
+        self.assertEqual(result['micMuteBlocks'], 1)
+
+    def test_mic_pauses_shorter_than_the_merge_gap_keep_the_mic_live(self):
+        # The host pauses for a second mid-sentence (< MIC_MERGE_GAP) while the screen plays.
+        # That is one stretch of host speech: no mute block may open inside it.
+        self.assertLess(1.0, MIC_MERGE_GAP)
+        words = (_words('t1', 5.0, 25.0)
+                 + _words('t0', 6.0, 12.0) + _words('t0', 13.0, 24.0))
+        result = self._export(self._build(words))
+        self.assertEqual(result['micMuteBlocks'], 0)
+
+    def test_a_mute_covering_the_whole_lane_disables_it_outright(self):
+        # The window covers the lane exactly and the screen talks over all of it with the mic
+        # silent throughout: the mute has no room to split anything, so the lane must come out
+        # as ONE disabled clip rather than being left alone for want of a split point.
+        span_f = COMPOUND_F - TRIM_F
+        words = _words('t1', 0.0, span_f * FRAME_F)
+        result = self._export(self._build(words, clips=[(0, span_f, TRIM_F)]))
+        self.assertEqual(result['micMuteBlocks'], 1)
+        self.assertEqual(self._lanes(result['path'], -2), [(TRIM_F, 0, span_f, True)])
+
+    # -- compound-local mapping across several windows ------------------------
+    def test_mute_maps_through_each_windows_own_source_in_point(self):
+        # Two spine clips windowing DIFFERENT stretches of the compound: global t maps to
+        # compound-local t+TRIM_F in the first and t+300 in the second. A block in each must
+        # land at its own window's offset — a single global shift would put the second wrong.
+        clips = [(0, 900, TRIM_F), (900, 900, 1200)]
+        words = _words('t1', 5.0, 25.0) + _words('t1', 35.0, 55.0) + _words('t0', 0.0, 4.0)
+        result = self._export(self._build(words, clips=clips))
+        self.assertEqual(result['micMuteBlocks'], 2)
+
+        a0, a1 = _ceil_f(5.0), _floor_f(25.0)          # window 1: local = global + 60
+        b0, b1 = _ceil_f(35.0), _floor_f(55.0)         # window 2: local = global + 300
+        la0, la1 = a0 + TRIM_F, a1 + TRIM_F
+        lb0, lb1 = b0 + 300, b1 + 300
+        self.assertEqual(self._lanes(result['path'], -2), [
+            (TRIM_F, 0, la0 - TRIM_F, False),
+            (la0, la0 - TRIM_F, la1 - la0, True),
+            (la1, la1 - TRIM_F, lb0 - la1, False),
+            (lb0, lb0 - TRIM_F, lb1 - lb0, True),
+            (lb1, lb1 - TRIM_F, COMPOUND_F - lb1, False),
+        ])
+
+    # -- the edited file is still a valid, correctly-flattening project --------
+    def test_edited_file_reflattens_with_a_hole_in_the_mic_track(self):
+        # End-to-end evidence, not just attribute reading: run the MANIFEST BUILDER (which is
+        # strict about compound structure and drops enabled="0" subtrees) over the exported
+        # file. The mic track must come back as exactly the two live stretches around the
+        # muted block, while the screen track is still one unbroken run.
+        words = _words('t1', 5.0, 25.0) + _words('t0', 0.0, 4.0) + _words('t0', 30.0, 40.0)
+        zip_path = self._build(words)
+        cuts = [{'startFrame': self.TIMELINE_F - 10, 'endFrame': self.TIMELINE_F}]
+        result = export(str(zip_path), cuts, None, True)
+
+        rezipped = Path(self.tmp) / 'edited_compounds.zip'
+        with zipfile.ZipFile(rezipped, 'w') as zf:
+            zf.writestr('Session/Session_HYBRID.fcpxml', Path(result['path']).read_bytes())
+        manifest = build_manifest(str(rezipped))
+
+        by_label = {t['id']: t['label'] for t in manifest['tracks']}
+        spans = {}
+        for seg in manifest['segments']:
+            label = by_label[seg['trackId']]
+            if label.startswith('mic') or label.startswith('screen'):
+                spans.setdefault(label, []).append(
+                    (round(seg['timelineStart'] / FRAME_F),
+                     round((seg['timelineStart'] + seg['duration']) / FRAME_F)))
+        for v in spans.values():
+            v.sort()
+        s, e = _ceil_f(5.0), _floor_f(25.0)
+        end = self.TIMELINE_F - 10
+        self.assertEqual(spans['mic audio_processed'], [(0, s), (e, end)])
+        self.assertEqual(spans['screen audio_processed'], [(0, end)])
+
+    # -- (f) loud failures ----------------------------------------------------
+    def test_missing_transcript_with_the_flag_is_a_loud_error(self):
+        zip_path = self._build(_words('t1', 5.0, 25.0), sidecar=False)
+        with self.assertRaises(ManifestError) as ctx:
+            self._export(zip_path)
+        self.assertIn('transcribe the session first', str(ctx.exception))
+
+    def test_missing_transcript_without_the_flag_exports_normally(self):
+        zip_path = self._build(_words('t1', 5.0, 25.0), sidecar=False)
+        result = self._export(zip_path, mute=False)
+        self.assertNotIn('micMuteBlocks', result)
+
+    def test_no_screen_track_is_a_loud_error(self):
+        tracks = [{'id': 't0', 'label': 'mic audio_processed', 'file': self.paths['mic']}]
+        zip_path = self._build(_words('t0', 0.0, 4.0), tracks=tracks)
+        with self.assertRaises(ManifestError) as ctx:
+            self._export(zip_path)
+        self.assertIn('no screen-audio track', str(ctx.exception))
+
+    def test_unclassifiable_track_is_a_loud_error(self):
+        tracks = [{'id': 't0', 'label': 'wibble', 'file': '/tmp/wibble.wav'},
+                  {'id': 't1', 'label': 'screen audio_processed', 'file': self.paths['screen']}]
+        zip_path = self._build(_words('t1', 5.0, 25.0), tracks=tracks)
+        with self.assertRaises(ManifestError) as ctx:
+            self._export(zip_path)
+        self.assertIn('matches no known audio role', str(ctx.exception))
+        self.assertIn("'t0'", str(ctx.exception))
+
+    def test_enabled_lane_with_no_transcript_track_is_a_loud_error(self):
+        # An extra enabled lane whose file the sidecar knows nothing about: the sidecar is
+        # stale, so the mute set may be wrong. Refuse rather than export a half-done edit.
+        self.paths['sfx'] = str(Path(self.tmp) / 'Session board.wav')
+        Path(self.paths['sfx']).write_text('fake')
+        extra = _lane_clip_xml(-4, 'Session board', 'aSfx', '', '-10dB')
+        words = _words('t1', 5.0, 25.0) + _words('t0', 0.0, 4.0)
+        zip_path = self._build(words, extra_lane=extra)
+        with self.assertRaises(ManifestError) as ctx:
+            self._export(zip_path)
+        self.assertIn('which no transcript track covers', str(ctx.exception))
+
+    def test_known_non_speech_lane_is_left_alone(self):
+        # The same extra lane, but the sidecar DOES declare it — as a soundboard, which is
+        # neither a mic nor a screen. It must be neither muted nor a reason to mute.
+        self.paths['sfx'] = str(Path(self.tmp) / 'Session soundboard.wav')
+        Path(self.paths['sfx']).write_text('fake')
+        extra = _lane_clip_xml(-4, 'Session soundboard', 'aSfx', '', '-10dB')
+        tracks = [{'id': 't0', 'label': 'mic audio_processed', 'file': self.paths['mic']},
+                  {'id': 't1', 'label': 'screen audio_processed', 'file': self.paths['screen']},
+                  {'id': 't2', 'label': 'soundboard', 'file': self.paths['sfx']}]
+        words = _words('t1', 5.0, 25.0) + _words('t0', 0.0, 4.0)
+        result = self._export(self._build(words, tracks=tracks, extra_lane=extra))
+        self.assertEqual(result['micMuteBlocks'], 1)
+        self.assertEqual(self._lanes(result['path'], -4),
+                         [(TRIM_F, 0, COMPOUND_F - TRIM_F, False)])
+        self.assertEqual(len(self._lanes(result['path'], -2)), 3)
+
+    # -- (g) the flag off changes nothing at all ------------------------------
+    def test_flag_absent_is_byte_identical_to_the_pre_feature_export(self):
+        words = _words('t1', 5.0, 25.0) + _words('t0', 0.0, 4.0)
+        zip_path = self._build(words)          # sidecar PRESENT — it must simply not be read
+        cuts = [{'startFrame': 100, 'endFrame': 150}]
+
+        default_flag = Path(export(str(zip_path), cuts)['path']).read_bytes()
+        explicit_off = Path(export(str(zip_path), cuts, None, False)['path']).read_bytes()
+
+        with zipfile.ZipFile(zip_path) as zf:
+            tree = ET.parse(zf.open('Session/Session_HYBRID.fcpxml'))
+        apply_cuts(tree, 'reference', cuts)
+        ref = Path(self.tmp) / 'reference.fcpxml'
+        FCPXMLUtils.save_fcpxml(tree, str(ref))
+
+        self.assertEqual(default_flag, ref.read_bytes())
+        self.assertEqual(explicit_off, ref.read_bytes())
+        # ...and with the flag ON the bytes really do differ (the test above is not vacuous).
+        self.assertNotEqual(Path(export(str(zip_path), cuts, None, True)['path']).read_bytes(),
+                            ref.read_bytes())
+
+    # -- story export + CLI surface ------------------------------------------
+    def test_story_export_reports_and_applies_the_muting(self):
+        words = _words('t1', 5.0, 25.0) + _words('t0', 0.0, 4.0)
+        zip_path = self._build(words)
+        stories = [{'number': 1, 'title': 'Story A',
+                    'regions': [{'start': _s(0), 'end': _s(900)}]}]
+        result = export_stories(str(zip_path), [], stories, None, True)
+        self.assertEqual(result['type'], 'story_export_result')
+        self.assertEqual(result['micMuteBlocks'], 1)
+        self.assertEqual(len(self._lanes(result['path'], -2)), 3)
+
+    def test_story_export_without_the_flag_reports_nothing(self):
+        words = _words('t1', 5.0, 25.0) + _words('t0', 0.0, 4.0)
+        zip_path = self._build(words)
+        stories = [{'number': 1, 'title': 'Story A',
+                    'regions': [{'start': _s(0), 'end': _s(900)}]}]
+        result = export_stories(str(zip_path), [], stories)
+        self.assertNotIn('micMuteBlocks', result)
+
+    def test_cli_accepts_the_flag(self):
+        words = _words('t1', 5.0, 25.0) + _words('t0', 0.0, 4.0)
+        zip_path = self._build(words)
+        proc = subprocess.run(
+            [sys.executable, str(CLI), '--zip', str(zip_path)],
+            input=json.dumps({'cuts': [{'startFrame': 0, 'endFrame': 10}],
+                              'muteMicDuringScreen': True}),
+            capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, f"stderr:\n{proc.stderr}")
+        payload = json.loads([ln for ln in proc.stdout.splitlines() if ln.strip()][0])
+        self.assertEqual(payload['type'], 'export_result')
+        self.assertEqual(payload['micMuteBlocks'], 1)
+
+    def test_cli_omitting_the_flag_leaves_the_lane_whole(self):
+        words = _words('t1', 5.0, 25.0) + _words('t0', 0.0, 4.0)
+        zip_path = self._build(words)
+        proc = subprocess.run(
+            [sys.executable, str(CLI), '--zip', str(zip_path)],
+            input=json.dumps({'cuts': [{'startFrame': 0, 'endFrame': 10}]}),
+            capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, f"stderr:\n{proc.stderr}")
+        payload = json.loads([ln for ln in proc.stdout.splitlines() if ln.strip()][0])
+        self.assertNotIn('micMuteBlocks', payload)
+        self.assertEqual(len(self._lanes(payload['path'], -2)), 1)
+
+    def test_cli_rejects_a_non_boolean_flag(self):
+        zip_path = self._build(_words('t1', 5.0, 25.0) + _words('t0', 0.0, 4.0))
+        proc = subprocess.run(
+            [sys.executable, str(CLI), '--zip', str(zip_path)],
+            input=json.dumps({'cuts': [{'startFrame': 0, 'endFrame': 10}],
+                              'muteMicDuringScreen': 'yes'}),
+            capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn('must be a boolean', json.loads(proc.stdout.splitlines()[0])['message'])
 
 
 def split_spine_element_ext(el, cuts, ripple):

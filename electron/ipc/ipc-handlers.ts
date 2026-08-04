@@ -487,6 +487,10 @@ function setupEditorHandlers(windowService: WindowService): void {
     cuts: Array<{ startFrame: number; endFrame: number }>;
     stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }>;
     output?: 'fcpxml' | 'transcripts';
+    // Split every mic lane where the screen track speaks and the mic does not, and disable
+    // the middle pieces. Must be forwarded explicitly below — this handler passes named
+    // arguments on to pythonService, so any field it does not name is dropped.
+    muteMicDuringScreen?: boolean;
   }) => {
     const zipPath = payload?.zipPath;
     if (typeof zipPath !== 'string' || zipPath.trim() === '') {
@@ -553,8 +557,14 @@ function setupEditorHandlers(windowService: WindowService): void {
       }
     }
 
+    const muteMic = payload?.muteMicDuringScreen;
+    if (muteMic !== undefined && typeof muteMic !== 'boolean') {
+      throw new Error(`editor:export muteMicDuringScreen must be a boolean, got: ${typeof muteMic}`);
+    }
+
     return await pythonService.editorExport(
-      zipPath, cuts, isStoryExport ? stories : undefined, isStoryExport ? output : undefined);
+      zipPath, cuts, isStoryExport ? stories : undefined, isStoryExport ? output : undefined,
+      muteMic);
   });
 
   // ── Editor edit-state sidecar (<session>_edits.json next to the zip) ──────────

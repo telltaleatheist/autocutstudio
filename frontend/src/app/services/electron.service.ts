@@ -231,6 +231,11 @@ export class ElectronService {
     sequence?: Array<{ start: number; end: number }>;
     stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }>;
     output?: 'fcpxml' | 'transcripts';
+    // Split every mic lane at the boundaries of each stretch where the SCREEN track has
+    // speech and that mic has none, and mark the middle piece enabled="0" (FCPX's disabled
+    // clip). Derived from the Whisper transcript sidecar, so the export FAILS LOUDLY when
+    // there is no sidecar rather than quietly skipping the muting.
+    muteMicDuringScreen?: boolean;
   }): Promise<any> {
     if (!this.isElectron()) {
       throw new Error('Not running in Electron');

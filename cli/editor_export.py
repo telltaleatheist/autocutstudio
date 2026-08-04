@@ -16,7 +16,8 @@
 #     python cli/editor_export.py --zip /abs/path/<name>_compounds.zip
 #   with a JSON object on STDIN:
 #     { "cuts": [ {"startFrame": int, "endFrame": int}, ... ],
-#       "sequence": [ {"start": float, "end": float}, ... ]   # OPTIONAL playback order }
+#       "sequence": [ {"start": float, "end": float}, ... ], # OPTIONAL playback order
+#       "muteMicDuringScreen": bool }                        # OPTIONAL, default false
 #
 # 'sequence' is the OPTIONAL reorder: an ordered list of the surviving spans (ORIGINAL
 # seconds, the same declared-concatenated time base as cuts and stories[].regions) in the
@@ -27,9 +28,15 @@
 # they must cover exactly the survivors — see _validate_sequence for why anything else is
 # refused outright.
 #
+# 'muteMicDuringScreen' is the OPTIONAL mic-mute pass (see the "Mic muting under screen
+# audio" section below): every stretch where the screen track has speech and a mic track
+# has none becomes a DISABLED block on that mic's lane inside the compound <media>. It runs
+# BEFORE the cut/story surgery, on original-timeline coordinates. Absent/false = the export
+# is byte-identical to what it has always produced.
+#
 # Output (stdout, exactly one line):
 #     success: {"type":"export_result","path":"/abs/.../<name>_HYBRID_edited.fcpxml",
-#               "cutsApplied":N,"newDurationSeconds":float}
+#               "cutsApplied":N,"newDurationSeconds":float[,"micMuteBlocks":int]}
 #     failure: {"type":"error","message":"..."}  + exit code 1
 # All diagnostics go to stderr only.
 #
@@ -49,11 +56,13 @@
 import argparse
 import copy
 import json
+import math
 import re
 import sys
 import zipfile
 from fractions import Fraction
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 import xml.etree.ElementTree as ET
 
 # Share the v1 helpers verbatim (do NOT duplicate or re-implement them). Adding the repo
@@ -900,6 +909,582 @@ def _story_kepts(stories, global_cuts):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Mic muting under screen audio (the 'muteMicDuringScreen' flag)
+# ---------------------------------------------------------------------------
+# The host's mic and the screen-audio capture both run the WHOLE session. While a screen
+# clip plays the host is usually silent — but the mic still records coughs, chewing and
+# room noise, which is what they hand-mute in FCPX afterwards. This does it for them:
+# every stretch where the SCREEN has speech and the MIC has none becomes a disabled block
+# on the mic lane — the clip is SPLIT at the stretch's start and end and the middle piece
+# gets enabled="0" (FCPX's "clip disabled", the darkened state you toggle with V). One
+# click in FCPX puts a whole block back; no volume keyframes are involved.
+#
+# SIGNAL: the Whisper transcript sidecar (<session>_transcript.json, cli/transcribe.py),
+# NOT auto-editor. Its word times (timelineStart/End) live in the SAME declared-
+# concatenated ORIGINAL timeline as `cuts` and `stories[].regions`, so the mute set is
+# computed in that base and then mapped into each compound's internal timeline.
+#
+# WHERE THE SPLIT LANDS — verified against the generators, not assumed:
+#   * core/compound_generators/master_project_generator.py:792-853 builds EVERY master
+#     spine clip the same way: the main <ref-clip> takes the CAM compound with
+#     srcEnable="video" (picture only), a lane -1 <ref-clip> takes the SAME CAM compound
+#     with srcEnable="audio", a lane -2 <ref-clip> takes SSB with srcEnable="audio", a
+#     lane 1 <ref-clip> takes GS (no srcEnable -> audio passes, but muted -96dB), and a
+#     lane 2 <ref-clip> takes SSB with srcEnable="video". So MIC audio is audible for the
+#     whole session through exactly ONE path: the lane -1 CAM-compound audio ref-clip —
+#     during GS and SSB sections too, because those only replace the PICTURE.
+#   * cam_generator.py:249-266 puts mic1..mic4 (+ soundEffects) inside the CAM compound as
+#     ENABLED <clip> elements on lanes -2, -3, ... ; gs_generator.py:288-355 puts the same
+#     sources in the GS compound with enabled=False throughout; ssb_generator.py:255-271
+#     enables screen/game/bluetooth in the SSB compound. We therefore split inside the
+#     compound <media> definitions, skipping every disabled element — which by itself is
+#     what limits the edit to the lanes that are actually audible.
+#   * Splitting inside the compound is also what makes ONE edit cover every window into
+#     it: the master spine references the CAM compound once per auto-editor cut, and a
+#     disabled piece of the compound's mic lane is disabled in all of them.
+#
+# LANE IDENTIFICATION is by RESOLVED MEDIA FILE, never by clip name. A lane's <audio ref>
+# is resolved to its asset's media-rep path exactly the way cli/editor_manifest.py does,
+# and the sidecar's tracks[].file carries that same absolute path (cli/transcribe.py:226
+# fills it straight from the flattened leaves). cam_generator.py:252-253 does set the clip
+# name to the processed file's stem, so the name would usually agree — but a name is
+# cosmetic and a path is the thing the transcript was actually keyed on.
+#
+# NO SILENT FALLBACKS: a missing sidecar, a transcript with no screen track, a track whose
+# label/filename matches no known role, and an enabled audio lane whose file no transcript
+# track covers all raise and refuse the whole export.
+
+# --- Constants. Numbers are sacred: each is named and says what it PROTECTS. ---
+# All are SECONDS in the original concatenated timeline, except MIC_MIN_WORDS (a count).
+
+SCREEN_MERGE_GAP = 2.0
+"""Screen-audio words this close together are ONE stretch of screen speech. Protects the
+mute block from being shredded by the ordinary pauses between sentences in the clip being
+reacted to — fragments would leave the mic live a second at a time, which is exactly where
+a cough lands."""
+
+MIC_MERGE_GAP = 1.5
+"""Mic words this close together are ONE stretch of host speech. Protects the host's own
+pauses: someone thinking mid-sentence must not read as "the mic is idle, mute it", which
+would disable the back half of their own sentence."""
+
+MIC_MIN_SPEECH = 0.8
+"""Shortest merged mic stretch that can count as real speech on duration alone."""
+
+MIC_MIN_WORDS = 3
+"""Fewest words a merged mic stretch can have and still count as real speech on word count
+alone. Together with MIC_MIN_SPEECH: a stretch survives if it is long ENOUGH *or* wordy
+enough, and is dropped only when it is both short AND word-poor. That pair protects the
+whole point of the feature — a cough, a chew, or a Whisper hallucination on screen-audio
+bleed is short and word-poor, and if it counted as speech it would keep the mic live over
+precisely the noise the user wants gone."""
+
+MIC_PAD = 0.5
+"""Every surviving mic stretch grows by this much on EACH side before it is subtracted from
+the screen-active set. Protects the host's first and last word: Whisper's word boundaries
+are approximate at the edges, and a mute block that started a beat early would swallow the
+attack of the next thing they say."""
+
+MIN_MUTE_BLOCK = 2.0
+"""A computed mute stretch shorter than this is discarded. Protects the edit itself: a
+half-second disabled block costs two extra clips in FCPX for no audible benefit, and it is
+about the length at which an error in the word times would be heard as a dropout."""
+
+# --- Track role vocabulary. The pipeline's own audio-source names (see
+# --- cli/electron_workflow.py:1465 and config/autostudio_config.yaml's audio_sources
+# --- lists) are mic1..mic4 / screen / game / soundEffects / bluetooth / desktop, but the
+# --- files on disk are named by the USER (core/audio_processor.get_processed_path only
+# --- appends '_processed'), so the role has to be read out of the label/filename. 'screen'
+# --- first, mirroring _speaker_map, so the two agree on what a screen track is.
+_SCREEN_ROLE_KEYWORDS = ('screen',)
+_MIC_ROLE_KEYWORDS = ('mic',)
+_NON_SPEECH_ROLE_KEYWORDS = ('soundeffect', 'sound effect', 'sfx', 'soundboard',
+                             'game', 'bluetooth', 'desktop', 'music')
+
+
+def _mic_mute_track_roles(tracks, sidecar_label):
+    """Classify every transcript track as 'screen', 'mic' or 'other' by its label+filename.
+
+    'other' is a REAL classification, not a fallback: a soundboard/game/bluetooth lane is
+    a genuine enabled audio lane in the CAM/SSB compounds and must be left completely
+    alone (it is neither a reason to mute nor something to mute). A track that matches no
+    keyword at all is genuinely ambiguous — we cannot tell a second mic from a music bed —
+    and guessing would either mute the host or leave the cough in, so it raises."""
+    roles = {}
+    for t in tracks:
+        tid = t.get('id')
+        if not tid:
+            raise ManifestError(f"{sidecar_label}: a track has no 'id'")
+        blob = f"{t.get('label') or ''} {t.get('file') or ''}".lower()
+        if any(k in blob for k in _SCREEN_ROLE_KEYWORDS):
+            roles[tid] = 'screen'
+        elif any(k in blob for k in _MIC_ROLE_KEYWORDS):
+            roles[tid] = 'mic'
+        elif any(k in blob for k in _NON_SPEECH_ROLE_KEYWORDS):
+            roles[tid] = 'other'
+        else:
+            raise ManifestError(
+                f"{sidecar_label}: transcript track {tid!r} (label {t.get('label')!r}, file "
+                f"{t.get('file')!r}) matches no known audio role, so muting the mic under "
+                "screen audio cannot be decided for it. A track is recognised by a keyword "
+                f"in its label or filename: screen={list(_SCREEN_ROLE_KEYWORDS)}, "
+                f"mic={list(_MIC_ROLE_KEYWORDS)}, non-speech={list(_NON_SPEECH_ROLE_KEYWORDS)}. "
+                "Rename the source file to say what it is, or export with 'Mute mic while "
+                "screen audio speaks' turned off.")
+    if 'screen' not in roles.values():
+        raise ManifestError(
+            f"{sidecar_label}: no screen-audio track in the transcript (tracks: "
+            f"{[(t.get('id'), t.get('label')) for t in tracks]}). Muting the mic under screen "
+            "audio needs screen speech to mute UNDER; there is nothing to compute from.")
+    if 'mic' not in roles.values():
+        raise ManifestError(
+            f"{sidecar_label}: no mic track in the transcript (tracks: "
+            f"{[(t.get('id'), t.get('label')) for t in tracks]}). There is no mic lane to mute.")
+    return roles
+
+
+def _merge_word_spans(spans, max_gap):
+    """Merge (start, end) float word spans separated by <= max_gap into
+    [(start, end, word_count)], sorted and disjoint. The count rides along because
+    MIC_MIN_WORDS judges a merged stretch, not an individual word."""
+    out = []
+    for (s, e) in sorted(spans):
+        if out and s - out[-1][1] <= max_gap:
+            ps, pe, pn = out[-1]
+            out[-1] = (ps, max(pe, e), pn + 1)
+        else:
+            out.append((s, e, 1))
+    return out
+
+
+def _intersect_intervals(a, b):
+    """Intersection of two sorted, disjoint interval lists. Result is sorted and disjoint."""
+    out = []
+    i = j = 0
+    while i < len(a) and j < len(b):
+        s = max(a[i][0], b[j][0])
+        e = min(a[i][1], b[j][1])
+        if s < e:
+            out.append((s, e))
+        if a[i][1] <= b[j][1]:
+            i += 1
+        else:
+            j += 1
+    return out
+
+
+def _snap_mute_block(s, e, frame_seconds, total_declared):
+    """Snap a float-seconds mute stretch INWARD onto the frame grid and return it as exact
+    Fractions, or None if it does not survive.
+
+    INWARD (ceil the start, floor the end) is deliberate and one-directional: word times
+    are arbitrary floats, and rounding outward would disable a frame of audio the signal
+    never actually claimed was silent. Snapping inward can only ever mute LESS than the
+    computed stretch, so a boundary error can never eat into the host's speech.
+    MIN_MUTE_BLOCK is applied AFTER snapping, so every emitted block really is that long."""
+    fs = float(frame_seconds)
+    lo = max(Fraction(0), math.ceil(s / fs) * frame_seconds)
+    hi = min(total_declared, math.floor(e / fs) * frame_seconds)
+    if hi - lo < MIN_MUTE_BLOCK:
+        return None
+    return (lo, hi)
+
+
+def _mic_mute_plan(sidecar, roles, frame_seconds, total_declared, sidecar_label):
+    """Mute blocks per MIC track id: {track_id: [(Fraction start, Fraction end), ...]} in
+    ORIGINAL concatenated-timeline seconds — sorted, disjoint, frame-snapped, each at
+    least MIN_MUTE_BLOCK long.
+
+    screen_active = every screen track's words merged at SCREEN_MERGE_GAP (unioned across
+    screen tracks — any screen source speaking counts). Each mic track is judged on its
+    OWN words: merged at MIC_MERGE_GAP, cough/hallucination stretches dropped, survivors
+    padded by MIC_PAD, and the mute set is screen_active minus that. Per-track is the point
+    — with four mics, mic 2 coughing is no reason to keep mic 3 live."""
+    by_track = {}
+    for w in sidecar['words']:
+        tid = w.get('track')
+        if tid not in roles:
+            raise ManifestError(
+                f"{sidecar_label}: a word references track {tid!r}, which is not one of the "
+                f"declared tracks {sorted(roles)}")
+        by_track.setdefault(tid, []).append((float(w['timelineStart']), float(w['timelineEnd'])))
+
+    hi = float(total_declared)
+
+    screen_spans = []
+    for tid, role in roles.items():
+        if role != 'screen':
+            continue
+        screen_spans.extend((s, e) for (s, e, _n)
+                            in _merge_word_spans(by_track.get(tid, []), SCREEN_MERGE_GAP))
+    screen_active = _merge_intervals(screen_spans)
+
+    plan = {}
+    for tid, role in roles.items():
+        if role != 'mic':
+            continue
+        merged = _merge_word_spans(by_track.get(tid, []), MIC_MERGE_GAP)
+        # Keep a stretch if it is long enough OR wordy enough; drop only the short AND
+        # word-poor ones (cough / chew / hallucinated bleed).
+        real = [(s, e) for (s, e, n) in merged
+                if (e - s) >= MIC_MIN_SPEECH or n >= MIC_MIN_WORDS]
+        padded = _merge_intervals(
+            [(max(0.0, s - MIC_PAD), min(hi, e + MIC_PAD)) for (s, e) in real
+             if s - MIC_PAD < hi])
+        idle = _complement(padded, 0.0, hi)          # where this mic is NOT speaking
+        blocks = []
+        for (s, e) in _intersect_intervals(screen_active, idle):
+            snapped = _snap_mute_block(s, e, frame_seconds, total_declared)
+            if snapped is not None:
+                blocks.append(snapped)
+        plan[tid] = blocks
+    return plan
+
+
+def _asset_path(assets, asset_id, context):
+    """asset id -> absolute media file path. SAME resolution as
+    editor_manifest.ManifestBuilder._asset_file (file:// URL, unquoted exactly once), which
+    is what makes the path comparable to the transcript sidecar's tracks[].file."""
+    asset = assets.get(asset_id)
+    if asset is None:
+        raise ManifestError(f"{context}: asset {asset_id!r} referenced but not defined in <resources>")
+    media_rep = asset.find('media-rep')
+    if media_rep is None:
+        raise ManifestError(f"{context}: asset {asset_id!r} has no <media-rep>; no media file to resolve")
+    src = media_rep.get('src')
+    if not src:
+        raise ManifestError(f"{context}: asset {asset_id!r} media-rep has no 'src'")
+    if not src.startswith('file://'):
+        raise ManifestError(f"{context}: asset {asset_id!r} media-rep src is not a file:// URL: {src!r}")
+    path = unquote(urlparse(src).path)
+    if not path:
+        raise ManifestError(f"{context}: asset {asset_id!r} media-rep src has empty path: {src!r}")
+    return path
+
+
+def _audio_files_in(el, assets, context):
+    """Distinct media files the <audio> leaves at or under `el` reference. Every audio path
+    in this pipeline goes through an <audio> element (xml_utils.create_audio_clip,
+    create_audio_only_clip and create_clip_with_audio_effects all emit one), so this is the
+    complete set of files a lane can carry."""
+    files = set()
+    for node in el.iter():
+        if node.tag != 'audio':
+            continue
+        ref = node.get('ref')
+        if not ref:
+            raise ManifestError(f"{context}: an <audio> element has no 'ref'; no media file to resolve")
+        files.add(_asset_path(assets, ref, context))
+    return files
+
+
+def _walk_audio_windows(items, A, win_start, win_end, media_index, assets, out, context):
+    """Record, for every compound <media> whose AUDIO is audible, the windows the timeline
+    opens into it: out[media_id] gets (visible_start, visible_end, origin) in ORIGINAL
+    concatenated seconds, where `origin` is the global time of compound-local 0 — so a
+    global time t inside the window is compound-local t - origin.
+
+    Mirrors editor_manifest.ManifestBuilder._process_items: same offset/start arithmetic,
+    same disabled-subtree skip, same srcEnable gate. A ref-clip with srcEnable="video"
+    contributes no audio, so neither it nor the compound under it is recorded or entered."""
+    for el in items:
+        if el.tag not in TIMELINE_TAGS:
+            continue
+        if el.get('enabled') == '0':
+            continue  # disabled clip/lane — inaudible, subtree and all
+        offset = parse_rational(el.get('offset', '0s'), f"{context}: {el.tag} offset")
+        duration = parse_rational(el.get('duration'), f"{context}: {el.tag} duration")
+        start_attr = el.get('start')
+        start = (parse_rational(start_attr, f"{context}: {el.tag} start")
+                 if start_attr is not None else Fraction(0))
+        a0 = A + offset
+        a1 = a0 + duration
+        cs = max(a0, win_start)
+        ce = min(a1, win_end)
+        if cs >= ce:
+            continue  # not visible in the current window
+        child_A = a0 - start
+        if el.tag == 'ref-clip':
+            ref = el.get('ref')
+            src_enable = el.get('srcEnable')        # video | audio | all | None(=all)
+            if src_enable in (None, 'all', 'audio'):
+                if ref not in media_index:
+                    raise ManifestError(
+                        f"{context}: ref-clip references {ref!r} which is not a compound "
+                        "<media> in <resources>")
+                out.setdefault(ref, []).append((cs, ce, child_A))
+                compound = media_index[ref]
+                comp_seq = compound.find('sequence')
+                if comp_seq is None:
+                    raise ManifestError(f"{context}: compound {ref!r} has no <sequence>")
+                comp_spine = comp_seq.find('spine')
+                if comp_spine is None:
+                    raise ManifestError(f"{context}: compound {ref!r} sequence has no <spine>")
+                # A compound may itself reference further compounds; those windows matter too.
+                _walk_audio_windows(list(comp_spine), child_A, cs, ce, media_index, assets,
+                                    out, f"{context} > compound {ref!r}")
+            # This ref-clip's own anchored lane children sit in the same frame but each
+            # carries its own srcEnable, so they are always visited.
+            _walk_audio_windows([c for c in el if c.tag in TIMELINE_TAGS], child_A, cs, ce,
+                                media_index, assets, out, f"{context} > anchored")
+            continue
+        if el.tag == 'gap' or (el.tag == 'clip' and (el.get('ref') is None
+                                                     or el.get('ref') not in assets)):
+            _walk_audio_windows([c for c in el if c.tag in TIMELINE_TAGS], child_A, cs, ce,
+                                media_index, assets, out, f"{context} > {el.tag}")
+        # leaf video/audio/asset-clip: no compound below it, nothing to record
+
+
+def _compound_audio_windows(parts, media_index, assets, entry_name):
+    """{media_id: [(global_start, global_end, origin)]} across every part, using the SAME
+    concatenation model as _collect_parts (each part offset by the summed declared
+    durations before it)."""
+    out = {}
+    base = Fraction(0)
+    for part in parts:
+        declared = part['declared']
+        _walk_audio_windows(list(part['spine']), base, base, base + declared,
+                            media_index, assets, out,
+                            f"{entry_name}: project {part['name']!r}")
+        base += declared
+    return out
+
+
+def _collect_mute_lanes(media_el, assets, mic_files, known_files, context):
+    """Find the ENABLED mic lanes inside one compound.
+
+    Returns [(parent_element, lane_element, frame_A, file_path)], where frame_A is the
+    compound-local time of local-0 of the frame the lane's own 'offset' is measured in — so
+    the lane spans compound-local [frame_A + offset, + duration). Disabled elements are
+    skipped entirely (that alone is what excludes the GS compound's mic lanes, which
+    gs_generator.py:288-305 emits with enabled=False, and the master-audio lane).
+
+    Loud on an enabled audio lane whose file no transcript track covers: transcribe.py
+    enumerates EVERY non-master audio file in the flattened timeline, so a lane missing
+    from the sidecar means the sidecar is stale, and muting around a track we cannot see
+    would be exactly the silent guess the doctrine forbids."""
+    seq = media_el.find('sequence')
+    if seq is None:
+        raise ManifestError(f"{context}: compound <media> has no <sequence>")
+    spine = seq.find('spine')
+    if spine is None:
+        raise ManifestError(f"{context}: compound sequence has no <spine>")
+
+    found = []
+
+    def walk(parent, A):
+        for el in list(parent):
+            if el.tag not in TIMELINE_TAGS:
+                continue
+            if el.get('enabled') == '0':
+                continue
+            if el.tag in ('clip', 'audio', 'asset-clip'):
+                files = _audio_files_in(el, assets, context)
+                if files:
+                    mics = files & mic_files
+                    if mics:
+                        if len(files) > 1:
+                            raise ManifestError(
+                                f"{context}: audio lane <{el.tag} lane={el.get('lane')!r} "
+                                f"name={el.get('name')!r}> mixes several media files "
+                                f"{sorted(files)}; it cannot be split per mic track")
+                        found.append((parent, el, A, next(iter(mics))))
+                        continue
+                    if files.isdisjoint(known_files):
+                        raise ManifestError(
+                            f"{context}: enabled audio lane <{el.tag} lane={el.get('lane')!r} "
+                            f"name={el.get('name')!r}> references {sorted(files)}, which no "
+                            f"transcript track covers. Transcript tracks: {sorted(known_files)}. "
+                            "Re-transcribe the session (the sidecar is stale) or export with "
+                            "'Mute mic while screen audio speaks' turned off.")
+                    continue
+            offset = parse_rational(el.get('offset', '0s'), f"{context}: {el.tag} offset")
+            start_attr = el.get('start')
+            start = (parse_rational(start_attr, f"{context}: {el.tag} start")
+                     if start_attr is not None else Fraction(0))
+            walk(el, A + offset - start)
+
+    walk(spine, Fraction(0))
+    return found
+
+
+def _subtree_frame_aligned(el, frame_seconds):
+    """True iff every offset/start/duration in `el`'s subtree is frame-aligned. Compound
+    internals usually are NOT (a lane's inner gap/audio carry the raw ffprobe duration of
+    the source file), so this decides per compound whether computed values may be asserted
+    frame-aligned — the same policy _inputs_frame_aligned applies to the spines."""
+    for node in el.iter():
+        for attr in ('offset', 'start', 'duration'):
+            v = node.get(attr)
+            if v is None:
+                continue
+            try:
+                fr = parse_rational(v, attr)
+            except ManifestError:
+                return False
+            if not _is_frame_aligned(fr, frame_seconds):
+                return False
+    return True
+
+
+def _split_lane_for_mute(parent, lane, frame_A, local_mutes, frame_seconds, check_align, context):
+    """Replace `lane` in `parent` with adjacent pieces cut at the mute boundaries; the
+    pieces covering a mute interval get enabled="0". Returns the number of disabled pieces.
+
+    The pieces TILE the lane's original span exactly — offsets/starts/durations are composed
+    with Fraction arithmetic from the same numbers, so piece k+1 starts precisely where
+    piece k ends and the summed duration is the original duration. Nothing ripples: this is
+    an in-place subdivision of one clip inside a compound.
+
+    Children (adjust-volume, the inner <gap>/<audio> pair, audio-channel-source,
+    filter-audio) are deep-copied UNTOUCHED. That is deliberate: xml_utils.
+    create_clip_with_audio_effects already builds the lane as a window over a full-length
+    inner gap (duration=source_duration) governed by the clip's own start/duration, so a
+    piece with a new start/duration is exactly the shape the generator itself emits — and
+    re-clipping the inner gap would invent a structure FCPX never saw from this pipeline."""
+    offset, start, duration, had_start = _read_span(lane, context)
+    c0 = frame_A + offset
+    c1 = c0 + duration
+
+    segments = []
+    cursor = c0
+    for (ms, me) in local_mutes:
+        s = max(ms, c0)
+        e = min(me, c1)
+        if s >= e:
+            continue
+        if s > cursor:
+            segments.append((cursor, s, False))
+        segments.append((s, e, True))
+        cursor = e
+    if cursor < c1:
+        segments.append((cursor, c1, False))
+    if not any(is_mute for (_s, _e, is_mute) in segments):
+        return 0  # no mute touches this lane — leave it exactly as it was
+    # NOTE: a single segment that IS a mute (the whole lane is inaudible) still goes through
+    # the loop below, so it comes out as one disabled clip. Bailing on len(segments) == 1
+    # would silently drop that case, which is precisely the shape a fully-screen-covered
+    # section produces.
+
+    index = list(parent).index(lane)
+    parent.remove(lane)
+    muted = 0
+    for k, (s, e, is_mute) in enumerate(segments):
+        piece = copy.deepcopy(lane)
+        _set_time(piece, 'offset', offset + (s - c0), frame_seconds, check_align, context)
+        _set_start(piece, start + (s - c0), had_start, frame_seconds, check_align, context)
+        _set_time(piece, 'duration', e - s, frame_seconds, check_align, context)
+        if is_mute:
+            piece.set('enabled', '0')
+            muted += 1
+        parent.insert(index + k, piece)
+    return muted
+
+
+def apply_mic_mute(tree, entry_name, zip_path):
+    """Mutate `tree` in place: split every enabled mic lane inside every audible compound at
+    its mute boundaries and disable the middle pieces. Returns the number of disabled pieces
+    emitted (0 is a legitimate outcome — the host talked over everything).
+
+    Runs BEFORE any cut/story/reorder surgery, on the pristine tree: the mute set is stated
+    in ORIGINAL timeline coordinates, which is exactly what the untouched spines still
+    describe. The spine surgery that follows never enters compound <media>, so the two
+    edits cannot interfere."""
+    root = tree.getroot()
+    parts, frame_seconds, total_declared = _collect_parts(root, entry_name)
+    sidecar_label = f"{_session_name(zip_path)}_transcript.json"
+    sidecar = _load_transcript_sidecar(zip_path, frame_seconds)
+    if sidecar is None:
+        raise ManifestError(
+            f"muting the mic under screen audio was requested, but there is no transcript "
+            f"sidecar ({sidecar_label}) next to the zip. The mute blocks come from the "
+            "Whisper word times — transcribe the session first, or export with 'Mute mic "
+            "while screen audio speaks' turned off.")
+
+    roles = _mic_mute_track_roles(sidecar['tracks'], sidecar_label)
+    plan = _mic_mute_plan(sidecar, roles, frame_seconds, total_declared, sidecar_label)
+
+    track_of_file = {}
+    for t in sidecar['tracks']:
+        f = t.get('file')
+        if not f:
+            raise ManifestError(f"{sidecar_label}: track {t.get('id')!r} has no 'file'")
+        if f in track_of_file:
+            raise ManifestError(
+                f"{sidecar_label}: tracks {track_of_file[f]!r} and {t['id']!r} name the same "
+                f"file {f} — a lane cannot be mapped to one of them")
+        track_of_file[f] = t['id']
+    known_files = set(track_of_file)
+    mic_files = {f for f, tid in track_of_file.items() if roles[tid] == 'mic'}
+
+    resources = root.find('resources')
+    if resources is None:
+        raise ManifestError(f"{entry_name}: no <resources> element in master hybrid project")
+    media_index = {el.get('id'): el for el in resources if el.tag == 'media' and el.get('id')}
+    assets = {el.get('id'): el for el in resources if el.tag == 'asset' and el.get('id')}
+
+    windows = _compound_audio_windows(parts, media_index, assets, entry_name)
+
+    total_blocks = 0
+    lane_files_seen = set()
+    for media_id in sorted(windows):
+        wins = windows[media_id]
+        media_el = media_index[media_id]
+        context = f"{entry_name}: compound {media_id!r}"
+        # Two windows into the SAME compound that overlap in COMPOUND-LOCAL time would mean
+        # one stretch of source material plays twice on the timeline. A split inside the
+        # compound is shared by every window into it, so the two occurrences could not be
+        # given different verdicts — refuse rather than silently mute both.
+        spans = sorted((s - origin, e - origin) for (s, e, origin) in wins)
+        for i in range(1, len(spans)):
+            if spans[i][0] < spans[i - 1][1]:
+                raise ManifestError(
+                    f"{context}: the timeline windows into this compound overlap in the "
+                    f"compound's own timeline ({float(spans[i][0])}s starts before "
+                    f"{float(spans[i - 1][1])}s ends) — the same source material plays twice, "
+                    "so one shared split inside the compound cannot serve both occurrences")
+
+        lanes = _collect_mute_lanes(media_el, assets, mic_files, known_files, context)
+        if not lanes:
+            continue
+        check_align = _subtree_frame_aligned(media_el, frame_seconds)
+        for (parent, lane, frame_A, path) in lanes:
+            lane_files_seen.add(path)
+            tid = track_of_file[path]
+            blocks = plan.get(tid, [])
+            local = []
+            for (gs, ge, origin) in wins:
+                for (ms, me) in blocks:
+                    s = max(ms, gs)
+                    e = min(me, ge)
+                    if s < e:
+                        local.append((s - origin, e - origin))
+            local = _merge_intervals(local)
+            lane_ctx = (f"{context} lane {lane.get('lane')!r} ({Path(path).name})")
+            n = _split_lane_for_mute(parent, lane, frame_A, local, frame_seconds,
+                                     check_align, lane_ctx)
+            total_blocks += n
+            print(f"[editor_export] mic mute: {lane_ctx}: {n} disabled block(s) from "
+                  f"{len(blocks)} planned", file=sys.stderr)
+
+    # A mic track we planned blocks for but never found a lane for would be a silent skip:
+    # the export would look fine and the coughs would still be in it.
+    for tid, blocks in plan.items():
+        if not blocks:
+            continue
+        want = next(f for f, t in track_of_file.items() if t == tid)
+        if want not in lane_files_seen:
+            raise ManifestError(
+                f"{entry_name}: transcript track {tid!r} ({Path(want).name}) has "
+                f"{len(blocks)} mute block(s) but no enabled audio lane in any compound "
+                f"references that file. Lanes found: "
+                f"{sorted(Path(p).name for p in lane_files_seen) or 'none'}")
+
+    print(f"[editor_export] mic mute: {total_blocks} disabled block(s) total", file=sys.stderr)
+    return total_blocks
+
+
 def apply_stories(tree, entry_name, cuts_raw, stories_raw, sequence_raw=None):
     """Mutate `tree` in place: replace the part <project>s under <event> with one <project>
     per story (regions minus cuts, collapsed to 0, named by title, ordered by number), PLUS
@@ -1041,10 +1626,15 @@ def _parse_master_tree(zip_path):
     return zp, entry, tree
 
 
-def export_stories(zip_path, cuts_raw, stories_raw, sequence_raw=None):
+def export_stories(zip_path, cuts_raw, stories_raw, sequence_raw=None,
+                   mute_mic_during_screen=False):
     """Master FCPXML split by stories: one <project> per story + a Scrap project of the
     unclaimed remainder. Writes ONLY the fcpxml (transcripts are a separate export)."""
     zp, entry, tree = _parse_master_tree(zip_path)
+    # Mic muting first, on the untouched tree: it is stated in ORIGINAL timeline
+    # coordinates and lives inside the compound <media>, which the story surgery below
+    # copies through without looking at.
+    mic_mute_blocks = apply_mic_mute(tree, entry, zip_path) if mute_mic_during_screen else None
     results = apply_stories(tree, entry, cuts_raw, stories_raw, sequence_raw)
 
     # Land the story projects in their OWN event, distinctly named. FCP merges imports into
@@ -1063,12 +1653,15 @@ def export_stories(zip_path, cuts_raw, stories_raw, sequence_raw=None):
     emitted = sum(1 for r in results if r['emitted'])
     print(f"[editor_export] wrote {out_path} ({emitted}/{len(results)} projects emitted)", file=sys.stderr)
 
-    return {
+    result = {
         'type': 'story_export_result',
         'path': str(out_path),
         'storiesEmitted': emitted,
         'stories': results,
     }
+    if mic_mute_blocks is not None:
+        result['micMuteBlocks'] = mic_mute_blocks   # 0 is a real answer, not "nothing happened"
+    return result
 
 
 def export_transcripts(zip_path, cuts_raw, stories_raw, sequence_raw=None):
@@ -1133,7 +1726,7 @@ def export_transcripts(zip_path, cuts_raw, stories_raw, sequence_raw=None):
     }
 
 
-def export(zip_path, cuts_raw, sequence_raw=None):
+def export(zip_path, cuts_raw, sequence_raw=None, mute_mic_during_screen=False):
     zp = Path(zip_path)
     if not zp.is_file():
         raise ManifestError(f"zip not found: {zip_path}")
@@ -1149,6 +1742,10 @@ def export(zip_path, cuts_raw, sequence_raw=None):
             except ET.ParseError as e:
                 raise ManifestError(f"{entry}: XML parse error: {e}")
 
+    # Mic muting first, on the untouched tree (see apply_mic_mute). With the flag off this
+    # is not called at all, so the output stays byte-identical to what it has always been.
+    mic_mute_blocks = apply_mic_mute(tree, entry, zip_path) if mute_mic_during_screen else None
+
     # No sequence -> the historical in-place ripple, untouched. A sequence needs the survivors
     # placed at arbitrary offsets, which only the collapse path can do.
     if sequence_raw is None:
@@ -1163,22 +1760,29 @@ def export(zip_path, cuts_raw, sequence_raw=None):
     print(f"[editor_export] wrote {out_path} (new duration {float(new_total)}s, "
           f"{cuts_applied} cut(s) applied)", file=sys.stderr)
 
-    return {
+    result = {
         'type': 'export_result',
         'path': str(out_path),
         'cutsApplied': cuts_applied,
         'newDurationSeconds': float(new_total),
     }
+    if mic_mute_blocks is not None:
+        result['micMuteBlocks'] = mic_mute_blocks   # 0 is a real answer, not "nothing happened"
+    return result
 
 
 def _read_payload_from_stdin():
-    """Parse the stdin JSON. Returns (cuts, stories, output, sequence). stories is None on the
-    plain cut-export path; when present, 'output' must name what to produce ('fcpxml' — the
-    story-split master project, or 'transcripts' — Content Studio files only). Requiring the
-    caller to say which (no default) keeps the contract unambiguous.
+    """Parse the stdin JSON. Returns (cuts, stories, output, sequence, mute_mic). stories is
+    None on the plain cut-export path; when present, 'output' must name what to produce
+    ('fcpxml' — the story-split master project, or 'transcripts' — Content Studio files
+    only). Requiring the caller to say which (no default) keeps the contract unambiguous.
 
     'sequence' is optional and stays None when absent — that None is what preserves the
-    historical export path byte for byte for every caller that never sends one."""
+    historical export path byte for byte for every caller that never sends one.
+
+    'muteMicDuringScreen' is optional and defaults to FALSE for the same reason: a CLI user
+    or an older caller that never sends it gets exactly the export it always got. The
+    frontend always sends it explicitly, so the default is never what the app relies on."""
     raw = sys.stdin.read()
     if not raw.strip():
         raise ManifestError("no JSON received on stdin (expected {\"cuts\": [...]})")
@@ -1202,7 +1806,12 @@ def _read_payload_from_stdin():
                 f"(got {output!r})")
     elif output is not None:
         raise ManifestError("'output' is only meaningful together with a 'stories' array")
-    return payload['cuts'], stories, output, sequence
+    mute_mic = payload.get('muteMicDuringScreen', False)
+    if not isinstance(mute_mic, bool):
+        raise ManifestError(
+            "stdin 'muteMicDuringScreen', when present, must be a boolean "
+            f"(got {mute_mic!r})")
+    return payload['cuts'], stories, output, sequence, mute_mic
 
 
 def main(argv=None):
@@ -1213,13 +1822,14 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     try:
-        cuts_raw, stories_raw, output, sequence_raw = _read_payload_from_stdin()
+        cuts_raw, stories_raw, output, sequence_raw, mute_mic = _read_payload_from_stdin()
         if stories_raw and output == 'transcripts':
+            # Transcript-only export writes no FCPXML, so there is no mic lane to disable.
             result = export_transcripts(args.zip_path, cuts_raw, stories_raw, sequence_raw)
         elif stories_raw:
-            result = export_stories(args.zip_path, cuts_raw, stories_raw, sequence_raw)
+            result = export_stories(args.zip_path, cuts_raw, stories_raw, sequence_raw, mute_mic)
         else:
-            result = export(args.zip_path, cuts_raw, sequence_raw)
+            result = export(args.zip_path, cuts_raw, sequence_raw, mute_mic)
     except ManifestError as e:
         sys.stdout.write(json.dumps({'type': 'error', 'message': str(e)}) + '\n')
         sys.stdout.flush()
