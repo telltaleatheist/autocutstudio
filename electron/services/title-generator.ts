@@ -34,7 +34,35 @@ import * as log from 'electron-log';
 import type { ChatMessage, ChatOptions } from './ollama-service';
 
 /** The one model this feature speaks to. Never substituted — a missing model is an error. */
-export const TITLE_MODEL = 'headline-14b-titles';
+export const TITLE_MODEL = 'headline-32b-titles';
+
+/**
+ * Where the title calls go. Every OTHER Ollama caller in the app (chapter splitting,
+ * stories) keeps ollama-service's own default of 127.0.0.1:11434 — this constant is read
+ * by the 'titles:generate' and 'titles:unload' handlers, and by nothing else.
+ *
+ * WHY IT IS NOT 11434 (2026-08-04 — this is an A/B test against the shipped 14B, not a
+ * shipped state):
+ *
+ * The 32B title model is an MLX LoRA adapter over mlx-community/Qwen3-32B-4bit, and Ollama
+ * has no loader for that. Converting it — fuse, de-quantize to ~65 GB fp16, GGUF,
+ * re-quantize — costs hours and ~130 GB of transient disk, and lands on weights that are
+ * no longer bit-identical to the ones that were auditioned. So the model is served AS
+ * TRAINED, by a small Ollama-API-shaped HTTP shim (tools/headline32b-server/serve.py) on
+ * port 11435, and only the title calls are pointed at it. Real Ollama keeps 11434 and keeps
+ * serving everything else; none of those paths change.
+ *
+ * The shim has to be running for the Titles tab to work, and that is deliberate. A title
+ * request against a stopped shim fails loudly with a connection error — the correct
+ * outcome. It does NOT quietly fall through to real Ollama and get answered by whatever
+ * model happens to be there, which is the failure this file's no-fallbacks doctrine exists
+ * to prevent.
+ *
+ * TO GO BACK TO THE SHIPPED 14B: set TITLE_MODEL above to 'headline-14b-titles' and
+ * TITLE_HOST below to 'http://127.0.0.1:11434', then `npm run build:electron`. Nothing
+ * else in the codebase has to move.
+ */
+export const TITLE_HOST = 'http://127.0.0.1:11435';
 
 export type TitleFormat = 'normal' | 'livestream';
 export type TitleTarget = 'top-decile' | 'strong' | 'typical' | 'weak';

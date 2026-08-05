@@ -264,8 +264,12 @@ function setupTitleHandlers(windowService: WindowService): void {
         host?: string;
       }
     ) => {
-      const { text, format, target, host } = payload || ({} as any);
+      const { text, format, target } = payload || ({} as any);
       const model = payload?.model || titleGenerator.TITLE_MODEL;
+      // The title model does not live on the shared Ollama daemon — see TITLE_HOST in
+      // services/title-generator.ts for why it is served on its own port. An explicit
+      // `host` in the payload still wins, so a caller can aim a run anywhere.
+      const host = payload?.host || titleGenerator.TITLE_HOST;
       const count = payload?.count ?? 10;
 
       if (format !== 'normal' && format !== 'livestream') {
@@ -310,7 +314,10 @@ function setupTitleHandlers(windowService: WindowService): void {
   // Evict the title model. Called when the user leaves the tab — a 14B is ~9 GB and the
   // machine should get it back. Best-effort by design (unload never throws).
   ipcMain.handle('titles:unload', async (_event, payload?: { model?: string; host?: string }) => {
-    await ollamaService.unload(payload?.model || titleGenerator.TITLE_MODEL, payload?.host);
+    await ollamaService.unload(
+      payload?.model || titleGenerator.TITLE_MODEL,
+      payload?.host || titleGenerator.TITLE_HOST
+    );
     return { ok: true };
   });
 
