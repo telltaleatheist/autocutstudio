@@ -71,6 +71,60 @@
       border-radius: 6px;
       padding: 14px 16px;
     }
+    .error-back {
+      margin-top: 18px;
+      padding: 8px 18px;
+      font-size: 13px;
+      color: #e8e8ea;
+      background: #333338;
+      border: 1px solid #4a4a50;
+      border-radius: 6px;
+      cursor: pointer;
+      &:hover { background: #3d3d43; }
+    }
+  }
+}
+
+/* ── No-session workspace (blank open) ───────────────────────────────────── */
+/* Fills the top-region beside the projects pane; the timeline pane is not
+   rendered without a session, so this is the whole workspace. */
+.empty-workspace {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1b1b1e;
+  padding: 40px;
+
+  .empty-card {
+    max-width: 460px;
+    text-align: center;
+
+    .empty-mark { font-size: 40px; margin-bottom: 14px; opacity: 0.75; }
+    .empty-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: #d8d8dc;
+      margin-bottom: 10px;
+    }
+    .empty-body {
+      font-size: 13px;
+      line-height: 1.6;
+      color: #8f8f96;
+      margin-bottom: 20px;
+    }
+    .empty-add {
+      padding: 8px 18px;
+      font-size: 13px;
+      color: #1b1b1e;
+      background: #e8a33d;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 600;
+      &:hover { background: #f0b155; }
+    }
   }
 }
 

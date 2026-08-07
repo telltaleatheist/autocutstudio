@@ -1,9 +1,11 @@
-<!-- Fatal error: nothing else interactive. -->
+<!-- Fatal error: nothing else interactive. "Back to projects" returns to the
+     no-session workspace so a bad session can't dead-end the window. -->
 <div class="editor-error" *ngIf="errorMessage">
   <div class="error-card">
     <div class="error-mark">⚠️</div>
     <div class="error-title">Could not open this session</div>
     <div class="error-body">{{ errorMessage }}</div>
+    <button class="error-back" (click)="dismissError()">Back to projects</button>
   </div>
 </div>
 
@@ -331,9 +333,23 @@
          [class.dragging]="draggingSplitP"
          (mousedown)="onSplitPMouseDown($event)"></div>
 
+    <!-- No session loaded (blank open from the side nav, or after backing out of a failed
+         load): the projects sidebar stays live; the workspace is a hint instead of panes. -->
+    <div class="empty-workspace" *ngIf="!manifest">
+      <div class="empty-card">
+        <div class="empty-mark">🎞️</div>
+        <div class="empty-title">No session loaded</div>
+        <div class="empty-body">
+          Pick a project on the left, or add one — drop its folder onto the list,
+          or use File ▸ Add Project…
+        </div>
+        <button class="empty-add" (click)="onAddProjectFromMenu()">Add Project…</button>
+      </div>
+    </div>
+
     <!-- Left pane: Edit (transcript) / Stories tabs. The Stories tab IS story mode — while
          it's active, timeline drags mark story regions. -->
-    <div class="transcript-pane" [style.flexBasis.%]="splitV * 100">
+    <div class="transcript-pane" *ngIf="manifest" [style.flexBasis.%]="splitV * 100">
       <div class="pane-tabs">
         <button class="pane-tab" [class.active]="!storyMode" (click)="setStoryMode(false)">Edit</button>
         <button class="pane-tab" [class.active]="storyMode" (click)="setStoryMode(true)">
@@ -527,12 +543,12 @@
       </div>
     </div>
 
-    <div class="splitter splitter-v"
+    <div class="splitter splitter-v" *ngIf="manifest"
          [class.dragging]="draggingSplitV"
          (mousedown)="onSplitVMouseDown($event)"></div>
 
     <!-- Viewer on pure black, letterboxed, timecode centered beneath. -->
-    <section class="viewer-wrap">
+    <section class="viewer-wrap" *ngIf="manifest">
       <div class="viewer-box">
         <video #viewerVideo class="viewer-video" muted playsinline></video>
       </div>
@@ -548,12 +564,12 @@
     </section>
   </section>
 
-  <div class="splitter splitter-h"
+  <div class="splitter splitter-h" *ngIf="manifest"
        [class.dragging]="draggingSplitH"
        (mousedown)="onSplitHMouseDown($event)"></div>
 
   <!-- Timeline pane. -->
-  <section class="timeline-pane" [style.flexBasis.%]="splitH * 100">
+  <section class="timeline-pane" *ngIf="manifest" [style.flexBasis.%]="splitH * 100">
     <!-- Toolbar strip above the ruler: Select / Blade / Story tools. -->
     <div class="timeline-toolbar">
       <div class="tool-toggle">

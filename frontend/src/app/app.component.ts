@@ -35,8 +35,8 @@ export class AppComponent implements OnInit {
     // under HashLocationStrategy; router events keep it in sync thereafter. Both the
     // manual-alignment wizard (/alignment) and the timeline editor (/editor) run the
     // same Angular app in their own chromeless windows.
-    // NB: /editor must NOT match the main-window launcher route /editor-launcher, hence
-    // the negative lookahead (no trailing word char / hyphen after "editor").
+    // NB: the negative lookahead (no trailing word char / hyphen after "editor") keeps
+    // /editor from matching any longer main-window route name.
     const detect = (url: string) => url.includes('/alignment') || /\/editor(?![-\w])/.test(url);
     if (detect(window.location.hash) || detect(window.location.pathname)) {
       this.isChromeless = true;
@@ -120,6 +120,23 @@ export class AppComponent implements OnInit {
 
   onSetupComplete() {
     this.setupReady = true;
+  }
+
+  /**
+   * Side-nav "Editor": open (or focus) the editor window with no session — the
+   * session is picked and processed inside the editor (projects sidebar). Not a
+   * route; the editor runs in its own chromeless window. Failure (e.g. the
+   * manual-alignment wizard holds the window) is surfaced verbatim, never swallowed.
+   */
+  async openEditorWindow() {
+    try {
+      const res = await this.electronService.openEditor();
+      if (!res?.success) {
+        alert(res?.error || 'The editor could not be opened.');
+      }
+    } catch (err: any) {
+      alert(err?.message || String(err));
+    }
   }
 
   dismissDependencyBanner() {

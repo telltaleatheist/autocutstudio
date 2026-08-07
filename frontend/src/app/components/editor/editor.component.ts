@@ -670,8 +670,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       if (res?.zipPath && res.zipPath !== this.currentZipPath) {
         await this.bootstrap(res.zipPath);
       } else if (!res?.zipPath && !this.currentZipPath) {
-        // Payload may still arrive via the push listener; keep the busy state.
-        this.loadingMessage = 'Waiting for session…';
+        // Blank open (side-nav Editor button): no session was requested. Show the
+        // no-session workspace — projects sidebar live, viewer/timeline replaced by a
+        // hint. A payload can still arrive via the push listener and bootstraps then.
+        this.loading = false;
       }
     } catch (err: any) {
       this.fail(`Could not load the session: ${err?.message || err}`);
@@ -1129,6 +1131,18 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.loading = false;
     this.stopPlayback();
     this.cdr.detectChanges();
+  }
+
+  /**
+   * "Back to projects" on the fatal-error card: return to the no-session workspace so a
+   * failed load doesn't dead-end the window — the sidebar is live again and another
+   * project can be picked. The failed session's zipPath is cleared so re-clicking the
+   * SAME project retries instead of short-circuiting on "already loaded".
+   */
+  dismissError(): void {
+    this.errorMessage = '';
+    this.loading = false;
+    this.currentZipPath = null;
   }
 
   // ── Track layout (shared by canvas draw + the DOM gutter) ────────────────────

@@ -14,7 +14,6 @@ import { AudioDuckingComponent } from './components/audio-ducking/audio-ducking.
 import { SettingsComponent } from './components/settings/settings.component';
 import { SetupComponent } from './components/setup/setup.component';
 import { AlignmentComponent } from './components/alignment/alignment.component';
-import { EditorLauncherComponent } from './components/editor-launcher/editor-launcher.component';
 import { EditorComponent } from './components/editor/editor.component';
 import { MetadataComponent } from './components/metadata/metadata.component';
 import { MetadataReportsComponent } from './components/metadata-reports/metadata-reports.component';
@@ -26,7 +25,6 @@ import { ProjectSetupModalComponent } from './components/project-setup-modal/pro
     AppComponent,
     SetupComponent,
     AlignmentComponent,
-    EditorLauncherComponent,
     EditorComponent,
     ProjectSidebarComponent,
     ProjectSetupModalComponent,

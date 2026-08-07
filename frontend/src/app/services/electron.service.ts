@@ -225,16 +225,20 @@ export class ElectronService {
     return (window as any).electron;
   }
 
-  /** Open (or focus) the editor window on a session's compounds zip. */
-  async openEditor(payload: { zipPath: string }): Promise<{ success: boolean; error?: string }> {
+  /**
+   * Open (or focus) the editor window. With a zipPath, the window loads that session;
+   * with none (the side-nav Editor button), it opens on its no-session empty state and
+   * the user picks a project in-window.
+   */
+  async openEditor(payload: { zipPath?: string } = {}): Promise<{ success: boolean; error?: string }> {
     if (!this.isElectron()) {
       throw new Error('Not running in Electron');
     }
     return this.bridge.openEditor(payload);
   }
 
-  /** (Editor window) Pull the zip path this window was opened with. */
-  async getEditorPayload(): Promise<{ zipPath: string }> {
+  /** (Editor window) Pull the zip path this window was opened with — null for a blank open. */
+  async getEditorPayload(): Promise<{ zipPath: string } | null> {
     if (!this.isElectron()) {
       throw new Error('Not running in Electron');
     }

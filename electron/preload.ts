@@ -50,8 +50,8 @@ export interface ElectronAPI {
   removeAlignmentListeners: () => void;
 
   // View-only timeline editor
-  openEditor: (payload: { zipPath: string }) => Promise<{ success: boolean; error?: string }>;
-  getEditorPayload: () => Promise<{ zipPath: string }>;
+  openEditor: (payload?: { zipPath?: string }) => Promise<{ success: boolean; error?: string }>;
+  getEditorPayload: () => Promise<{ zipPath: string } | null>;
   getEditorManifest: (zipPath: string) => Promise<any>;
   // `sequence` is the playback ORDER as a partition of the SURVIVORS (the complement of `cuts`),
   // ORIGINAL seconds, frame-aligned; absent means source order.

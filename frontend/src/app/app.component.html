@@ -30,7 +30,9 @@
           <div class="link-icon">🎬</div>
           <div class="link-text">Workflow</div>
         </a>
-        <a routerLink="/editor-launcher" routerLinkActive="active" class="sidebar-link">
+        <!-- Not a route: the editor lives in its own window. Opens (or focuses) it with
+             no session — picking and processing happen in-editor. -->
+        <a class="sidebar-link" (click)="openEditorWindow()">
           <div class="link-icon">🎞️</div>
           <div class="link-text">Editor</div>
         </a>

@@ -5,7 +5,6 @@ import { RelinkingComponent } from './components/relinking/relinking.component';
 import { AudioDuckingComponent } from './components/audio-ducking/audio-ducking.component';
 import { SettingsComponent } from './components/settings/settings.component';
 import { AlignmentComponent } from './components/alignment/alignment.component';
-import { EditorLauncherComponent } from './components/editor-launcher/editor-launcher.component';
 import { EditorComponent } from './components/editor/editor.component';
 import { MetadataComponent } from './components/metadata/metadata.component';
 import { MetadataReportsComponent } from './components/metadata-reports/metadata-reports.component';
@@ -16,7 +15,8 @@ const routes: Routes = [
   // Audio Ducking has no sidebar entry; the route stays reachable by URL.
   { path: 'audio-ducking', component: AudioDuckingComponent },
   { path: 'relinking', component: RelinkingComponent },
-  { path: 'editor-launcher', component: EditorLauncherComponent },
+  // The old /editor-launcher picker is retired: the side-nav Editor button opens the
+  // editor window directly (editor:open with no payload) and sessions are picked there.
   // Item list → queue → AI. Absorbed the old Titles tab, which is now the title-suggestion
   // panel at the top of this page.
   { path: 'metadata', component: MetadataComponent },

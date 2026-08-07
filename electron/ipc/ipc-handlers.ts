@@ -413,7 +413,10 @@ function setupTitleHandlers(windowService: WindowService): void {
  * simpler and with its OWN state: the main window invokes 'editor:open' with a
  * { zipPath } payload; the main process opens/focuses the single editor window on
  * the '/editor' route and holds the payload until the editor pulls it via
- * 'editor:get-payload' (race-free) — it is ALSO pushed on did-finish-load. There is
+ * 'editor:get-payload' (race-free) — it is ALSO pushed on did-finish-load. A call
+ * with NO zipPath (the side-nav Editor button) opens/focuses the window with no
+ * session: the editor mounts on its empty state and the user picks a project
+ * in-window. There is
  * NO completion relay and NO settle guard: the editor is view-only, so closing its
  * window is not a decision the main window is waiting on. This state never touches
  * the alignment wizard's pendingPayload/settled/relay logic.
@@ -426,13 +429,13 @@ function setupEditorHandlers(windowService: WindowService): void {
   // Editor-scoped seed payload, independent of the alignment wizard's state.
   let pendingEditorPayload: { zipPath: string } | null = null;
 
-  ipcMain.handle('editor:open', async (_event, payload: { zipPath: string }) => {
+  ipcMain.handle('editor:open', async (_event, payload?: { zipPath?: string | null }) => {
     try {
-      const zipPath = payload?.zipPath;
-      if (typeof zipPath !== 'string' || zipPath.trim() === '') {
-        throw new Error('editor:open requires a non-empty zipPath string');
+      const zipPath = payload?.zipPath ?? null;
+      if (zipPath !== null && (typeof zipPath !== 'string' || zipPath.trim() === '')) {
+        throw new Error('editor:open zipPath must be a non-empty string when provided');
       }
-      if (!fs.existsSync(zipPath)) {
+      if (zipPath !== null && !fs.existsSync(zipPath)) {
         throw new Error(`editor:open zip file does not exist: ${zipPath}`);
       }
 
@@ -445,6 +448,19 @@ function setupEditorHandlers(windowService: WindowService): void {
         throw new Error('The manual-alignment wizard is open. Finish or cancel it before opening the editor.');
       }
       const alreadyOnEditor = existingUrl.endsWith('#/editor');
+
+      // Blank open (no zipPath): the side-nav Editor button. An already-open editor is
+      // simply focused — whatever session it holds stays loaded, and the stale pending
+      // payload is left alone (an open window never re-pulls it). A fresh window must
+      // NOT inherit a previous session's payload, so the pending slot is cleared and
+      // the editor mounts on its no-session state (projects sidebar, empty workspace).
+      if (zipPath === null) {
+        if (!alreadyOnEditor) {
+          pendingEditorPayload = null;
+        }
+        windowService.createEditorWindow('/editor');
+        return { success: true };
+      }
 
       pendingEditorPayload = { zipPath };
 
