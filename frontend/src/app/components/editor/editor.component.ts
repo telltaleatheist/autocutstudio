@@ -1,7 +1,11 @@
 import {
   Component, OnInit, OnDestroy, AfterViewInit, ViewChild, ElementRef, HostListener, ChangeDetectorRef
 } from '@angular/core';
+import { Subscription } from 'rxjs';
 import { ElectronService } from '../../services/electron.service';
+import { ProcessingService, ProcessingJob } from '../../services/processing.service';
+import { ProjectsService, ProjectEntry } from '../../services/projects.service';
+import { ProjectSidebarComponent } from '../project-sidebar/project-sidebar.component';
 import { EditorManifest, EditorSegment, EditorTrack } from '../../models/editor-manifest';
 
 /**
@@ -318,7 +322,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   // The zip currently loaded (or being loaded). Guards duplicate payload pushes and
   // enables full re-init when the launcher opens a DIFFERENT session into this window.
-  private currentZipPath: string | null = null;
+  // Public because the projects sidebar takes it as an input for the active-row highlight.
+  currentZipPath: string | null = null;
   // Monotonic bootstrap generation: a re-init mid-load invalidates the older load so a
   // slow stale manifest can never clobber the newer session.
   private bootstrapGeneration = 0;
@@ -593,7 +598,32 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private draggingScrollbar = false;
   private scrollbarGrabDx = 0;
 
-  constructor(private electron: ElectronService, private cdr: ChangeDetectorRef) {}
+  /** The projects sidebar rendered inside the project pane — the File menu drives its add flow
+      through this so a rejected folder reports in the pane, not in a lost promise. */
+  @ViewChild(ProjectSidebarComponent) projectSidebar?: ProjectSidebarComponent;
+
+  // ── Project processing (the setup modal + the pane's busy row) ──────────────
+  /** The project the setup modal is open on; null = closed. */
+  setupEntry: ProjectEntry | null = null;
+  /** True when the modal is being reopened onto a run already in flight for that project. */
+  setupAttachRunning = false;
+  /** The project whose job is running, fed to the pane as a spinner + percent. */
+  projectBusyPath: string | null = null;
+  projectBusyPercent: number | null = null;
+  /**
+   * Which project the CURRENT processing job belongs to. ProcessingService has no notion of a
+   * project, so ownership is recorded here when the modal reports it started a run, and dropped
+   * the moment that job reaches a terminal state.
+   */
+  private processingEntryPath: string | null = null;
+  private jobSub?: Subscription;
+
+  constructor(
+    private electron: ElectronService,
+    private projectsService: ProjectsService,
+    private processing: ProcessingService,
+    private cdr: ChangeDetectorRef
+  ) {}
 
   // ── Lifecycle ───────────────────────────────────────────────────────────────
   async ngOnInit(): Promise<void> {
@@ -601,8 +631,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.splitV = this.readSplit(this.SPLIT_V_KEY, this.SPLIT_V_MIN, this.SPLIT_V_MAX, this.SPLIT_V_DEFAULT);
     this.splitH = this.readSplit(this.SPLIT_H_KEY, this.SPLIT_H_MIN, this.SPLIT_H_MAX, this.SPLIT_H_DEFAULT);
     this.projectWidth = this.readSplit(this.SPLIT_P_KEY, this.SPLIT_P_MIN, this.SPLIT_P_MAX, this.SPLIT_P_DEFAULT);
-    // Recents (pruned against disk) drive the project picker; shared with the launcher.
+    // Recents (pruned against disk) still feed the OLD launcher page; kept until it moves over.
     void this.loadAndPruneRecents();
+    // The project pane's real source of truth: the on-disk projects registry. Reads, scans
+    // every folder, and (once) folds the legacy recents in.
+    void this.projectsService.load();
+    // Processing progress for the project pane's busy row. Only the job this window started
+    // (through the setup modal) is attributed to a project — see processingEntryPath.
+    this.jobSub = this.processing.getCurrentJob().subscribe(job => this.onProcessingJob(job));
     // Race-free pull + push, like the alignment wizard — but the push listener is
     // PERMANENT: when this window is already open on a session and the launcher opens a
     // DIFFERENT one, the main process pushes the new payload over the same channel
@@ -647,6 +683,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.jobSub?.unsubscribe();
     this.stopPlayback();
     window.removeEventListener('mousemove', this.onWindowMouseMove);
     window.removeEventListener('mouseup', this.onWindowMouseUp);
@@ -707,6 +744,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // Remember this session in the shared recents (updates lastOpened + re-sorts), so the
     // project picker always shows the currently-loaded one highlighted at the top.
     this.recordRecent(zipPath);
+    // Same stamp against the projects registry, so the pane re-sorts the row to the top. A zip
+    // that belongs to no registered project matches nothing and is simply not recorded there.
+    void this.projectsService.markOpened(zipPath);
     this.cdr.detectChanges();
     // Fit the whole timeline into the visible width on first render.
     this.initialZoomToFit();
@@ -5000,6 +5040,118 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
     if (picked.canceled || !picked.filePaths?.length) return;
     void this.bootstrap(picked.filePaths[0]);
+  }
+
+  // ── Projects sidebar (registry-backed; the pane's list) ─────────────────────
+  /**
+   * A processed/edited project was clicked → load it into THIS window through the one
+   * sanctioned session-switch path. A project the scanner called openable but that carries no
+   * zip is a contradiction: it is reported in the pane rather than opening nothing. Not fail(),
+   * which would tear down the session already loaded here over another project's bad row.
+   */
+  onProjectOpen(entry: ProjectEntry): void {
+    const zipPath = entry.scan?.zipPath;
+    if (!zipPath) {
+      this.projectSidebar?.showError(
+        `“${entry.name}” is marked ${entry.scan?.state || 'unknown'} but has no session zip on disk.`
+      );
+      return;
+    }
+    if (zipPath === this.currentZipPath) return; // already loaded here
+    void this.bootstrap(zipPath);                // bootstrap() records it as opened
+  }
+
+  /**
+   * A raw project was clicked → open the setup modal on it. Clicking the one whose job is
+   * already running reopens the modal ONTO that run (live progress) rather than a fresh setup
+   * form. A raw project with no master video is a contradiction the scanner should never
+   * produce; it is reported in the pane rather than opening an empty modal.
+   */
+  onProjectProcess(entry: ProjectEntry): void {
+    if (!entry.scan?.masterVideo) {
+      this.projectSidebar?.showError(
+        `“${entry.name}” is marked ${entry.scan?.state || 'unknown'} but has no master video on disk.`
+      );
+      return;
+    }
+    this.setupAttachRunning = this.processingEntryPath === entry.path;
+    this.setupEntry = entry;
+  }
+
+  /** The modal started a run — record which project owns it and light the pane's row up. */
+  onProjectSetupStarted(): void {
+    if (!this.setupEntry) return;
+    this.processingEntryPath = this.setupEntry.path;
+    this.projectBusyPath = this.setupEntry.path;
+    this.projectBusyPercent = 0;
+  }
+
+  /** Dismissed. A run in flight is untouched — it keeps going and the pane keeps showing it. */
+  onProjectSetupClosed(): void {
+    this.setupEntry = null;
+    this.setupAttachRunning = false;
+  }
+
+  /**
+   * A run finished and produced a session: refresh that project's scan (it is no longer raw),
+   * stamp it as opened, and load it into this window through the one sanctioned path.
+   */
+  async onProjectSetupCompleted(result: { zipPath: string }): Promise<void> {
+    const entry = this.setupEntry;
+    this.setupEntry = null;
+    this.setupAttachRunning = false;
+    this.processingEntryPath = null;
+    this.projectBusyPath = null;
+    this.projectBusyPercent = null;
+    if (entry) {
+      try {
+        await this.projectsService.rescan(entry.path);
+        await this.projectsService.markOpened(entry.path);
+      } catch (err: any) {
+        // The session still exists and is still openable — say what didn't get recorded
+        // instead of failing the open over a list bookkeeping error.
+        this.projectSidebar?.showError(
+          `Processed “${entry.name}”, but the projects list could not be updated: ${err?.message || String(err)}`
+        );
+      }
+    }
+    await this.bootstrap(result.zipPath);
+  }
+
+  /** Job → pane busy row. Only a job this window attributed to a project is shown there. */
+  private onProcessingJob(job: ProcessingJob | null): void {
+    const owner = this.processingEntryPath;
+    if (!owner) return;
+    if (job && job.status === 'running') {
+      this.projectBusyPath = owner;
+      this.projectBusyPercent = job.progress;
+    } else {
+      // Terminal (or cleared): the row goes back to its scanned state. A completed run also
+      // clears through onProjectSetupCompleted, whichever lands first. If the modal was
+      // closed mid-run, this is the only place that learns the run ended — rescan so the
+      // row's badge reflects what is now on disk instead of the stale pre-run state.
+      this.projectBusyPath = null;
+      this.projectBusyPercent = null;
+      this.processingEntryPath = null;
+      if (job && (job.status === 'completed' || job.status === 'error')) {
+        this.projectsService.rescan(owner).catch((err: any) => {
+          this.projectSidebar?.showError(
+            `Could not refresh “${owner}” after its run ended: ${err?.message || String(err)}`);
+        });
+      }
+    }
+    this.cdr.detectChanges();
+  }
+
+  /** File ▸ Add Project…: same flow as the pane's + button, errors landing in the same place. */
+  onAddProjectFromMenu(): void {
+    this.menuOpen = false;
+    if (!this.projectSidebar) {
+      // Unreachable by construction: the pane and the File menu render under the same *ngIf.
+      console.error('[editor] File ▸ Add Project… fired with no projects pane mounted');
+      return;
+    }
+    void this.projectSidebar.onAdd();
   }
 
   // ── Transcript ──────────────────────────────────────────────────────────────

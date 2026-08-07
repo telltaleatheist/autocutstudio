@@ -62,6 +62,38 @@ export interface ElectronAPI {
   ensureRequiredAssets: () => Promise<{ success: boolean; ok?: boolean; failed?: string[]; error?: string }>;
   onAssetProgress: (callback: (progress: AssetProgress) => void) => void;
   removeAssetProgressListener: () => void;
+
+  // Projects (session folders the user has opened). A missing registry reads as empty;
+  // an unreadable one REJECTS rather than resetting itself.
+  readProjectsRegistry: () => Promise<ProjectRegistry>;
+  writeProjectsRegistry: (registry: ProjectRegistry) => Promise<{ success: boolean }>;
+  scanProjectFolder: (folderPath: string) => Promise<ProjectScanResult>;
+}
+
+export interface ProjectRegistryEntry {
+  path: string;
+  name: string;
+  lastOpened: string;
+}
+
+export interface ProjectRegistry {
+  version: number;
+  projects: ProjectRegistryEntry[];
+}
+
+export interface ProjectScanResult {
+  folder: string;
+  /** fs.realpathSync of `folder` when it exists, else null. */
+  realPath: string | null;
+  exists: boolean;
+  state: 'missing' | 'unrecognized' | 'raw' | 'processed' | 'edited';
+  masterVideo?: string;
+  session?: string;
+  cleanName?: string;
+  zipPath?: string;
+  hasTranscript?: boolean;
+  /** For 'unrecognized': what was looked for, or which candidates were ambiguous. */
+  error?: string;
 }
 
 export interface AssetComponentStatus {

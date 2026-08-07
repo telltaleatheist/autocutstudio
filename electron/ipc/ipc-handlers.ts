@@ -108,6 +108,7 @@ export function setupIpcHandlers(windowService: WindowService, pythonSvc: Python
   setupStoryAnalysisHandlers();
   setupTitleHandlers(windowService);
   setupMetadataHandlers(windowService);
+  setupProjectHandlers();
 }
 
 /**
@@ -3077,5 +3078,189 @@ function setupMetadataHandlers(windowService: WindowService): void {
       log.error('Error committing transcript split:', error);
       return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
+  });
+}
+
+interface ProjectRegistryEntry {
+  path: string;
+  name: string;
+  lastOpened: string;
+}
+
+interface ProjectRegistry {
+  version: number;
+  projects: ProjectRegistryEntry[];
+}
+
+interface ProjectScanResult {
+  folder: string;
+  realPath: string | null;
+  exists: boolean;
+  state: 'missing' | 'unrecognized' | 'raw' | 'processed' | 'edited';
+  masterVideo?: string;
+  session?: string;
+  cleanName?: string;
+  zipPath?: string;
+  hasTranscript?: boolean;
+  error?: string;
+}
+
+/**
+ * Projects: the registry of session folders the user has opened, plus the scan that
+ * classifies one folder by what it contains.
+ *
+ * A registry that has never been written is legitimately empty. A registry that EXISTS
+ * but cannot be read as a version-1 registry is an error that propagates — it is never
+ * reset or overwritten, because the file is the only record of where the user's projects
+ * live and a silent reset would lose all of them.
+ */
+function setupProjectHandlers(): void {
+  const { app } = require('electron');
+
+  // The SAME config directory binary-resolver.ts exports as AUTOCUT_CONFIG_DIR, so the
+  // registry sits beside drift_corrections.json and the other user config.
+  const getConfigDir = (): string => {
+    return app.isPackaged
+      ? path.join(app.getPath('userData'), 'config')
+      : path.join(__dirname, '../../../../', 'config');
+  };
+
+  const registryPath = (): string => path.join(getConfigDir(), 'projects.json');
+
+  const MASTER_EXTENSIONS = ['.mp4', '.mov', '.avi', '.mkv'];
+  const MASTER_PATTERN = /^(.+?)\s+master$/i;
+
+  ipcMain.handle('projects:read-registry', async (): Promise<ProjectRegistry> => {
+    const p = registryPath();
+    if (!fs.existsSync(p)) return { version: 1, projects: [] };
+
+    const raw = fs.readFileSync(p, 'utf8');
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e: any) {
+      throw new Error(`projects registry ${p} is not valid JSON: ${e.message} ` +
+        `— fix or delete the file to continue; it will not be overwritten`);
+    }
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`projects registry ${p} is not an object (got ${Array.isArray(parsed) ? 'an array' : typeof parsed}) ` +
+        `— fix or delete the file to continue; it will not be overwritten`);
+    }
+    if (parsed.version !== 1) {
+      throw new Error(`projects registry ${p} has version ${JSON.stringify(parsed.version)}, expected 1 ` +
+        `— fix or delete the file to continue; it will not be overwritten`);
+    }
+    if (!Array.isArray(parsed.projects)) {
+      throw new Error(`projects registry ${p} has no projects array (projects is ${typeof parsed.projects}) ` +
+        `— fix or delete the file to continue; it will not be overwritten`);
+    }
+
+    return parsed;
+  });
+
+  ipcMain.handle('projects:write-registry', async (_event, registry: ProjectRegistry) => {
+    if (!registry || typeof registry !== 'object' || Array.isArray(registry)) {
+      throw new Error('projects:write-registry requires a registry object');
+    }
+    if (registry.version !== 1) {
+      throw new Error(`projects:write-registry expects version 1, got ${JSON.stringify(registry.version)}`);
+    }
+    if (!Array.isArray(registry.projects)) {
+      throw new Error('projects:write-registry expects projects to be an array');
+    }
+    registry.projects.forEach((entry, i) => {
+      if (!entry || typeof entry !== 'object') {
+        throw new Error(`projects:write-registry entry ${i} is not an object`);
+      }
+      if (typeof entry.path !== 'string' || entry.path.trim() === '') {
+        throw new Error(`projects:write-registry entry ${i} has no non-empty path string`);
+      }
+    });
+
+    const dir = getConfigDir();
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+      log.info('Created config directory for projects registry:', dir);
+    }
+
+    const p = registryPath();
+    // Atomic write: tmp + rename, so a crash mid-write can never corrupt the registry.
+    const tmp = `${p}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(registry, null, 2), 'utf8');
+    fs.renameSync(tmp, p);
+    return { success: true };
+  });
+
+  ipcMain.handle('projects:scan-folder', async (_event, folderPath: string): Promise<ProjectScanResult> => {
+    if (typeof folderPath !== 'string' || folderPath.trim() === '') {
+      throw new Error('projects:scan-folder requires a non-empty folderPath string');
+    }
+
+    // A folder that is gone is a STATE, not an error — an unmounted volume comes back.
+    const stat = fs.statSync(folderPath, { throwIfNoEntry: false });
+    if (!stat || !stat.isDirectory()) {
+      return { folder: folderPath, realPath: null, exists: false, state: 'missing' };
+    }
+
+    const realPath = fs.realpathSync(folderPath);
+    const entries = fs.readdirSync(folderPath, { withFileTypes: true });
+    const fileNames = entries.filter(e => !e.isDirectory()).map(e => e.name);
+
+    const masters = fileNames.filter(name => {
+      if (!MASTER_EXTENSIONS.includes(path.extname(name).toLowerCase())) return false;
+      return MASTER_PATTERN.test(path.basename(name, path.extname(name)));
+    });
+
+    if (masters.length === 0) {
+      return {
+        folder: folderPath, realPath, exists: true, state: 'unrecognized',
+        error: `no master video in ${folderPath} — looked for a file named "<session> master" ` +
+          `with extension ${MASTER_EXTENSIONS.join('/')}`
+      };
+    }
+    if (masters.length > 1) {
+      return {
+        folder: folderPath, realPath, exists: true, state: 'unrecognized',
+        error: `${masters.length} master videos in ${folderPath} — exactly one is required, found: ` +
+          masters.join(', ')
+      };
+    }
+
+    const masterName = masters[0];
+    const session = path.basename(masterName, path.extname(masterName)).match(MASTER_PATTERN)![1].trim();
+    const cleanName = session.replace(/ /g, '_');
+
+    const zipPath = path.join(folderPath, `${cleanName}_compounds.zip`);
+    const editsPath = path.join(folderPath, `${cleanName}_edits.json`);
+    const hasZip = fs.existsSync(zipPath);
+    const hasEdits = fs.existsSync(editsPath);
+    const hasTranscript = fs.existsSync(path.join(folderPath, `${cleanName}_transcript.json`));
+
+    const base: ProjectScanResult = {
+      folder: folderPath,
+      realPath,
+      exists: true,
+      state: 'raw',
+      masterVideo: path.join(folderPath, masterName),
+      session,
+      cleanName,
+      hasTranscript
+    };
+    if (hasZip) base.zipPath = zipPath;
+
+    // Edits without the compounds zip they were made against: the folder is inconsistent,
+    // and opening it as 'edited' would point the editor at a zip that is not there.
+    if (hasEdits && !hasZip) {
+      return {
+        ...base,
+        state: 'unrecognized',
+        error: `${cleanName}_edits.json exists in ${folderPath} but ${cleanName}_compounds.zip does not ` +
+          `— the saved edits refer to a processed session whose compounds zip is missing`
+      };
+    }
+
+    base.state = hasEdits ? 'edited' : hasZip ? 'processed' : 'raw';
+    return base;
   });
 }

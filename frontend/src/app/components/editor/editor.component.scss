@@ -635,7 +635,9 @@
   flex-direction: row;
 }
 
-/* Project picker — far-left FCPX-libraries column. Width bound via [style.width.px]. */
+/* Project picker — far-left FCPX-libraries column. Width bound via [style.width.px]. The
+   list inside is <app-project-sidebar>, which carries its own .pp-* styles: emulated view
+   encapsulation keeps rules written here from reaching that component's DOM. */
 .project-pane {
   flex: 0 0 auto;
   min-width: 0;
@@ -643,84 +645,6 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-
-  .pp-header {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 8px 10px;
-    background: #26262a;
-    border-bottom: 1px solid #0d0d0e;
-
-    .pp-title {
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      color: #9a9aa2;
-    }
-    .pp-open {
-      font-size: 11px;
-      color: #d8d8dc;
-      background: transparent;
-      border: 1px solid #3d3d44;
-      border-radius: 4px;
-      padding: 2px 8px;
-      cursor: pointer;
-
-      &:hover { background: #2f2f34; border-color: #55555c; }
-    }
-  }
-
-  .pp-list {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
-    overflow-x: hidden;
-    padding: 4px 0;
-
-    .pp-item {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      width: 100%;
-      text-align: left;
-      background: transparent;
-      border: none;
-      border-left: 2px solid transparent;
-      padding: 7px 10px;
-      cursor: pointer;
-      color: #c4c4ca;
-      transition: background 0.1s ease, border-color 0.1s ease;
-
-      &:hover { background: #2a2a2f; }
-
-      &.active {
-        background: #2c2f36;
-        border-left-color: #e8a33d;
-        color: #f0f0f2;
-      }
-
-      .pp-dot {
-        flex: 0 0 auto;
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: #55555c;
-      }
-      &.active .pp-dot { background: #e8a33d; }
-
-      .pp-name {
-        flex: 1 1 auto;
-        font-size: 12px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-    }
-  }
 }
 
 /* Transcript pane — FCP-dark panel, a shade lighter than the viewer's pure black.

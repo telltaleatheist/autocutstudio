@@ -70,6 +70,39 @@ export interface TitleHandoff {
   chapters?: { timestamp: string; title: string }[];
 }
 
+/**
+ * What the main process makes of one project FOLDER on disk.
+ *
+ * `state` is the whole story:
+ *   missing       — the folder (or its volume) is not there. The entry is KEPT and greyed;
+ *                   it comes back by itself when the drive is mounted again.
+ *   unrecognized  — the folder exists but holds no unambiguous `<prefix> master.<ext>` video.
+ *                   `error` says exactly why; nothing is ever skipped quietly.
+ *   raw           — a master video, not processed yet.
+ *   processed     — a compounds zip exists.
+ *   edited        — processed, plus edit state.
+ */
+export interface ProjectScanResult {
+  folder: string;
+  /** Symlink-resolved absolute path — the identity used to dedupe. null when missing. */
+  realPath: string | null;
+  exists: boolean;
+  state: 'missing' | 'unrecognized' | 'raw' | 'processed' | 'edited';
+  masterVideo?: string;
+  session?: string;
+  cleanName?: string;
+  zipPath?: string;
+  hasTranscript?: boolean;
+  /** Populated for 'unrecognized' (and any scan that failed): the verbatim reason. */
+  error?: string;
+}
+
+/** The on-disk projects list. Only these three fields are persisted; scans are recomputed. */
+export interface ProjectsRegistry {
+  version: 1;
+  projects: Array<{ path: string; name: string; lastOpened: string }>;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -823,6 +856,39 @@ export class ElectronService {
     if (this.isElectron()) {
       window.electron.onAssetProgress((p) => this.ngZone.run(() => callback(p)));
     }
+  }
+
+  // --- Projects registry bridge ---------------------------------------------
+  // Reached through the loose `bridge` cast for the same reason the editor methods are: the
+  // ElectronAPI type declaration (src/types/electron.d.ts) is owned elsewhere. Nothing here
+  // degrades quietly — outside Electron we throw rather than hand back an empty project list
+  // that would look like "you have no projects".
+
+  /**
+   * Read the projects list from disk. REJECTS (message names the file) when the registry is
+   * corrupt — the caller must surface that and refuse to write, never reset the file.
+   */
+  async readProjectsRegistry(): Promise<ProjectsRegistry> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return this.bridge.readProjectsRegistry();
+  }
+
+  /** Atomically replace the projects list on disk. */
+  async writeProjectsRegistry(registry: ProjectsRegistry): Promise<{ success: boolean }> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return this.bridge.writeProjectsRegistry(registry);
+  }
+
+  /** Inspect one project folder: does it exist, and how far along is it? */
+  async scanProjectFolder(folderPath: string): Promise<ProjectScanResult> {
+    if (!this.isElectron()) {
+      throw new Error('Not running in Electron');
+    }
+    return this.bridge.scanProjectFolder(folderPath);
   }
 
   removeAssetProgressListener(): void {

@@ -78,11 +78,23 @@ New IPC needed (small): `scan-project-folder` (classify a folder), and
 ### Phasing
 
 1. Registry + sidebar + switching between **already-processed** projects. This
-   alone is useful and touches no processing code.
+   alone is useful and touches no processing code. ✅ **Built 2026-08-07**:
+   `projects:read-registry` / `projects:write-registry` / `projects:scan-folder`
+   IPC (registry at `$AUTOCUT_CONFIG_DIR/projects.json`, corrupt file throws and
+   is never overwritten), `ProjectsService` (realpath dedupe, one-time migration
+   of `editor.recentSessions`), `ProjectSidebarComponent` replacing the editor's
+   recents pane (state badges, drag/drop, + button, File→Add Project…).
 2. Settings modal driven by `auto-detect-audio`, Process button, progress. Runs
    the same payload the workflow component builds today — factor that payload
    construction out of `workflow.component.ts` so there is one builder, not two
-   that will drift apart.
+   that will drift apart. ✅ **Built 2026-08-07**: shared builder
+   `frontend/src/app/services/workflow-payload.ts` (used by both surfaces),
+   `ProjectSetupModalComponent` (Detect pre-fill, editable rows, autoDuck /
+   useDownloadedStream / denoiseMics toggles, live progress + console + skip +
+   in-modal cancel; closing never cancels; terminal job triggers a rescan so a
+   closed modal can't leave a stale badge). Not yet exercised in the running app.
+   Known wart: `processing.service` still pops its legacy `alert()` on job
+   failure, so a failed modal run shows both that alert and the inline error.
 
 The existing standalone workflow screen **stays**. It becomes redundant, not
 removed; leaving it costs nothing and keeps a working path available while the
@@ -137,32 +149,49 @@ this one: build the projects layer so it can travel.
   otherwise gets the hardcoded `vmix_sources` `0.9999763884`. That session's
   screen capture actually measured ≈ `0.999972`.
 
-### Proposed work
+### Done (2026-08-07)
 
-1. **Per-session picture offset for video sources.** Use
-   `core.video_align.scene_change_offset` (validated to **0.54 frames** against
-   audio ground truth on 2026-08-02, 128 matched cut pairs) against the master
-   cropped to the source's quadrant. Head-of-session measurement becomes the
-   placement offset.
+1. **Per-session picture offset for video sources.** ✅ Every video source is now
+   placed by its PICTURE. `core.video_align.locate_by_picture` is the public
+   entry point — cut matching first, motion correlation as the fallback — against
+   the master cropped to that source's quadrant. The splice's seam measurement
+   and the per-session placement now go through the same function, so there is
+   one implementation, not two.
+3. **Report picture-vs-audio disagreement loudly.** ✅ Audio is still measured,
+   but as an independent cross-check rather than the answer. A gap over
+   `PICTURE_AUDIO_DISAGREEMENT_FRAMES` (2) is reported as a damaged recording,
+   and both numbers plus the disagreement land in the alignment sidecar.
+4. **Close the silent fallback.** ✅ `_measure_video_offset` raises when neither
+   picture nor audio can answer. It used to store `0.0`, which puts a clip
+   exactly where an unmeasured clip lands — undetectable downstream.
+
+Two things surfaced while doing it:
+
+- **A source with no audio stream could not be picture-aligned at all.**
+  `video_align` sized its windows with `audio_processor.get_duration_seconds`,
+  which reads the *audio* stream and raises when there is none — refusing at the
+  door exactly the game captures picture alignment exists for. Replaced with
+  `video_align.video_duration` (ffprobe on the video stream).
+- **A 900 s window is marginal on real material.** On 2026-08-05 the head
+  yielded exactly the 6-pair minimum and the pre-seam window only 5. Cut
+  matching now escalates once to a 3× wider span before dropping to motion
+  correlation.
+
+### Still to do
+
 2. **Per-session drift factor.** Head vs tail picture offset gives the slope;
    feed it through the existing `driftFactor` → `calculate_retime_map(
    speed_factor=...)` path, which already works. Fall back to the config
-   constant only when cut matching cannot answer, and say which was used.
-3. **Report picture-vs-audio disagreement loudly.** When a video source's
-   picture and audio offsets differ by more than a frame or two, that is a
-   damaged recording and the user should be told, not silently given the audio
-   answer.
-4. **Close the silent fallback.** `electron_workflow.py`'s video-offset loop
-   catches any measurement failure and stores `0.0` — a wrong-but-plausible
-   placement. It should mark the source untrusted or fail.
-
-Sequence 4 → 1 → 3 → 2. Item 4 is small and independent; item 2 is the one that
-needs the most care, since a bad measured drift factor is worse than a
-mediocre constant one, so it must be gated on the same agreement evidence the
-seam measurement uses.
+   constant only when cut matching cannot answer, and say which was used. This
+   is the one that needs the most care — a bad measured drift factor is worse
+   than a mediocre constant one, so it must be gated on the same agreement
+   evidence the seam measurement uses. `measure_offset`'s `drift_seconds_est` is
+   still computed and still consumed by nobody.
 
 ### Cost note
 
-Cut matching decodes a couple of windows of the master per source. On the
-2026-08-05 session (66 GB master) a 2400 s span took roughly a minute. Acceptable
-once per source per session; do not run it per window.
+Cut matching decodes a window of the master per source, plus a 3× wider one when
+the first is too static. On the 2026-08-05 session (66 GB master) a 2400 s span
+took a few minutes. Acceptable once per source per session; do not run it per
+window. If this becomes the bottleneck, the master's four quadrants can be
+scene-detected in a single pass with `split` rather than one pass per source.

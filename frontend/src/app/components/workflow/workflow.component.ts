@@ -3,6 +3,7 @@ import { Subject, Subscription } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
 import { ElectronService } from '../../services/electron.service';
 import { ProcessingService } from '../../services/processing.service';
+import { buildWorkflowOptions } from '../../services/workflow-payload';
 import { AudioSource, AudioSourceType, VideoSourceType, MediaSourceType, AUDIO_SOURCE_LABELS, VIDEO_SOURCE_LABELS, MEDIA_SOURCE_LABELS, VIDEO_CONTINUATION_PARTS } from '../../models/types';
 
 @Component({
@@ -452,101 +453,23 @@ export class WorkflowComponent implements OnInit, OnDestroy {
     this.isStartingWorkflow = true;
 
     try {
-      // Validation - just return silently, button is disabled when invalid
-      if (!this.masterVideoPath) {
-        alert('Please select a master video.');
+      // Build the payload through the shared builder — the same one the editor's
+      // project-setup modal uses, so both surfaces send identical payloads. It reports
+      // problems instead of alerting; this page keeps its alert.
+      const { options, errors } = buildWorkflowOptions({
+        masterVideo: this.masterVideoPath,
+        sources: this.audioSources,
+        videoSources: this.videoSources,
+        autoDuck: this.autoDuck,
+        denoiseMics: this.denoiseMics,
+        separatorInstalled: this.separatorInstalled,
+        useDownloadedStream: this.useDownloadedStream,
+        alignmentOverrides: this.alignmentOverrides
+      });
+      if (!options) {
+        alert(errors.join('\n'));
         return;
       }
-
-      // Check if all audio sources have types assigned (only if there are audio sources)
-      if (this.audioSources.length > 0) {
-        const unassignedAudio = this.audioSources.filter(s => !s.type);
-        if (unassignedAudio.length > 0) {
-          alert('Please assign types to all audio sources.');
-          return;
-        }
-      }
-
-      // Build audio and video sources objects
-      const audioSourcesObj: { [key: string]: string } = {};
-      const audioSyncSettings: { [key: string]: boolean } = {};
-      const videoSourcesObj: { [key: string]: string } = {};
-
-      // Continuation parts of a restarted capture, collected per base source and
-      // ordered by part number. Empty => ordinary single-file capture.
-      const continuationRows: { [key: string]: { part: number; source: AudioSource }[] } = {};
-
-      this.audioSources.forEach(source => {
-        if (source.type) {
-          if (source.isVideo) {
-            const continuation = VIDEO_CONTINUATION_PARTS[source.type];
-            if (continuation) {
-              (continuationRows[continuation.base] ||= []).push(
-                { part: continuation.part, source });
-              return;
-            }
-            // Map video source types (screenVideo/gameVideo -> screen/game for compound generators)
-            const typeMap: { [key: string]: string } = {
-              'screenVideo': 'screen',
-              'gameVideo': 'game'
-            };
-            const backendType = typeMap[source.type] || source.type;
-            videoSourcesObj[backendType] = source.path;
-          } else {
-            // Audio source - send camelCase directly to Python
-            audioSourcesObj[source.type] = source.path;
-            audioSyncSettings[source.type] = source.syncFix || source.applyDrift;
-          }
-        }
-      });
-
-      // Merge video sources from both the dedicated videoSources object and the audioSources array
-      const mergedVideoSources: { [key: string]: string } =
-        { ...this.videoSources, ...videoSourcesObj };
-
-      // Order the continuation parts and check the chain is complete. A part 3
-      // with no part 2, or a part 2 with no base capture, would otherwise be
-      // spliced in the wrong place or silently ignored.
-      const videoContinuations: { [key: string]: string[] } = {};
-      const videoSeamGaps: { [key: string]: (number | null)[] } = {};
-      for (const [base, rows] of Object.entries(continuationRows)) {
-        rows.sort((a, b) => a.part - b.part);
-        if (!mergedVideoSources[base]) {
-          alert(`You added a continuation part for the ${base} capture, but no ` +
-                `base ${base} capture file. Add the first part too.`);
-          return;
-        }
-        const expected = rows.map((_, i) => i + 2);
-        if (rows.some((r, i) => r.part !== expected[i])) {
-          alert(`The ${base} capture parts are not consecutive ` +
-                `(got ${rows.map(r => r.part).join(', ')}). ` +
-                `Part 3 needs a part 2.`);
-          return;
-        }
-        videoContinuations[base] = rows.map(r => r.source.path);
-        const gaps = rows.map(r =>
-          typeof r.source.seamGapSeconds === 'number' ? r.source.seamGapSeconds : null);
-        if (gaps.some(g => g !== null)) {
-          videoSeamGaps[base] = gaps;
-        }
-      }
-
-      // Build options
-      const options = {
-        masterVideo: this.masterVideoPath,
-        audioSources: audioSourcesObj,
-        audioSyncSettings,
-        videoSources: mergedVideoSources,
-        // Absent when nothing was split, so an ordinary session's payload is
-        // byte-identical to what it was before split captures existed.
-        ...(Object.keys(videoContinuations).length ? { videoContinuations } : {}),
-        ...(Object.keys(videoSeamGaps).length ? { videoSeamGaps } : {}),
-        autoDuck: this.autoDuck,
-        denoiseMics: this.separatorInstalled && this.denoiseMics,
-        useDownloadedStream: this.useDownloadedStream,
-        // Phase 1: carry manual overrides through untouched (null => full auto).
-        alignmentOverrides: this.alignmentOverrides
-      };
 
       // Manual alignment: measure → open wizard → wait. Cancel/failure aborts the
       // whole run (loud, no partial run); finishing feeds nudged values as overrides.

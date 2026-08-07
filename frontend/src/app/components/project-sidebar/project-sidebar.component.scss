@@ -1,0 +1,207 @@
+/* Projects sidebar — lives inside the editor's .project-pane, so it wears the editor's
+   hardcoded FCPX-dark palette (#202023 / #26262a, accent #e8a33d) rather than the app's CSS
+   variables. Moved here from editor.component.scss because emulated encapsulation keeps the
+   editor's .pp-* rules from reaching this component's own DOM. */
+
+:host {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #202023;
+  overflow: hidden;
+}
+
+.pp-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #26262a;
+  border-bottom: 1px solid #0d0d0e;
+
+  .pp-title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #9a9aa2;
+  }
+  .pp-add {
+    font-size: 13px;
+    line-height: 1;
+    color: #d8d8dc;
+    background: transparent;
+    border: 1px solid #3d3d44;
+    border-radius: 4px;
+    padding: 2px 8px;
+    cursor: pointer;
+
+    &:hover:not(:disabled) { background: #2f2f34; border-color: #55555c; }
+    &:disabled { opacity: 0.4; cursor: not-allowed; }
+  }
+}
+
+/* Corrupt registry. Loud, and it stays up until a reload succeeds. */
+.pp-banner {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  background: #3a2222;
+  border-bottom: 1px solid #0d0d0e;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #f0c9c9;
+
+  .pp-banner-mark { flex: 0 0 auto; }
+  .pp-banner-text { flex: 1 1 auto; word-break: break-word; }
+}
+
+.pp-inline-error {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #e79a9a;
+  background: #2a2223;
+  border-bottom: 1px solid #0d0d0e;
+  word-break: break-word;
+}
+
+.pp-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 0;
+
+  &.dragover {
+    outline: 1px dashed #e8a33d;
+    outline-offset: -3px;
+    background: #24242a;
+  }
+}
+
+.pp-empty {
+  padding: 12px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #6f6f78;
+}
+
+.pp-row {
+  display: flex;
+  align-items: center;
+  border-left: 2px solid transparent;
+  transition: background 0.1s ease, border-color 0.1s ease;
+
+  &:hover { background: #2a2a2f; }
+  &.active {
+    background: #2c2f36;
+    border-left-color: #e8a33d;
+  }
+  &.dead { opacity: 0.55; }
+  &.dead:hover { background: transparent; }
+
+  &:hover .pp-remove { opacity: 1; }
+}
+
+.pp-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 7px 4px 7px 10px;
+  cursor: pointer;
+  color: #c4c4ca;
+
+  &:disabled { cursor: default; }
+  &.active { color: #f0f0f2; }
+}
+
+.pp-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #55555c;
+
+  &[data-state='raw'] { background: #7f8ea3; }
+  &[data-state='processed'] { background: #5fa87a; }
+  &[data-state='edited'] { background: #e8a33d; }
+  &[data-state='unrecognized'] { background: #b45b5b; }
+  &[data-state='missing'] { background: #3d3d44; }
+}
+
+.pp-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A missing project is not gone — it is on a drive that is not mounted. Greyed and italic
+   so it reads as "come back later", not "broken". */
+.pp-row.dead .pp-name { font-style: italic; color: #8a8a92; }
+
+.pp-badge {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #2f2f34;
+  color: #9a9aa2;
+
+  &[data-state='processed'] { background: #24382d; color: #86c6a0; }
+  &[data-state='edited'] { background: #3a2f1c; color: #e8a33d; }
+  &[data-state='unrecognized'] { background: #3a2222; color: #e79a9a; }
+}
+
+.pp-busy {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+
+  .pp-pct { font-size: 9px; color: #9a9aa2; }
+}
+
+.pp-spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid #3d3d44;
+  border-top-color: #e8a33d;
+  border-radius: 50%;
+  animation: pp-spin 0.8s linear infinite;
+}
+
+@keyframes pp-spin {
+  to { transform: rotate(360deg); }
+}
+
+.pp-remove {
+  flex: 0 0 auto;
+  opacity: 0;
+  background: transparent;
+  border: none;
+  color: #8a8a92;
+  font-size: 11px;
+  line-height: 1;
+  padding: 6px 8px;
+  cursor: pointer;
+  transition: opacity 0.1s ease, color 0.1s ease;
+
+  &:hover { color: #e79a9a; }
+}

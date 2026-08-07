@@ -29,6 +29,9 @@
         <button class="menu-item" (click)="onOpenFromMenu()">
           <span class="menu-item-label">Open…</span>
         </button>
+        <button class="menu-item" (click)="onAddProjectFromMenu()">
+          <span class="menu-item-label">Add Project…</span>
+        </button>
       </div>
     </div>
     <span class="session-name">{{ sessionName }}</span>
@@ -148,6 +151,15 @@
       </ng-container>
     </div>
   </div>
+
+  <!-- Process a raw project without leaving the editor. Closing it does not stop the run —
+       the pane keeps showing the progress, and clicking that project reopens onto it. -->
+  <app-project-setup-modal *ngIf="setupEntry"
+    [entry]="setupEntry"
+    [attachRunning]="setupAttachRunning"
+    (started)="onProjectSetupStarted()"
+    (closed)="onProjectSetupClosed()"
+    (completed)="onProjectSetupCompleted($event)"></app-project-setup-modal>
 
   <!-- Background activity HUD (FCPX-style). A floating, draggable dock: opened from the button
        in the Edit/Stories tab row and auto-opened when transcription starts; drag it by the
@@ -303,22 +315,16 @@
 
   <!-- Top region: project picker | transcript | viewer, with two vertical splitters. -->
   <section class="top-region" #topRegion>
-    <!-- Project picker (far-left FCPX-libraries column). Shares 'editor.recentSessions'
-         with the launcher; a click loads INTO THIS WINDOW via bootstrap. -->
+    <!-- Project picker (far-left FCPX-libraries column). The pane, its width and its splitter
+         stay here; the list itself is the projects sidebar, backed by the on-disk registry.
+         Opening loads INTO THIS WINDOW via bootstrap — no second window. -->
     <aside class="project-pane" [style.width.px]="projectWidth">
-      <div class="pp-header">
-        <span class="pp-title">Projects</span>
-        <button class="pp-open" (click)="pickProject()" title="Open a _compounds.zip">+ Open…</button>
-      </div>
-      <div class="pp-list">
-        <button class="pp-item" *ngFor="let r of recents"
-                [class.active]="isCurrentSession(r)"
-                (click)="openProject(r)"
-                [title]="r.zipPath">
-          <span class="pp-dot"></span>
-          <span class="pp-name">{{ r.name }}</span>
-        </button>
-      </div>
+      <app-project-sidebar
+        [activeZipPath]="currentZipPath"
+        [busyPath]="projectBusyPath"
+        [busyPercent]="projectBusyPercent"
+        (openRequested)="onProjectOpen($event)"
+        (processRequested)="onProjectProcess($event)"></app-project-sidebar>
     </aside>
 
     <div class="splitter splitter-v splitter-p"

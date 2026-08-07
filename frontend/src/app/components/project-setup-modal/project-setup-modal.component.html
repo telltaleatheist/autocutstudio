@@ -1,0 +1,174 @@
+<!-- Process a raw project in place. Closing never cancels a run — reopening re-attaches to it. -->
+<div class="psm-backdrop" (click)="onBackdropClick()">
+  <div class="psm" (click)="$event.stopPropagation()">
+
+    <header class="psm-header">
+      <div class="psm-heading">
+        <div class="psm-title">Process project</div>
+        <div class="psm-name">{{ entry?.name }}</div>
+      </div>
+      <button class="psm-close" (click)="onClose()"
+              [title]="state === 'running' ? 'Close — the job keeps running' : 'Close'"
+              aria-label="Close">✕</button>
+    </header>
+
+    <!-- ── Setup ──────────────────────────────────────────────────────────── -->
+    <div class="psm-body" *ngIf="!isRunView">
+
+      <div class="psm-field">
+        <div class="psm-label">Master video</div>
+        <div class="psm-path" *ngIf="masterVideo">{{ masterVideo }}</div>
+        <div class="psm-path empty" *ngIf="!masterVideo">None found in this folder</div>
+      </div>
+
+      <div class="psm-detecting" *ngIf="state === 'detecting'">
+        <span class="psm-spinner"></span>
+        <span>Detecting companion files…</span>
+      </div>
+
+      <div class="psm-error" *ngIf="error && state !== 'detecting'">{{ error }}</div>
+
+      <ng-container *ngIf="state === 'ready'">
+        <div class="psm-field">
+          <div class="psm-label-row">
+            <span class="psm-label">Sources ({{ rows.length }})</span>
+            <button class="psm-link" (click)="detect()">Detect again</button>
+          </div>
+
+          <div class="psm-empty" *ngIf="rows.length === 0">
+            No companion files were found next to the master video. Processing will run on the
+            master alone.
+          </div>
+
+          <div class="psm-rows" *ngIf="rows.length > 0">
+            <div class="psm-row" *ngFor="let row of sortedRows; trackBy: trackByRowId">
+              <span class="psm-row-icon">{{ row.isVideo ? '🎥' : '🎵' }}</span>
+              <span class="psm-row-name" [title]="row.path">{{ row.name }}</span>
+
+              <select class="psm-row-type" [(ngModel)]="row.type" [name]="'type_' + row.id">
+                <option value="" disabled>Select type…</option>
+                <option *ngFor="let t of availableTypes(row.type)" [value]="t">
+                  {{ mediaSourceLabels[t] }}
+                </option>
+              </select>
+
+              <!-- Audio rows only: the two per-source corrections the pipeline reads as one
+                   "this source needs sync work" flag. -->
+              <label class="psm-row-check" *ngIf="!row.isVideo"
+                     title="Correct this source's start offset against the master.">
+                <input type="checkbox" [(ngModel)]="row.syncFix" [name]="'sync_' + row.id" />
+                <span>Sync</span>
+              </label>
+              <label class="psm-row-check" *ngIf="!row.isVideo"
+                     title="Correct this source's clock drift across the session.">
+                <input type="checkbox" [(ngModel)]="row.applyDrift" [name]="'drift_' + row.id" />
+                <span>Drift</span>
+              </label>
+
+              <!-- Continuation parts only: the gap before this part starts. -->
+              <input *ngIf="isContinuationPart(row)"
+                     class="psm-row-gap"
+                     type="number" min="0" step="0.001" placeholder="auto"
+                     [value]="row.seamGapSeconds ?? ''"
+                     (input)="setSeamGap(row, $any($event.target).value)"
+                     title="Seconds of nothing between the end of the previous part and the start of this one. Leave blank to measure it against the master; only fill it in when this part has no usable audio." />
+
+              <button class="psm-row-btn" (click)="changeRowFile(row)" title="Choose a different file">⋯</button>
+              <button class="psm-row-btn" (click)="removeRow(row)" title="Remove this source">✕</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="psm-field">
+          <div class="psm-label">Options</div>
+
+          <label class="psm-toggle">
+            <input type="checkbox" [(ngModel)]="autoDuck" name="autoDuck" />
+            <span class="psm-toggle-text">
+              <span class="psm-toggle-title">Dugan auto mixer</span>
+              <span class="psm-toggle-desc">
+                Balances every audio track by proportional gain — the loudest source keeps its
+                level, quieter ones are attenuated.
+              </span>
+            </span>
+          </label>
+
+          <label class="psm-toggle">
+            <input type="checkbox" [(ngModel)]="useDownloadedStream" name="useDownloadedStream" />
+            <span class="psm-toggle-text">
+              <span class="psm-toggle-title">Use downloaded stream as master</span>
+              <span class="psm-toggle-desc">
+                For a downloaded stream: the camera view is extracted from the stream layout
+                with the matching crop and scale.
+              </span>
+            </span>
+          </label>
+
+          <!-- Only when the optional voice-isolation component is installed; install it from
+               the workflow page. -->
+          <label class="psm-toggle" *ngIf="separatorInstalled">
+            <input type="checkbox" [(ngModel)]="denoiseMics" name="denoiseMics" />
+            <span class="psm-toggle-text">
+              <span class="psm-toggle-title">Denoise mics (mic 1 / mic 2)</span>
+              <span class="psm-toggle-desc">
+                Isolates the speaker's voice on mic 1 and mic 2 before alignment. Other sources
+                are untouched.
+              </span>
+            </span>
+          </label>
+        </div>
+
+        <div class="psm-note">Alignment runs fully automatically here.</div>
+      </ng-container>
+
+      <div class="psm-actions">
+        <button class="psm-btn" *ngIf="state === 'error'" (click)="detect()">Detect again</button>
+        <span class="psm-blocked" *ngIf="processBlockedReason">{{ processBlockedReason }}</span>
+        <button class="psm-btn" (click)="onClose()">Close</button>
+        <button class="psm-btn primary" [disabled]="!canProcess" (click)="onProcess()">Process</button>
+      </div>
+    </div>
+
+    <!-- ── Run ────────────────────────────────────────────────────────────── -->
+    <div class="psm-body" *ngIf="isRunView">
+
+      <div class="psm-progress-head">
+        <span class="psm-progress-msg">{{ job?.message }}</span>
+        <span class="psm-progress-pct">{{ progress }}%</span>
+      </div>
+      <div class="psm-bar"><div class="psm-bar-fill" [style.width.%]="progress"></div></div>
+
+      <div class="psm-op" *ngIf="state === 'running' && currentOperation">
+        <div class="psm-op-head">
+          <span class="psm-op-label">{{ currentOperation }}</span>
+          <span class="psm-op-pct">{{ subProgress.toFixed(1) }}%</span>
+          <button class="psm-btn small" *ngIf="canSkip" (click)="onSkip()"
+                  title="Skip this operation">Skip</button>
+        </div>
+        <div class="psm-bar sub"><div class="psm-bar-fill" [style.width.%]="subProgress"></div></div>
+      </div>
+
+      <div class="psm-done" *ngIf="state === 'done'">Processing finished — opening the session…</div>
+      <div class="psm-error" *ngIf="state === 'error' && error">{{ error }}</div>
+
+      <div class="psm-console">
+        <div class="psm-console-line" *ngFor="let line of consoleLines">{{ line }}</div>
+      </div>
+
+      <div class="psm-confirm" *ngIf="confirmingCancel">
+        <span>Cancel this run? Everything it has produced so far is discarded.</span>
+        <button class="psm-btn small" (click)="confirmingCancel = false">Keep running</button>
+        <button class="psm-btn small danger" (click)="onConfirmCancel()">Cancel run</button>
+      </div>
+
+      <div class="psm-actions">
+        <button class="psm-btn danger" *ngIf="state === 'running' && !confirmingCancel"
+                (click)="confirmingCancel = true">Cancel run</button>
+        <button class="psm-btn" (click)="onClose()">
+          {{ state === 'running' ? 'Close (keeps running)' : 'Close' }}
+        </button>
+      </div>
+    </div>
+
+  </div>
+</div>

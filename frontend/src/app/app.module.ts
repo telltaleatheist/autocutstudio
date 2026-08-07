@@ -18,6 +18,8 @@ import { EditorLauncherComponent } from './components/editor-launcher/editor-lau
 import { EditorComponent } from './components/editor/editor.component';
 import { MetadataComponent } from './components/metadata/metadata.component';
 import { MetadataReportsComponent } from './components/metadata-reports/metadata-reports.component';
+import { ProjectSidebarComponent } from './components/project-sidebar/project-sidebar.component';
+import { ProjectSetupModalComponent } from './components/project-setup-modal/project-setup-modal.component';
 
 @NgModule({
   declarations: [
@@ -26,6 +28,8 @@ import { MetadataReportsComponent } from './components/metadata-reports/metadata
     AlignmentComponent,
     EditorLauncherComponent,
     EditorComponent,
+    ProjectSidebarComponent,
+    ProjectSetupModalComponent,
     MetadataComponent,
     MetadataReportsComponent,
     WorkflowComponent,

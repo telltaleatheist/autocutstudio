@@ -197,6 +197,23 @@ export interface ElectronAPI {
   ensureRequiredAssets: () => Promise<{ success: boolean; ok?: boolean; failed?: string[]; error?: string }>;
   onAssetProgress: (callback: (progress: any) => void) => void;
   removeAssetProgressListener: () => void;
+
+  // Projects (session folders the user has opened). A missing registry reads as empty;
+  // an unreadable one REJECTS rather than resetting itself.
+  readProjectsRegistry: () => Promise<{ version: number; projects: Array<{ path: string; name: string; lastOpened: string }> }>;
+  writeProjectsRegistry: (registry: { version: number; projects: Array<{ path: string; name: string; lastOpened: string }> }) => Promise<{ success: boolean }>;
+  scanProjectFolder: (folderPath: string) => Promise<{
+    folder: string;
+    realPath: string | null;
+    exists: boolean;
+    state: 'missing' | 'unrecognized' | 'raw' | 'processed' | 'edited';
+    masterVideo?: string;
+    session?: string;
+    cleanName?: string;
+    zipPath?: string;
+    hasTranscript?: boolean;
+    error?: string;
+  }>;
 }
 
 // Expose API to renderer
@@ -376,7 +393,12 @@ const electronAPI: ElectronAPI = {
   },
   removeAssetProgressListener: () => {
     ipcRenderer.removeAllListeners('asset-progress');
-  }
+  },
+
+  // Projects
+  readProjectsRegistry: () => ipcRenderer.invoke('projects:read-registry'),
+  writeProjectsRegistry: (registry) => ipcRenderer.invoke('projects:write-registry', registry),
+  scanProjectFolder: (folderPath) => ipcRenderer.invoke('projects:scan-folder', folderPath)
 };
 
 contextBridge.exposeInMainWorld('electron', electronAPI);
