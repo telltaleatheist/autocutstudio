@@ -447,6 +447,87 @@ def _parse_overrides(raw, kind):
     return parsed
 
 
+def _validate_continuations(continuations, seam_gaps, video_sources):
+    """Reject a malformed split-capture payload before anything is rendered.
+
+    A continuation that names a source with no primary file, or a gap list whose
+    length does not match the number of seams, would otherwise surface hours
+    later as a mysteriously misplaced clip.
+    """
+    if not isinstance(continuations, dict):
+        raise ValueError(
+            f"videoContinuations must be an object keyed by video source type, "
+            f"got {type(continuations).__name__}")
+    if not isinstance(seam_gaps, dict):
+        raise ValueError(
+            f"videoSeamGaps must be an object keyed by video source type, "
+            f"got {type(seam_gaps).__name__}")
+
+    # Structure first, existence second. A payload with the wrong SHAPE is a
+    # programming error and should say so, rather than reporting whichever of its
+    # files happens to be missing.
+    for v_type, parts in continuations.items():
+        if not isinstance(parts, list) or not all(isinstance(p, str) and p
+                                                  for p in parts):
+            raise ValueError(
+                f"videoContinuations['{v_type}'] must be a list of file paths, "
+                f"got {parts!r}")
+        if not parts:
+            continue
+        if not (video_sources or {}).get(v_type):
+            raise ValueError(
+                f"videoContinuations names '{v_type}' with {len(parts)} "
+                f"continuation part(s), but no primary '{v_type}' video source "
+                f"was supplied — there is nothing for them to continue")
+
+    for v_type, gaps in seam_gaps.items():
+        parts = continuations.get(v_type) or []
+        if not parts:
+            raise ValueError(
+                f"videoSeamGaps names '{v_type}' but no continuation parts were "
+                f"supplied for it, so it has no seams")
+        if not isinstance(gaps, list) or len(gaps) != len(parts):
+            raise ValueError(
+                f"videoSeamGaps['{v_type}'] must have one entry per seam "
+                f"({len(parts)} expected), got {gaps!r}")
+        for gap in gaps:
+            if gap is not None and not isinstance(gap, (int, float)):
+                raise ValueError(
+                    f"videoSeamGaps['{v_type}'] entries must be numbers or null, "
+                    f"got {gap!r}")
+
+    for v_type, parts in continuations.items():
+        for part in parts:
+            if not Path(part).exists():
+                raise FileNotFoundError(
+                    f"continuation part for '{v_type}' does not exist: {part}")
+
+
+def _splice_capture_parts(video_type, primary, continuations, seam_gaps,
+                          master_video):
+    """Rebuild a split screen/game capture into one continuous file.
+
+    Returns the spliced file's path, which then stands in for the original
+    source everywhere downstream — measurement, drift retiming and every
+    compound generator see an ordinary single-file capture.
+    """
+    from core.video_parts import plan_merge, build_merged
+
+    parts = [primary] + list(continuations)
+    set_stage(35, f'Splicing {len(parts)} {video_type} capture parts...')
+    emit_operation_start(f"Splicing {video_type} capture", can_skip=False)
+
+    # source_type lets the seam measurement crop the master to this source's
+    # quadrant if it has to fall back to picture alignment.
+    plan = plan_merge(parts, master_video,
+                      manual_gaps=seam_gaps if seam_gaps else None,
+                      source_type=video_type)
+    merged = build_merged(plan)
+    print(f"✓ {video_type} capture spliced from {len(parts)} parts: "
+          f"{Path(merged).name}", file=sys.stderr)
+    return merged
+
+
 def _run_measure_only(master_video, audio_sources_input, video_sources):
     """MEASURE-ONLY MODE: locate the same sources a normal run would, measure each
     source's signed offset against the master via GCC-PHAT, emit a single
@@ -575,6 +656,14 @@ def main():
         audio_sync_settings = data.get('audioSyncSettings', {})
         threshold = data.get('threshold', config.default_threshold)
         video_sources = data.get('videoSources', {})
+        # SPLIT CAPTURES: a screen/game recording that was stopped and restarted
+        # mid-session arrives as several files. videoContinuations lists the parts
+        # that FOLLOW videoSources[type], in recording order; videoSeamGaps may
+        # carry a hand-measured gap (seconds) per seam, with null meaning "measure
+        # it". Both absent => single-file capture => zero behaviour change.
+        video_continuations = data.get('videoContinuations') or {}
+        video_seam_gaps = data.get('videoSeamGaps') or {}
+        _validate_continuations(video_continuations, video_seam_gaps, video_sources)
         auto_duck = data.get('autoDuck', False)
         use_downloaded_stream = data.get('useDownloadedStream', False)
         # Voice isolation (audio-separator): remove background from mic1/mic2 BEFORE
@@ -1128,6 +1217,22 @@ def main():
             if video_type in video_sources and video_sources[video_type]:
                 print(f"\n  Found {video_type} video: {Path(video_sources[video_type]).name}", file=sys.stderr)
                 original_path = video_sources[video_type]
+
+                # A capture that was stopped and restarted mid-session is spliced
+                # back into one continuous file FIRST, so everything downstream
+                # keeps its one-asset-one-offset assumption. With no continuation
+                # parts this is skipped entirely.
+                #
+                # Deliberately OUTSIDE the try below: that block's generic handler
+                # falls back to "use the original video", which for a split
+                # capture would silently ship part 1 alone and drop the rest of
+                # the session's screen share. A splice that fails must stop the
+                # run, not quietly lose hours of picture.
+                continuations = video_continuations.get(video_type) or []
+                if continuations:
+                    original_path = _splice_capture_parts(
+                        video_type, original_path, continuations,
+                        video_seam_gaps.get(video_type), master_video)
 
                 try:
                     # Clear any previous skip signal

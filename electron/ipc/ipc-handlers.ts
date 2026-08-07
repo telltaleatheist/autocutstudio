@@ -1094,8 +1094,17 @@ function setupFileSystemHandlers(windowService: WindowService): void {
       const videoPatterns: { [key: string]: RegExp } = {
         'cam1': new RegExp(`^${escapedSession}\\s+cam\\.(mp4|mov|avi|mkv)$`, 'i'),
         'cam2': new RegExp(`^${escapedSession}\\s+cam\\s*2\\.(mp4|mov|avi|mkv)$`, 'i'),
-        'screenVideo': new RegExp(`^${escapedSession}\\s+screen\\s*capture\\.(mp4|mov|avi|mkv)$`, 'i'),
-        'gameVideo': new RegExp(`^${escapedSession}\\s+game\\s*capture\\.(mp4|mov|avi|mkv)$`, 'i')
+        // A capture recorded in one go has no number; one that was stopped and
+        // restarted is written as "... screen capture 1.mp4", "... 2.mp4", so the
+        // unnumbered and the "1" form both mean the FIRST part. Parts 2 and 3 are
+        // matched separately and become continuation sources, which the workflow
+        // splices onto part 1 before anything else looks at them.
+        'screenVideo': new RegExp(`^${escapedSession}\\s+screen\\s*capture(\\s*1)?\\.(mp4|mov|avi|mkv)$`, 'i'),
+        'gameVideo': new RegExp(`^${escapedSession}\\s+game\\s*capture(\\s*1)?\\.(mp4|mov|avi|mkv)$`, 'i'),
+        'screenVideo2': new RegExp(`^${escapedSession}\\s+screen\\s*capture\\s*2\\.(mp4|mov|avi|mkv)$`, 'i'),
+        'screenVideo3': new RegExp(`^${escapedSession}\\s+screen\\s*capture\\s*3\\.(mp4|mov|avi|mkv)$`, 'i'),
+        'gameVideo2': new RegExp(`^${escapedSession}\\s+game\\s*capture\\s*2\\.(mp4|mov|avi|mkv)$`, 'i'),
+        'gameVideo3': new RegExp(`^${escapedSession}\\s+game\\s*capture\\s*3\\.(mp4|mov|avi|mkv)$`, 'i')
       };
 
       // Scan directory for matching audio and video files
@@ -1144,8 +1153,26 @@ function setupFileSystemHandlers(windowService: WindowService): void {
         }
       }
 
+      // A screen/game CAPTURE writes a companion wav next to its mp4
+      // ("2026-08-05 screen capture 1.wav"), and the screen/game AUDIO patterns
+      // above match those too, since they only look for "screen"/"game" anywhere
+      // in the name. Which one won was down to readdir order. That is a
+      // coin-flip this pipeline cannot afford: a capture companion can be
+      // digital silence (a lost audio feed still records a full-length empty
+      // track), and picking it would replace the session's desktop audio with
+      // nothing at all. Capture companions are never an audio source, so they
+      // are excluded outright.
+      const isCaptureCompanion = (file: string) =>
+        /\s(?:screen|game)\s*capture(\s*\d+)?\.(wav|mp3|aac|flac|ogg|m4a)$/i
+          .test(path.basename(file));
+
       // Second pass: separate VMix and soundboard files
-      for (const [audioType, candidates] of Object.entries(audioCandidatesByType)) {
+      for (const [audioType, rawCandidates] of Object.entries(audioCandidatesByType)) {
+        const candidates = rawCandidates.filter(file => {
+          if (!isCaptureCompanion(file)) return true;
+          log.info(`Ignoring capture companion for ${audioType}: ${path.basename(file)}`);
+          return false;
+        });
         if (candidates.length === 0) continue;
 
         // Separate soundboard files from VMix files

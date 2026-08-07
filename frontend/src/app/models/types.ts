@@ -8,6 +8,11 @@ export interface AudioSource {
   syncFix: boolean;
   applyDrift: boolean;
   isVideo?: boolean;  // True if this is a video file (cam, screen, game)
+  // Continuation parts only: the gap, in seconds, between the END of the
+  // previous part and the START of this one. Left null the gap is MEASURED
+  // against the master by GCC-PHAT, which is the normal case; a number here
+  // overrides that, for a part whose audio cannot be aligned (a lost feed).
+  seamGapSeconds?: number | null;
 }
 
 export type AudioSourceType =
@@ -33,7 +38,26 @@ export type VideoSourceType =
   | 'cam1'
   | 'cam2'
   | 'screenVideo'
-  | 'gameVideo';
+  | 'gameVideo'
+  // Continuation parts of a capture that was stopped and restarted mid-session.
+  // They are spliced onto the base capture (with black filler across the gap
+  // where nothing was recorded) before anything else looks at it, so the rest of
+  // the pipeline still sees a single continuous file. Part 2 requires part 1;
+  // part 3 requires part 2.
+  | 'screenVideo2'
+  | 'screenVideo3'
+  | 'gameVideo2'
+  | 'gameVideo3';
+
+/** Continuation part types mapped to the backend source they extend, in order. */
+export const VIDEO_CONTINUATION_PARTS: {
+  [key: string]: { base: 'screen' | 'game'; part: number };
+} = {
+  screenVideo2: { base: 'screen', part: 2 },
+  screenVideo3: { base: 'screen', part: 3 },
+  gameVideo2: { base: 'game', part: 2 },
+  gameVideo3: { base: 'game', part: 3 }
+};
 
 export type MediaSourceType = AudioSourceType | VideoSourceType;
 
@@ -99,7 +123,11 @@ export const VIDEO_SOURCE_LABELS: { [key in VideoSourceType]: string } = {
   cam1: 'Camera 1 Video',
   cam2: 'Camera 2 Video',
   screenVideo: 'Screen Capture Video',
-  gameVideo: 'Game Capture Video'
+  gameVideo: 'Game Capture Video',
+  screenVideo2: 'Screen Capture Video (part 2)',
+  screenVideo3: 'Screen Capture Video (part 3)',
+  gameVideo2: 'Game Capture Video (part 2)',
+  gameVideo3: 'Game Capture Video (part 3)'
 };
 
 export const MEDIA_SOURCE_LABELS: { [key in MediaSourceType]: string } = {

@@ -3,7 +3,7 @@ import { Subject, Subscription } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
 import { ElectronService } from '../../services/electron.service';
 import { ProcessingService } from '../../services/processing.service';
-import { AudioSource, AudioSourceType, VideoSourceType, MediaSourceType, AUDIO_SOURCE_LABELS, VIDEO_SOURCE_LABELS, MEDIA_SOURCE_LABELS } from '../../models/types';
+import { AudioSource, AudioSourceType, VideoSourceType, MediaSourceType, AUDIO_SOURCE_LABELS, VIDEO_SOURCE_LABELS, MEDIA_SOURCE_LABELS, VIDEO_CONTINUATION_PARTS } from '../../models/types';
 
 @Component({
   selector: 'app-workflow',
@@ -22,7 +22,9 @@ export class WorkflowComponent implements OnInit, OnDestroy {
   videoSourceLabels = VIDEO_SOURCE_LABELS;
   mediaSourceLabels = MEDIA_SOURCE_LABELS;
   audioTypes: AudioSourceType[] = ['mic1', 'mic2', 'mic3', 'mic4', 'screen', 'game', 'soundEffects', 'bluetooth', 'mic1Sb', 'mic2Sb', 'mic3Sb', 'mic4Sb', 'screenSb', 'desktopSb', 'gameSb', 'bluetoothSb', 'soundEffectsSb'];
-  videoTypes: VideoSourceType[] = ['cam1', 'cam2', 'screenVideo', 'gameVideo'];
+  videoTypes: VideoSourceType[] = ['cam1', 'cam2', 'screenVideo', 'gameVideo',
+                                   'screenVideo2', 'screenVideo3',
+                                   'gameVideo2', 'gameVideo3'];
   allMediaTypes: MediaSourceType[] = [...this.audioTypes, ...this.videoTypes];
 
   // Video sources (optional)
@@ -385,9 +387,36 @@ export class WorkflowComponent implements OnInit, OnDestroy {
 
       const categoryA = getCategory(a);
       const categoryB = getCategory(b);
+      if (categoryA !== categoryB) return categoryA - categoryB;
 
-      return categoryA - categoryB;
+      // Within the video group, follow the declared type order so a capture's
+      // continuation parts sit directly under the part they continue.
+      if (categoryA === 2) {
+        return this.videoTypes.indexOf(a.type as VideoSourceType)
+             - this.videoTypes.indexOf(b.type as VideoSourceType);
+      }
+      return 0;
     });
+  }
+
+  /** True when this row is a continuation part of a restarted capture. */
+  isContinuationPart(source: AudioSource): boolean {
+    return !!source.type && !!VIDEO_CONTINUATION_PARTS[source.type as string];
+  }
+
+  /**
+   * Seam gap entry. Blank means "measure this seam against the master", which is
+   * what should normally happen; a number is only needed when the part carries no
+   * audio to measure with.
+   */
+  setSeamGap(source: AudioSource, value: string): void {
+    const trimmed = (value || '').trim();
+    if (!trimmed) {
+      source.seamGapSeconds = null;
+      return;
+    }
+    const parsed = Number(trimmed);
+    source.seamGapSeconds = Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
   }
 
   // Video source selection
@@ -443,9 +472,19 @@ export class WorkflowComponent implements OnInit, OnDestroy {
       const audioSyncSettings: { [key: string]: boolean } = {};
       const videoSourcesObj: { [key: string]: string } = {};
 
+      // Continuation parts of a restarted capture, collected per base source and
+      // ordered by part number. Empty => ordinary single-file capture.
+      const continuationRows: { [key: string]: { part: number; source: AudioSource }[] } = {};
+
       this.audioSources.forEach(source => {
         if (source.type) {
           if (source.isVideo) {
+            const continuation = VIDEO_CONTINUATION_PARTS[source.type];
+            if (continuation) {
+              (continuationRows[continuation.base] ||= []).push(
+                { part: continuation.part, source });
+              return;
+            }
             // Map video source types (screenVideo/gameVideo -> screen/game for compound generators)
             const typeMap: { [key: string]: string } = {
               'screenVideo': 'screen',
@@ -462,7 +501,35 @@ export class WorkflowComponent implements OnInit, OnDestroy {
       });
 
       // Merge video sources from both the dedicated videoSources object and the audioSources array
-      const mergedVideoSources = { ...this.videoSources, ...videoSourcesObj };
+      const mergedVideoSources: { [key: string]: string } =
+        { ...this.videoSources, ...videoSourcesObj };
+
+      // Order the continuation parts and check the chain is complete. A part 3
+      // with no part 2, or a part 2 with no base capture, would otherwise be
+      // spliced in the wrong place or silently ignored.
+      const videoContinuations: { [key: string]: string[] } = {};
+      const videoSeamGaps: { [key: string]: (number | null)[] } = {};
+      for (const [base, rows] of Object.entries(continuationRows)) {
+        rows.sort((a, b) => a.part - b.part);
+        if (!mergedVideoSources[base]) {
+          alert(`You added a continuation part for the ${base} capture, but no ` +
+                `base ${base} capture file. Add the first part too.`);
+          return;
+        }
+        const expected = rows.map((_, i) => i + 2);
+        if (rows.some((r, i) => r.part !== expected[i])) {
+          alert(`The ${base} capture parts are not consecutive ` +
+                `(got ${rows.map(r => r.part).join(', ')}). ` +
+                `Part 3 needs a part 2.`);
+          return;
+        }
+        videoContinuations[base] = rows.map(r => r.source.path);
+        const gaps = rows.map(r =>
+          typeof r.source.seamGapSeconds === 'number' ? r.source.seamGapSeconds : null);
+        if (gaps.some(g => g !== null)) {
+          videoSeamGaps[base] = gaps;
+        }
+      }
 
       // Build options
       const options = {
@@ -470,6 +537,10 @@ export class WorkflowComponent implements OnInit, OnDestroy {
         audioSources: audioSourcesObj,
         audioSyncSettings,
         videoSources: mergedVideoSources,
+        // Absent when nothing was split, so an ordinary session's payload is
+        // byte-identical to what it was before split captures existed.
+        ...(Object.keys(videoContinuations).length ? { videoContinuations } : {}),
+        ...(Object.keys(videoSeamGaps).length ? { videoSeamGaps } : {}),
         autoDuck: this.autoDuck,
         denoiseMics: this.separatorInstalled && this.denoiseMics,
         useDownloadedStream: this.useDownloadedStream,

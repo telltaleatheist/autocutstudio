@@ -56,6 +56,16 @@
                 {{ mediaSourceLabels[type] }}
               </option>
             </select>
+            <input
+              *ngIf="isContinuationPart(source)"
+              class="seam-gap-input"
+              type="number"
+              min="0"
+              step="0.001"
+              placeholder="auto"
+              [value]="source.seamGapSeconds ?? ''"
+              (input)="setSeamGap(source, $any($event.target).value)"
+              title="Seconds of nothing between the end of the previous part and the start of this one. Leave blank to measure it against the master; only fill it in when this part has no usable audio." />
             <button type="button" class="btn-remove" (click)="removeAudioSource(source.id)" title="Remove">
               ✕
             </button>
