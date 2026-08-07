@@ -1,0 +1,107 @@
+/* The export chooser + result dialogs. Moved out of editor.component.scss because emulated
+   encapsulation keeps the editor's rules from reaching this component's own DOM.
+
+   The shared chrome (.modal-backdrop, .modal, .modal-title, .modal-actions, .modal-btn) is NOT
+   duplicated here — it comes from the one partial below, which the editor shell also uses for
+   its split modal. Only the children that exist solely in these two dialogs live here. */
+@use '../styles/modal' as *;
+
+/* Nothing to draw on the host itself: both dialogs are position: fixed, so the host must not
+   become a flex item of .editor. Same pattern as app-project-setup-modal. */
+:host {
+  display: contents;
+}
+
+/* Export chooser: two large option cards (Master FCPXML / Stories). */
+.chooser-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+
+  .chooser-opt {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    text-align: left;
+    padding: 12px 14px;
+    background: #2d2d32;
+    border: 1px solid #3a3a40;
+    border-radius: 8px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 0.12s ease, border-color 0.12s ease;
+
+    &:hover:not(:disabled) { background: #36363c; border-color: #e8a33d; }
+    &:disabled { opacity: 0.45; cursor: default; }
+
+    .chooser-opt-title { font-size: 13px; font-weight: 700; color: #ececef; }
+    .chooser-opt-desc { font-size: 11px; color: #9a9aa2; line-height: 1.4; }
+  }
+}
+
+/* Export option that modifies BOTH chooser cards' output (mic muting), so it sits
+   under the cards rather than inside one. Same card palette, flatter. */
+.chooser-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  background: #2a2a2f;
+  border: 1px solid #3a3a40;
+  border-radius: 8px;
+  cursor: pointer;
+
+  &.disabled { opacity: 0.45; cursor: default; }
+
+  input[type='checkbox'] {
+    flex: 0 0 auto;
+    margin: 1px 0 0;
+    accent-color: #e8a33d;
+    cursor: inherit;
+  }
+
+  .chooser-toggle-text {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .chooser-toggle-title { font-size: 12px; font-weight: 600; color: #ececef; }
+  .chooser-toggle-desc { font-size: 11px; color: #9a9aa2; line-height: 1.4; }
+}
+
+.modal-path {
+  font-size: 12px;
+  color: #cfe6d5;
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  word-break: break-all;
+  background: #1c1c1f;
+  border: 1px solid #333338;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+}
+
+/* One-line factual note under the exported path (e.g. the mic-mute block count). */
+.modal-note {
+  font-size: 11px;
+  color: #9a9aa2;
+  line-height: 1.4;
+  margin: -8px 0 16px;
+}
+
+.modal-error {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #e08a7a;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(200, 106, 90, 0.10);
+  border: 1px solid rgba(200, 106, 90, 0.30);
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+}

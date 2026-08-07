@@ -1,0 +1,80 @@
+<!-- Export chooser: pick what to export (File ▸ Export… / ⌘E). Escape or a backdrop
+     click closes it. -->
+<div class="modal-backdrop" *ngIf="chooserOpen" (click)="chooserClosed.emit()">
+  <div class="modal export-chooser" (click)="$event.stopPropagation()">
+    <div class="modal-title">Export</div>
+    <div class="chooser-options">
+      <button class="chooser-opt" [disabled]="cutCount === 0 && !hasStories"
+              (click)="choice.emit('fcpxml')">
+        <span class="chooser-opt-title">Master FCPXML</span>
+        <span class="chooser-opt-desc" *ngIf="hasStories">
+          One project per story ({{ storyCount }}) plus a Scrap project for unmarked
+          sections<ng-container *ngIf="cutCount > 0"> — {{ cutCount }} {{ cutCount === 1 ? 'cut' : 'cuts' }} applied</ng-container>
+        </span>
+        <span class="chooser-opt-desc" *ngIf="!hasStories && cutCount > 0">
+          The whole timeline with your {{ cutCount }} {{ cutCount === 1 ? 'cut' : 'cuts' }} applied
+        </span>
+        <span class="chooser-opt-desc" *ngIf="!hasStories && cutCount === 0">Place a cut or mark a story first</span>
+      </button>
+      <button class="chooser-opt" [disabled]="!hasStories || !transcriptReady"
+              (click)="choice.emit('transcripts')">
+        <span class="chooser-opt-title">Story Transcripts → Content Studio</span>
+        <span class="chooser-opt-desc" *ngIf="hasStories && transcriptReady">
+          One transcript file per story ({{ storyCount }}) for Content Studio import — no FCPXML
+        </span>
+        <span class="chooser-opt-desc" *ngIf="!hasStories">Mark at least one story first</span>
+        <span class="chooser-opt-desc" *ngIf="hasStories && !transcriptReady">Transcribe the session first</span>
+      </button>
+    </div>
+    <!-- Applies to both FCPXML exports (the transcripts-only export writes no FCPXML).
+         Greyed out until the session has a transcript: the mute blocks come from the
+         Whisper word times and there is nothing to derive them from without one. -->
+    <label class="chooser-toggle" [class.disabled]="!canMuteMic"
+           title="Wherever the screen audio is speaking and this mic is not, the mic clip is split at that stretch's start and end and the middle piece is DISABLED (FCPX's darkened clip — press V on it to bring it back). Whole blocks, no volume keyframes. Applies to the Master FCPXML export.">
+      <input type="checkbox" [ngModel]="muteMic" (ngModelChange)="muteMicChange.emit($event)"
+             [disabled]="!canMuteMic" />
+      <span class="chooser-toggle-text">
+        <span class="chooser-toggle-title">Mute mic while screen audio speaks</span>
+        <span class="chooser-toggle-desc" *ngIf="canMuteMic">
+          Splits the mic lane and disables the blocks where only the screen is talking —
+          re-enable any block in FCPX with V
+        </span>
+        <span class="chooser-toggle-desc" *ngIf="!canMuteMic">
+          Transcribe the session first — the mute blocks come from the transcript
+        </span>
+      </span>
+    </label>
+    <div class="modal-actions">
+      <button class="modal-btn" (click)="chooserClosed.emit()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Export result modal: success (path + Show in Folder) or verbatim Python error. Escape or
+     a backdrop click closes it. -->
+<div class="modal-backdrop" *ngIf="resultPath || error" (click)="dismissed.emit()">
+  <div class="modal" [class.error]="!!error" (click)="$event.stopPropagation()">
+    <ng-container *ngIf="resultPath">
+      <div class="modal-title">Exported</div>
+      <div class="modal-path">{{ resultPath }}</div>
+      <!-- Reported whenever the mic-mute pass ran, INCLUDING zero: "the host talked over
+           everything" is a real answer and the user should see it, not silence. -->
+      <div class="modal-note" *ngIf="micMuteBlocks !== null">
+        {{ micMuteBlocks }} mic
+        {{ micMuteBlocks === 1 ? 'block' : 'blocks' }} disabled under screen audio<ng-container
+          *ngIf="micMuteBlocks === 0"> — the mic was live everywhere the screen spoke</ng-container>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-btn primary" (click)="showInFolder.emit()">Show in Folder</button>
+        <button class="modal-btn" (click)="dismissed.emit()">Done</button>
+      </div>
+    </ng-container>
+    <ng-container *ngIf="error">
+      <div class="modal-title">Export failed</div>
+      <div class="modal-error">{{ error }}</div>
+      <div class="modal-actions">
+        <button class="modal-btn" (click)="dismissed.emit()">Close</button>
+      </div>
+    </ng-container>
+  </div>
+</div>

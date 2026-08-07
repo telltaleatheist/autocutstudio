@@ -546,10 +546,14 @@ Yield: ~130 lines.
 ### Step 10 — `story-split-modal/` → `app-story-split-modal`
 
 **Template moves:** HTML 237–316 → `<app-story-split-modal *ngIf="splitModalOpen" …>`.
-**SCSS moves:** `@keyframes split-sweep` (1595–1600), `.split-modal`
-(1610–end). Child `@use`s `styles/_modal.scss` — the split modal's footer uses
-`.modal-btn`/`.modal-btn.primary` and its backdrop is `.modal-backdrop`;
-forgetting the partial = unstyled dialog.
+**SCSS moves:** `@keyframes split-sweep` (moves WITH the modal — §1 keyframes
+rule; its only users are inside `.split-modal`) and the `.split-modal` block.
+Child `@use`s `styles/_modal.scss` **for `.modal-backdrop` only** — corrected
+in step 4: the split modal does NOT use the shared `.modal`/`.modal-btn` rules
+(its card is `.split-modal`, and it carries its own DIVERGED `.modal-btn` copy
+under `.split-foot` with `:disabled` styling the export copy lacks — do not
+merge them). After this step the shell no longer needs `_modal.scss`; drop the
+shell's `@use` (see the comment at the top of editor.component.scss).
 
 **TS moves:** `splitModalOpen`(→local `open`)/`splitRunning`/`splitError`/
 `splitStory`/`splitStoryTitle`/`splitChapters`/`splitAssign`/`splitBuckets`/

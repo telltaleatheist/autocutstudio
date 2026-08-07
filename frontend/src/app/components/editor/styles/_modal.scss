@@ -1,0 +1,77 @@
+/* Shared modal chrome for the editor's dialogs — the ONE source for these rules.
+ *
+ * Emulated encapsulation means a rule written in one component cannot reach another component's
+ * DOM, so every component that renders a `.modal-backdrop` must pull this partial in:
+ *
+ *     @use '../styles/modal' as *;
+ *
+ * The CSS is emitted once per consuming component (necessarily — each copy carries that
+ * component's own scoping attribute), but there is a single definition here. Never copy these
+ * rules into a component stylesheet, and never leave them in the parent hoping they will reach.
+ *
+ * Current consumers: the editor shell (its split modal's backdrop, until step 10 of the
+ * decomposition moves that dialog into its own component) and app-editor-export-modals.
+ *
+ * Export-specific children (.chooser-*, .modal-path, .modal-note, .modal-error) are NOT here —
+ * they live in export-modals.component.scss, because only that dialog has them. Likewise the
+ * split modal styles its own footer buttons; it needs only .modal-backdrop from this file.
+ */
+
+/* Export result modal: dim backdrop + centered FCP-dark card (success or verbatim error). */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 40px;
+
+  .modal {
+    width: 100%;
+    max-width: 520px;
+    background: #26262a;
+    border: 1px solid #0d0d0e;
+    border-radius: 10px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+    padding: 20px 22px;
+
+    .modal-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: #f0f0f2;
+      margin-bottom: 12px;
+    }
+
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+
+      .modal-btn {
+        font-size: 12px;
+        font-weight: 500;
+        color: #e2e2e6;
+        background: #3a3a40;
+        border: 1px solid #0d0d0e;
+        border-radius: 5px;
+        padding: 6px 14px;
+        cursor: pointer;
+        transition: background 0.12s ease;
+
+        &:hover { background: #47474e; }
+
+        &.primary {
+          background: #3a7bd0;
+          border-color: #2b5ea0;
+          color: #fff;
+
+          &:hover { background: #4589e0; }
+        }
+      }
+    }
+
+    &.error .modal-title { color: #e6a597; }
+  }
+}

@@ -19,6 +19,7 @@ import { MetadataComponent } from './components/metadata/metadata.component';
 import { MetadataReportsComponent } from './components/metadata-reports/metadata-reports.component';
 import { ProjectSidebarComponent } from './components/project-sidebar/project-sidebar.component';
 import { ActivityDockComponent } from './components/editor/activity-dock/activity-dock.component';
+import { ExportModalsComponent } from './components/editor/export-modals/export-modals.component';
 import { ProjectSetupModalComponent } from './components/project-setup-modal/project-setup-modal.component';
 
 @NgModule({
@@ -29,6 +30,7 @@ import { ProjectSetupModalComponent } from './components/project-setup-modal/pro
     EditorComponent,
     ProjectSidebarComponent,
     ActivityDockComponent,
+    ExportModalsComponent,
     ProjectSetupModalComponent,
     MetadataComponent,
     MetadataReportsComponent,
