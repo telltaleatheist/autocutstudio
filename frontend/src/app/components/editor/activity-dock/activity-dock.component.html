@@ -1,0 +1,63 @@
+<div class="activity-head" (mousedown)="onActivityDragStart($event)">
+  <span class="activity-title">Background Activity</span>
+  <button class="activity-close" (click)="closed.emit()" title="Close">×</button>
+</div>
+<div class="activity-body">
+  <!-- Transcription. -->
+  <div class="activity-task" *ngIf="transcribing">
+    <div class="activity-task-row">
+      <span class="activity-task-name">Transcribing</span>
+      <span class="activity-task-pct">{{ transcribeProgress }}%</span>
+    </div>
+    <div class="activity-bar"><div class="activity-bar-fill" [style.width.%]="transcribeProgress"></div></div>
+    <div class="activity-task-sub">{{ transcribeMessage }}<span *ngIf="transcribeEtaLabel"> · {{ transcribeEtaLabel }}</span></div>
+  </div>
+
+  <!-- Export. -->
+  <div class="activity-task" *ngIf="exporting">
+    <div class="activity-task-row">
+      <span class="activity-task-name">Exporting</span>
+    </div>
+    <div class="activity-bar indeterminate"><div class="activity-bar-fill"></div></div>
+  </div>
+
+  <!-- Waveform analysis. -->
+  <div class="activity-task" *ngIf="waveformActive">
+    <div class="activity-task-row">
+      <span class="activity-task-name">Analyzing waveforms</span>
+      <span class="activity-task-pct">{{ waveformPct }}%</span>
+    </div>
+    <div class="activity-bar"><div class="activity-bar-fill" [style.width.%]="waveformPct"></div></div>
+    <div class="activity-task-sub">{{ peaksBurstDone }} / {{ peaksBurstTotal }} clips</div>
+  </div>
+
+  <!-- Story analysis (chapter split / title suggestions). A QUEUE, not a single slot: the story
+       being worked on sits on top with the bar, the percentage and the run's one stop button;
+       the stories still to come are listed under it. A finished story's row is removed, so the
+       top row is always what is running now. The bar is the RUNNING story's own pipeline
+       progress — "how many stories are left" is the list itself. -->
+  <div class="activity-task" *ngIf="analyzing && running">
+    <div class="activity-task-row">
+      <span class="activity-task-name">{{ running.label }}</span>
+      <!-- Per-story cancel, shown only while other stories wait — with one story left it
+           would just be a second stop button. -->
+      <button class="activity-skip" *ngIf="queue.length > 1" (click)="skipRunningRequested.emit()"
+              title="Cancel just this story — the rest of the queue continues">×</button>
+      <span class="activity-task-pct" *ngIf="aiProgressTotal > 0">{{ aiProgressPct }}%</span>
+      <button class="activity-stop" (click)="stopRequested.emit()" title="Stop the whole run">×</button>
+    </div>
+    <div class="activity-bar" *ngIf="aiProgressTotal > 0"><div class="activity-bar-fill" [style.width.%]="aiProgressPct"></div></div>
+    <div class="activity-bar indeterminate" *ngIf="aiProgressTotal <= 0"><div class="activity-bar-fill"></div></div>
+    <div class="activity-task-sub">{{ analyzeMessage || aiPhase || 'Working…' }}</div>
+    <div class="activity-wait" *ngFor="let q of pending">
+      <span class="activity-wait-name">{{ q.label }}</span>
+      <span class="activity-wait-tag">waiting</span>
+      <button class="activity-skip" (click)="cancelPendingRequested.emit(q.id)"
+              title="Drop this story from the queue — the others still run">×</button>
+    </div>
+    <div class="activity-wait more" *ngIf="pendingMore > 0">+{{ pendingMore }} more</div>
+  </div>
+
+  <div class="activity-idle" *ngIf="!hasBackgroundActivity && !analyzeError">No background activity.</div>
+  <div class="activity-error" *ngIf="analyzeError && !analyzing">Analysis failed: {{ analyzeError }}</div>
+</div>

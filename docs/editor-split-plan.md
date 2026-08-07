@@ -122,6 +122,15 @@ goes into `styles/_modal.scss` and is pulled in with
 `@use '../styles/modal' as *;` — never duplicated, never left in the parent
 hoping it will reach.
 
+**Keyframes rule (learned in step 3, verified against the emitted bundle):**
+Angular scopes `@keyframes` per component under emulated encapsulation — the
+definition and every `animation:` that names it are rewritten with the SAME
+component id. A `@keyframes` must therefore live in the same component as every
+rule that references it, or in a shared partial `@use`d by both. Consequence:
+`activity-spin` stayed in the shell (its only user `.pane-activity-btn` stays);
+`split-sweep` (step 10) and any topbar animation (step 12) must be checked the
+same way before moving.
+
 ---
 
 ## 2. Ordered extraction steps

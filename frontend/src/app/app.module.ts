@@ -18,6 +18,7 @@ import { EditorComponent } from './components/editor/editor.component';
 import { MetadataComponent } from './components/metadata/metadata.component';
 import { MetadataReportsComponent } from './components/metadata-reports/metadata-reports.component';
 import { ProjectSidebarComponent } from './components/project-sidebar/project-sidebar.component';
+import { ActivityDockComponent } from './components/editor/activity-dock/activity-dock.component';
 import { ProjectSetupModalComponent } from './components/project-setup-modal/project-setup-modal.component';
 
 @NgModule({
@@ -27,6 +28,7 @@ import { ProjectSetupModalComponent } from './components/project-setup-modal/pro
     AlignmentComponent,
     EditorComponent,
     ProjectSidebarComponent,
+    ActivityDockComponent,
     ProjectSetupModalComponent,
     MetadataComponent,
     MetadataReportsComponent,

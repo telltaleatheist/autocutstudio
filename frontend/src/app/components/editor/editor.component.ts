@@ -358,7 +358,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   activityOpen = false;
   activityX = 0;
   activityY = 0;
-  private activityDragBase: { x: number; y: number; dx: number; dy: number } | null = null;
   // The story-analysis queue: one entry per story a run will visit, [0] running, the rest waiting.
   // Emptied whenever a run ends (finished, failed or stopped) so ghost rows cannot outlive it.
   activityQueue: ActivityEntry[] = [];
@@ -477,8 +476,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.stopPlayback();
     window.removeEventListener('mousemove', this.onWindowMouseMove);
     window.removeEventListener('mouseup', this.onWindowMouseUp);
-    window.removeEventListener('mousemove', this.onActivityDragMove);
-    window.removeEventListener('mouseup', this.onActivityDragEnd);
     document.body.style.userSelect = ''; // in case we're destroyed mid-splitter-drag
     if (this.rafId !== null) { cancelAnimationFrame(this.rafId); this.rafId = null; }
     for (const el of this.audioEls.values()) { try { el.pause(); el.src = ''; } catch { /* gone */ } }
@@ -4475,15 +4472,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return this.transcriptState === 'running' || this.exporting || this.waveformActive || this.analyzing;
   }
 
-  /**
-   * The entry being worked on now, or null when no analysis is queued. It is index 0 by the
-   * invariant activityQueueStart/activityQueueAdvance maintain: the head of the queue is what is
-   * running, and it leaves the queue when it is done.
-   */
-  get activityRunning(): ActivityEntry | null {
-    return this.activityQueue[0] ?? null;
-  }
-
   /** The waiting rows rendered under it, capped at what the dock can show. */
   get activityPending(): ActivityEntry[] {
     return this.activityQueue.filter(e => e.state === 'pending').slice(0, this.ACTIVITY_PENDING_SHOWN);
@@ -4538,25 +4526,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   toggleActivity(): void {
     this.activityOpen = !this.activityOpen;
   }
-
-  /** Begin dragging the Activity dock (grab its header; ignore clicks on the × button). */
-  onActivityDragStart(ev: MouseEvent): void {
-    if ((ev.target as HTMLElement)?.tagName === 'BUTTON') return;
-    ev.preventDefault();
-    this.activityDragBase = { x: ev.clientX, y: ev.clientY, dx: this.activityX, dy: this.activityY };
-    window.addEventListener('mousemove', this.onActivityDragMove);
-    window.addEventListener('mouseup', this.onActivityDragEnd);
-  }
-  private onActivityDragMove = (ev: MouseEvent): void => {
-    if (!this.activityDragBase) return;
-    this.activityX = this.activityDragBase.dx + (ev.clientX - this.activityDragBase.x);
-    this.activityY = this.activityDragBase.dy + (ev.clientY - this.activityDragBase.y);
-  };
-  private onActivityDragEnd = (): void => {
-    this.activityDragBase = null;
-    window.removeEventListener('mousemove', this.onActivityDragMove);
-    window.removeEventListener('mouseup', this.onActivityDragEnd);
-  };
 
   // ── Playback (element-based jump-cuts) ──────────────────────────────────────
   // Variable-speed transport (FCPX-style JKL). L steps the speed UP through L_SPEEDS,
