@@ -6,7 +6,7 @@ import { ElectronService } from '../../services/electron.service';
 import { ProcessingService, ProcessingJob } from '../../services/processing.service';
 import { ProjectsService, ProjectEntry } from '../../services/projects.service';
 import { ProjectSidebarComponent } from '../project-sidebar/project-sidebar.component';
-import { EditorManifest, EditorSegment, EditorTrack } from '../../models/editor-manifest';
+import { EditorManifest, EditorSegment } from '../../models/editor-manifest';
 import {
   TranscriptWord, Transcript, TranscriptGroup, TranscriptGroupView,
   TranscriptState, RecentSession, ToolMode, Cut, Story, StoryChapter,
@@ -17,7 +17,7 @@ import {
   isMultiPick, isTypingTarget
 } from './model/editor-math';
 import {
-  chooseTickStep, pad2, formatRulerLabel, formatTimecode, fmtClock, pathToFileUrl,
+  pad2, formatRulerLabel, formatTimecode, fmtClock, pathToFileUrl,
   cleanChapterLabel, prettyLabel, deriveName
 } from './model/editor-format';
 import {
@@ -25,6 +25,11 @@ import {
   storyApproxChapters, setStoryChapters, toStoryChapters, clipStoryChapters
 } from './model/story-utils';
 import { WaveformCache } from './timeline/waveform-cache';
+import { TimelineRenderer } from './timeline/timeline-renderer';
+import { TimelineScene } from './timeline/timeline-scene';
+import {
+  GUTTER_W, RULER_H, RIBBON_H, VIDEO_TRACK_H, AUDIO_TRACK_H, ZOOM_MAX
+} from './timeline/timeline-metrics';
 
 /**
  * Timeline editor (its own chromeless Electron window).
@@ -48,25 +53,13 @@ import { WaveformCache } from './timeline/waveform-cache';
   styleUrl: './editor.component.scss'
 })
 export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
-  // ── FCP visual constants (CSS px) ───────────────────────────────────────────
-  readonly GUTTER_W = 110;      // left track-header column
-  private readonly RULER_H = 26;
-  private readonly RIBBON_H = 16;      // stories ribbon band, directly under the ruler
-  private readonly VIDEO_TRACK_H = 62;
-  private readonly AUDIO_TRACK_H = 54;
-  private readonly CLIP_INSET_Y = 4;   // vertical padding of a clip inside its lane
-  private readonly CLIP_RADIUS = 4;
-
-  // Zoom (pixels per timeline second) clamp.
-  private readonly ZOOM_MAX = 600;
+  // The FCP visual constants live in timeline/timeline-metrics.ts (one home, shared with the
+  // renderer). GUTTER_W is re-exposed as a field because the template binds it — strictTemplates
+  // cannot read an imported const.
+  readonly GUTTER_W = GUTTER_W;
 
   // Playback / scrub sync tolerance (seconds) before we re-seek an element.
   private readonly SEEK_TOLERANCE = 0.08;
-
-  // A clip narrower than this shows no meaningful waveform — draw plain fill and do
-  // NOT request peaks. Without this, a zoomed-out timeline with ~2k clips would fire
-  // an ffmpeg extraction per clip on first paint.
-  private readonly MIN_WAVEFORM_PX = 6;
 
   @ViewChild('timelineCanvas') canvasRef!: ElementRef<HTMLCanvasElement>;
   @ViewChild('viewerVideo') viewerVideoRef!: ElementRef<HTMLVideoElement>;
@@ -357,6 +350,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     o => this.electron.alignmentExtractPeaks(o),
     () => this.requestRender(),
   );
+  private renderer = new TimelineRenderer((seg, onScreenW) => this.waveforms.getOrRequest(seg, onScreenW));
 
   // ── Activity window (FCPX-style background-task HUD) ─────────────────────────
   // A floating, draggable dock. Auto-opens when transcription starts; drag by its header
@@ -957,9 +951,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // baked into every row's `top`, so canvas draw + gutter (which both read trackRows / the
     // same offset getter) stay pixel-aligned. ribbonHeight is 0 with zero stories, so the
     // layout is byte-identical to before when no story exists.
-    let y = this.RULER_H + this.ribbonHeight + this.trackTopOffset;
+    let y = RULER_H + this.ribbonHeight + this.trackTopOffset;
     for (const track of ordered) {
-      const height = track.kind === 'video' ? this.VIDEO_TRACK_H : this.AUDIO_TRACK_H;
+      const height = track.kind === 'video' ? VIDEO_TRACK_H : AUDIO_TRACK_H;
       rows.push({ track, top: y, height });
       y += height;
     }
@@ -971,7 +965,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!this.manifest) return 0;
     let h = 0;
     for (const t of this.manifest.tracks) {
-      h += t.kind === 'video' ? this.VIDEO_TRACK_H : this.AUDIO_TRACK_H;
+      h += t.kind === 'video' ? VIDEO_TRACK_H : AUDIO_TRACK_H;
     }
     return h;
   }
@@ -985,7 +979,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   get trackTopOffset(): number {
     const c = this.canvasRef?.nativeElement;
     const H = c ? (c.clientHeight || 0) : 0;
-    const avail = H - this.RULER_H - this.ribbonHeight;
+    const avail = H - RULER_H - this.ribbonHeight;
     const stack = this.trackStackHeight();
     return avail > stack ? Math.floor((avail - stack) / 2) : 0;
   }
@@ -998,7 +992,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * hit-testing, and by the DOM gutter's ribbon spacer — one source of truth.
    */
   get ribbonHeight(): number {
-    return this.hasStories() ? this.RIBBON_H : 0;
+    return this.hasStories() ? RIBBON_H : 0;
   }
 
   // ── Coordinate mapping ──────────────────────────────────────────────────────
@@ -1048,7 +1042,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return Math.min(1, this.viewportWidth / dur);
   }
   private clampZoom(v: number): number {
-    return Math.min(this.ZOOM_MAX, Math.max(this.minZoom, v));
+    return Math.min(ZOOM_MAX, Math.max(this.minZoom, v));
   }
 
   // ── Segment lookup (binary search over sorted segments) ─────────────────────
@@ -1064,184 +1058,42 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private draw(): void {
-    const canvas = this.canvasRef?.nativeElement;
-    if (!canvas || !this.manifest) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    // Match backing store to CSS size (devicePixelRatio-aware), then work in CSS px.
-    const cssW = canvas.clientWidth || 1000;
-    const cssH = canvas.clientHeight || 400;
-    const dpr = window.devicePixelRatio || 1;
-    if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
-      canvas.width = Math.round(cssW * dpr);
-      canvas.height = Math.round(cssH * dpr);
-    }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    const W = cssW, H = cssH;
-    // App/timeline background.
-    ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = '#1b1b1e';
-    ctx.fillRect(0, 0, W, H);
-
-    const rows = this.trackRows;
-
-    // Empty lane backgrounds (gaps read as dark track), with faint separators.
-    for (const row of rows) {
-      ctx.fillStyle = (row.track.kind === 'video') ? '#202024' : '#1d1d20';
-      ctx.fillRect(0, row.top, W, row.height);
-      ctx.strokeStyle = '#000';
-      ctx.globalAlpha = 0.35;
-      ctx.beginPath();
-      ctx.moveTo(0, row.top + 0.5);
-      ctx.lineTo(W, row.top + 0.5);
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-    }
-
-    // Blade boundaries, in EDITED seconds, so clips can be split at them. A boundary that a
-    // cut swallowed collapses onto a seam via originalToEdited and simply won't fall strictly
-    // inside any clip. Computed once per frame.
-    const bladeEdited = this.bladeBoundaries.map(b => this.originalToEdited(b));
-
-    // Clips. Each clip is split into sub-pieces at any blade boundary that falls strictly
-    // inside it, so a cut reads as a real clip division (in EVERY lane) rather than an overlay
-    // line. With no interior boundary a clip renders as a single piece (identity behavior).
-    for (const row of rows) {
-      const segs = this.segsByTrack.get(row.track.id) || [];
-      for (const seg of segs) {
-        const x0 = this.timeToX(seg.timelineStart);
-        const x1 = this.timeToX(seg.timelineStart + seg.duration);
-        if (x1 < 0 || x0 > W) continue; // off-screen
-        this.drawClipPieces(ctx, seg, row, W, bladeEdited);
-      }
-    }
-
-    // Ruler last-but-one so clips never bleed over it.
-    this.drawRuler(ctx, W);
-
-    // Stories ribbon in its band directly under the ruler (no-op with zero stories).
-    this.drawStoriesRibbon(ctx, W);
-
-    // Selection overlay tints ruler + tracks; playhead draws on top of it.
-    this.drawSelection(ctx, W, H);
-
-    // Where an in-flight move would land — above the selection tint, under the playhead.
-    this.drawMoveInsertion(ctx, W, H);
-
-    // Playhead over everything (ruler + tracks).
-    this.drawPlayhead(ctx, W, H);
+    const c = this.canvasRef?.nativeElement;
+    if (!c || !this.manifest) return;
+    this.renderer.draw(c, this.buildScene());
   }
 
   /**
-   * FCP-style range selection: a translucent yellow fill across ruler + tracks with 1px edges
-   * and small ruler handles. A one-sided pending mark ('i' or 'o' alone) shows a yellow flag.
+   * Everything one frame needs, snapshotted from the shell's state. Built once per rAF tick.
+   *
+   * `stories` is storiesForDisplay() evaluated ONCE here rather than inside the ribbon loop, and
+   * `storyRibbonPieces` stays a closure (not a pre-flattened list) so the ribbon still calls
+   * editedRangesForOriginal once per region, in the same order, as many times as it does today.
    */
-  private drawSelection(ctx: CanvasRenderingContext2D, W: number, H: number): void {
-    // Every selected range (committed marquee ranges ∪ the in-progress single range) as a
-    // translucent yellow band with 1px edges + ruler handles.
-    const ranges = this.allSelectionRanges();
-    for (const range of ranges) {
-      const x0 = this.timeToX(range.lo);
-      const x1 = this.timeToX(range.hi);
-      if (x1 < 0 || x0 > W) continue;
-      ctx.save();
-      ctx.fillStyle = 'rgba(245,197,24,0.12)';
-      ctx.fillRect(x0, 0, x1 - x0, H);
-      ctx.strokeStyle = '#f5c518';
-      ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, H); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(x1 + 0.5, 0); ctx.lineTo(x1 + 0.5, H); ctx.stroke();
-      // 6px handles in the ruler band.
-      ctx.fillStyle = '#f5c518';
-      ctx.fillRect(x0 - 3, 0, 6, this.RULER_H);
-      ctx.fillRect(x1 - 3, 0, 6, this.RULER_H);
-      ctx.restore();
-    }
-
-    // In-progress marquee rectangle (translucent), spanning the track area under the ruler.
-    if (this.marqueeActive && this.marqueeMoved) {
-      const mx0 = this.timeToX(Math.min(this.marqueeStartTime, this.marqueeEndTime));
-      const mx1 = this.timeToX(Math.max(this.marqueeStartTime, this.marqueeEndTime));
-      const top = this.RULER_H + this.ribbonHeight;
-      ctx.save();
-      ctx.fillStyle = 'rgba(150,180,255,0.14)';
-      ctx.fillRect(mx0, top, mx1 - mx0, H - top);
-      ctx.strokeStyle = 'rgba(150,180,255,0.85)';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(mx0 + 0.5, top + 0.5, Math.max(0, mx1 - mx0 - 1), H - top - 1);
-      ctx.restore();
-    }
-
-    // One-sided pending mark ('i' or 'o' alone, no committed ranges) → a small ruler flag.
-    if (ranges.length === 0) {
-      const one = this.selStart != null ? this.selStart : (this.selEnd != null ? this.selEnd : null);
-      if (one == null) return;
-      const x = this.timeToX(one);
-      if (x < -1 || x > W + 1) return;
-      ctx.save();
-      ctx.fillStyle = '#f5c518';
-      ctx.fillRect(x - 0.5, 0, 1, this.RULER_H);
-      ctx.beginPath();
-      ctx.moveTo(x, 2);
-      ctx.lineTo(x + 8, 5);
-      ctx.lineTo(x, 8);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
-    }
-  }
-
-  /**
-   * Where the moved block will END UP, in EDITED seconds: the snapped drop point minus however
-   * much of the selection lies BEFORE it. Lifting the block closes its gaps, so everything at the
-   * drop point shifts left by exactly that much — a ghost drawn at the raw drop point would
-   * promise a landing spot the drop does not deliver whenever the block moves rightwards.
-   * (Verified against the reorder algorithm: the block always lands at exactly this time.)
-   */
-  private moveLandingTime(d: MoveDrag): number {
-    let before = 0;
-    for (const r of d.ranges) before += Math.max(0, Math.min(r.hi, d.dropAt) - r.lo);
-    return d.dropAt - before;
-  }
-
-  /**
-   * In-flight selection move: a hard insertion seam at the snapped drop point plus a dashed ghost
-   * of the block that will land there, sized to the TOTAL length of the moved footage (the pieces
-   * consolidate, so the ghost is what the user will actually get). Drawn only once the drag passes
-   * the promotion threshold, so a click inside a highlight shows nothing at all.
-   */
-  private drawMoveInsertion(ctx: CanvasRenderingContext2D, W: number, H: number): void {
-    const d = this.moveDrag;
-    if (!d || !d.moved) return;
-    let len = 0;
-    for (const r of d.ranges) len += r.hi - r.lo;
-    const landing = this.moveLandingTime(d);
-    const gx = this.timeToX(landing);
-    const gxEnd = this.timeToX(landing + len);
-    const x = this.timeToX(d.dropAt);
-    if (gxEnd < -1 && x < -1) return;                    // wholly off-screen
-    if (gx > W + 1 && x > W + 1) return;
-    const top = this.RULER_H + this.ribbonHeight;
-    const w = Math.max(1, gxEnd - gx);
-    ctx.save();
-    ctx.fillStyle = 'rgba(74,158,255,0.16)';
-    ctx.fillRect(gx, top, w, H - top);
-    ctx.strokeStyle = 'rgba(74,158,255,0.6)';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 3]);
-    ctx.strokeRect(gx + 0.5, top + 0.5, Math.max(1, w - 1), H - top - 1);
-    ctx.setLineDash([]);
-    // The seam the pointer is snapped to: full height with caps, so it reads as an insertion point
-    // rather than a second playhead.
-    ctx.strokeStyle = '#4a9eff';
-    ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
-    ctx.fillStyle = '#4a9eff';
-    ctx.beginPath(); ctx.moveTo(x - 5, 0); ctx.lineTo(x + 5, 0); ctx.lineTo(x, 8); ctx.closePath(); ctx.fill();
-    ctx.beginPath(); ctx.moveTo(x - 5, H); ctx.lineTo(x + 5, H); ctx.lineTo(x, H - 8); ctx.closePath(); ctx.fill();
-    ctx.restore();
+  private buildScene(): TimelineScene {
+    return {
+      rows: this.trackRows,
+      segsByTrack: this.segsByTrack,
+      scrollOffset: this.scrollOffset,
+      pxPerSec: this.pxPerSec,
+      playheadTime: this.playheadTime,
+      ribbonHeight: this.ribbonHeight,
+      bladeEdited: this.bladeBoundaries.map(b => this.originalToEdited(b)),
+      selectionRanges: this.allSelectionRanges(),
+      pendingMark: this.selStart != null ? this.selStart : (this.selEnd != null ? this.selEnd : null),
+      marquee: {
+        active: this.marqueeActive,
+        moved: this.marqueeMoved,
+        start: this.marqueeStartTime,
+        end: this.marqueeEndTime,
+      },
+      moveDrag: this.moveDrag,
+      stories: storiesForDisplay(this.stories),
+      storyRibbonPieces: r => this.editedRangesForOriginal(r.start, r.end),
+      activeStoryId: this.activeStoryId,
+      mergePicked: this.storyMergeIds,
+      hasStories: this.hasStories(),
+    };
   }
 
   /**
@@ -1323,298 +1175,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.selectedGroupEnd = null;
   }
 
-  /**
-   * Draw one segment as a clip, split into sub-pieces at every blade boundary (already mapped
-   * to EDITED seconds) that falls strictly inside its [timelineStart, timelineStart+duration]
-   * span. Each piece is its own rounded clip separated by a ~2px gap, so a cut looks like a real
-   * edit — the clip is divided — instead of an overlay line, and it divides EVERY lane the same
-   * way because every lane's clips are split against the same boundary set. A clip with no
-   * interior boundary is a single piece (byte-for-byte the old rendering).
-   */
-  private drawClipPieces(ctx: CanvasRenderingContext2D, seg: EditorSegment,
-                         row: TrackRow, W: number, bladeEdited: number[]): void {
-    const ts = seg.timelineStart;
-    const te = seg.timelineStart + seg.duration;
-    // Interior split points, ascending. Strictly inside → a touching boundary is a clip edge
-    // already and must not spawn a zero-width sliver.
-    const interior: number[] = [];
-    for (const b of bladeEdited) {
-      if (b > ts + EPS && b < te - EPS) interior.push(b);
-    }
-    interior.sort((a, b) => a - b);
-    const edges = [ts, ...interior, te];
-    const GAP = 2;             // px of empty space between adjacent pieces
-    for (let i = 0; i < edges.length - 1; i++) {
-      let px0 = this.timeToX(edges[i]);
-      let px1 = this.timeToX(edges[i + 1]);
-      if (i > 0) px0 += GAP / 2;                       // inset the shared edge to open the gap
-      if (i < edges.length - 2) px1 -= GAP / 2;
-      if (px1 - px0 <= 0.5) continue;                  // piece collapsed by the gap at this zoom
-      if (px1 < 0 || px0 > W) continue;                // off-screen piece
-      if (row.track.kind === 'video') this.drawVideoClip(ctx, seg, px0, px1, row);
-      else this.drawAudioClip(ctx, seg, px0, px1, row, W);
-    }
-  }
-
-  private roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
-    const rr = Math.max(0, Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2));
-    ctx.beginPath();
-    ctx.moveTo(x + rr, y);
-    ctx.arcTo(x + w, y, x + w, y + h, rr);
-    ctx.arcTo(x + w, y + h, x, y + h, rr);
-    ctx.arcTo(x, y + h, x, y, rr);
-    ctx.arcTo(x, y, x + w, y, rr);
-    ctx.closePath();
-  }
-
-  private drawVideoClip(ctx: CanvasRenderingContext2D, seg: EditorSegment,
-                        x0: number, x1: number, row: TrackRow): void {
-    const top = row.top + this.CLIP_INSET_Y;
-    const h = row.height - 2 * this.CLIP_INSET_Y;
-    const w = x1 - x0;
-
-    ctx.save();
-    this.roundRectPath(ctx, x0, top, w, h, this.CLIP_RADIUS);
-    ctx.fillStyle = '#6257c9';   // bold indigo-violet (was pale slate #5a6b8c)
-    ctx.fill();
-    // Subtle top highlight.
-    ctx.clip();
-    ctx.fillStyle = 'rgba(255,255,255,0.10)';
-    ctx.fillRect(x0, top, w, Math.min(10, h / 2));
-    ctx.restore();
-
-    // 1px darker border.
-    ctx.save();
-    this.roundRectPath(ctx, x0 + 0.5, top + 0.5, w - 1, h - 1, this.CLIP_RADIUS);
-    ctx.strokeStyle = '#4237a6';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.restore();
-
-    this.drawClipLabel(ctx, seg.label, x0, top, w, h, '#e7e3fb');
-  }
-
-  private drawAudioClip(ctx: CanvasRenderingContext2D, seg: EditorSegment,
-                        x0: number, x1: number, row: TrackRow, W: number): void {
-    const top = row.top + this.CLIP_INSET_Y;
-    const h = row.height - 2 * this.CLIP_INSET_Y;
-    const w = x1 - x0;
-
-    ctx.save();
-    this.roundRectPath(ctx, x0, top, w, h, this.CLIP_RADIUS);
-    ctx.fillStyle = '#2f9e56';   // bold green (was muted #3f7a52)
-    ctx.fill();
-    ctx.clip();
-    ctx.fillStyle = 'rgba(255,255,255,0.08)';
-    ctx.fillRect(x0, top, w, Math.min(8, h / 2));
-
-    // Waveform inside the clip, clipped to its rounded rect. Bold FCP green.
-    this.drawWaveInside(ctx, seg, x0, x1, top, h, W);
-    ctx.restore();
-
-    ctx.save();
-    this.roundRectPath(ctx, x0 + 0.5, top + 0.5, w - 1, h - 1, this.CLIP_RADIUS);
-    ctx.strokeStyle = '#1f7a40';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.restore();
-
-    this.drawClipLabel(ctx, seg.label, x0, top, w, h, '#dcf7e6');
-  }
-
-  private drawClipLabel(ctx: CanvasRenderingContext2D, label: string,
-                        x0: number, top: number, w: number, h: number, color: string): void {
-    if (w < 22 || !label) return;
-    ctx.save();
-    this.roundRectPath(ctx, x0, top, w, h, this.CLIP_RADIUS);
-    ctx.clip();
-    ctx.fillStyle = color;
-    ctx.font = '11px -apple-system, "Segoe UI", sans-serif';
-    ctx.textBaseline = 'alphabetic';
-    ctx.globalAlpha = 0.95;
-    ctx.fillText(label, Math.max(x0, 0) + 6, top + 13);
-    ctx.restore();
-  }
-
-  /**
-   * Draw a segment's waveform inside its clip as a min/max envelope band. Peaks are
-   * lazily extracted per segment (cached); until they arrive a flat placeholder line is
-   * drawn and a redraw is scheduled once the fetch resolves.
-   */
-  private drawWaveInside(ctx: CanvasRenderingContext2D, seg: EditorSegment,
-                         x0: number, x1: number, top: number, h: number, W: number): void {
-    const mid = top + h / 2;
-    const amp = (h / 2) * 0.82;
-    const drawX0 = Math.max(0, Math.floor(x0));
-    const drawX1 = Math.min(W, Math.ceil(x1));
-    const onScreenW = x1 - x0;
-
-    // Too narrow for a visible waveform: plain fill only, and no extraction request.
-    if (onScreenW < this.MIN_WAVEFORM_PX) return;
-
-    const peaks = this.waveforms.getOrRequest(seg, onScreenW);
-    if (!peaks) {
-      // Placeholder: a thin center line so the clip doesn't look empty.
-      ctx.strokeStyle = '#6fe895';
-      ctx.globalAlpha = 0.4;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(drawX0, mid + 0.5);
-      ctx.lineTo(drawX1, mid + 0.5);
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-      return;
-    }
-
-    const n = peaks.min.length;
-    if (n === 0) return;
-    ctx.fillStyle = '#6fe895';
-    ctx.globalAlpha = 0.9;
-    ctx.beginPath();
-    let started = false;
-    for (let x = drawX0; x <= drawX1; x++) {
-      const segTime = this.xToTime(x) - seg.timelineStart;
-      const frac = segTime / seg.duration;
-      if (frac < 0 || frac >= 1) continue;
-      const bi = Math.min(n - 1, Math.max(0, Math.floor(frac * n)));
-      const yTop = mid - peaks.max[bi] * amp;
-      if (!started) { ctx.moveTo(x + 0.5, yTop); started = true; }
-      else ctx.lineTo(x + 0.5, yTop);
-    }
-    for (let x = drawX1; x >= drawX0; x--) {
-      const segTime = this.xToTime(x) - seg.timelineStart;
-      const frac = segTime / seg.duration;
-      if (frac < 0 || frac >= 1) continue;
-      const bi = Math.min(n - 1, Math.max(0, Math.floor(frac * n)));
-      const yBot = mid - peaks.min[bi] * amp;
-      ctx.lineTo(x + 0.5, yBot);
-    }
-    if (started) { ctx.closePath(); ctx.fill(); }
-    ctx.globalAlpha = 1;
-  }
-
-  private drawRuler(ctx: CanvasRenderingContext2D, W: number): void {
-    ctx.fillStyle = '#2a2a2d';
-    ctx.fillRect(0, 0, W, this.RULER_H);
-    ctx.strokeStyle = '#000';
-    ctx.globalAlpha = 0.5;
-    ctx.beginPath();
-    ctx.moveTo(0, this.RULER_H + 0.5);
-    ctx.lineTo(W, this.RULER_H + 0.5);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-
-    const step = chooseTickStep(this.pxPerSec);
-    const first = Math.ceil(this.scrollOffset / step) * step;
-    ctx.strokeStyle = '#4a4a50';
-    ctx.fillStyle = '#8a8a90';
-    ctx.font = '10px -apple-system, "Segoe UI", sans-serif';
-    ctx.textBaseline = 'alphabetic';
-    for (let t = first; ; t += step) {
-      const x = this.timeToX(t);
-      if (x > W) break;
-      if (x < 0) continue;
-      ctx.beginPath();
-      ctx.moveTo(x + 0.5, this.RULER_H - 8);
-      ctx.lineTo(x + 0.5, this.RULER_H);
-      ctx.stroke();
-      ctx.fillText(formatRulerLabel(t), x + 4, this.RULER_H - 10);
-    }
-  }
-
-  /**
-   * Draw the stories ribbon in its band directly under the ruler. Each story's RESOLVED
-   * regions (from resolveStoryRegions — the same last-writer-wins paint the export will use)
-   * render as colored blocks, so nesting reads visually: the leftover pieces of an
-   * overpainted story and the block that covered it show the painted result, never the raw
-   * overlapping ranges. Region bounds are ORIGINAL seconds mapped through originalToEdited →
-   * timeToX, exactly like clips, so the ribbon tracks cuts/scroll/zoom. No-op with zero
-   * stories (the band collapses to nothing via ribbonHeight).
-   */
-  private drawStoriesRibbon(ctx: CanvasRenderingContext2D, W: number): void {
-    if (!this.hasStories()) return;
-    const top = this.RULER_H;
-    const h = this.RIBBON_H;
-    // Band background + bottom hairline separating it from the tracks.
-    ctx.fillStyle = '#161618';
-    ctx.fillRect(0, top, W, h);
-    ctx.strokeStyle = '#000';
-    ctx.globalAlpha = 0.5;
-    ctx.beginPath();
-    ctx.moveTo(0, top + h + 0.5);
-    ctx.lineTo(W, top + h + 0.5);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-
-    const by = top + 1;
-    const bh = h - 2;
-    for (const s of storiesForDisplay(this.stories)) {
-      const color = this.storyColor(s.number);
-      const isActive = s.id === this.activeStoryId;
-      const isPicked = this.storyMergeIds.has(s.id);
-      // A region draws as one block PER edited piece: reordering can scatter a single original
-      // region across the edited timeline, and mapping only its two ends would give a
-      // negative-width block that silently vanishes from the ribbon. One piece in source order.
-      for (const piece of s.regions.flatMap(r => this.editedRangesForOriginal(r.start, r.end))) {
-        const x0 = this.timeToX(piece.lo);
-        const x1 = this.timeToX(piece.hi);
-        if (x1 <= x0) continue;
-        if (x1 < 0 || x0 > W) continue;              // off-screen
-        const bx0 = Math.max(0, x0);
-        const bx1 = Math.min(W, x1);
-        const bw = bx1 - bx0;
-        if (bw <= 0.5) continue;                     // collapsed at this zoom
-        ctx.save();
-        this.roundRectPath(ctx, bx0, by, bw, bh, 2);
-        ctx.fillStyle = color;
-        // Picked-for-merge reads as bright as active: the user is about to act on it.
-        ctx.globalAlpha = (isActive || isPicked) ? 1 : 0.7;
-        ctx.fill();
-        ctx.globalAlpha = 1;
-        // Picked wins the outline over active — the pick is the pending action, and a story can
-        // be both. Blue matches the Merge button; white stays the "this is the paint target" cue.
-        if (isPicked) {
-          ctx.strokeStyle = '#4a9eff';
-          ctx.lineWidth = 2.5;
-          ctx.stroke();
-        } else if (isActive) {
-          ctx.strokeStyle = '#ffffff';
-          ctx.lineWidth = 1.5;
-          ctx.stroke();
-        }
-        if (bw > 22 && s.title) {
-          ctx.clip();
-          ctx.fillStyle = '#141208';
-          ctx.font = '10px -apple-system, "Segoe UI", sans-serif';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(s.title, bx0 + 5, by + bh / 2 + 0.5);
-        }
-        ctx.restore();
-      }
-    }
-  }
-
-  private drawPlayhead(ctx: CanvasRenderingContext2D, W: number, H: number): void {
-    const x = this.timeToX(this.playheadTime);
-    if (x < -1 || x > W + 1) return;
-    ctx.save();
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(x + 0.5, 0);
-    ctx.lineTo(x + 0.5, H);
-    ctx.stroke();
-    // Downward triangle head in the ruler.
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.moveTo(x - 5, 0);
-    ctx.lineTo(x + 6, 0);
-    ctx.lineTo(x + 0.5, 9);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-  }
-
   // ── Timecode readout (HH:MM:SS:FF, NDF colons) ──────────────────────────────
   get timecode(): string {
     return formatTimecode(this.playheadTime, this.manifest?.frameSeconds || (1001 / 30000));
@@ -1629,8 +1189,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.menuOpen = false;                 // a canvas interaction dismisses the File menu
     const t = this.canvasEventTime(ev);
     const y = this.canvasEventY(ev);
-    const inRuler = y <= this.RULER_H;
-    const inRibbon = this.hasStories() && y > this.RULER_H && y <= this.RULER_H + this.ribbonHeight;
+    const inRuler = y <= RULER_H;
+    const inRibbon = this.hasStories() && y > RULER_H && y <= RULER_H + this.ribbonHeight;
     // Any fresh canvas gesture drops a prior story selection; the ribbon branch below re-sets it.
     this.storySelection = null;
 
@@ -2242,7 +1802,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * useless far-in end for a 4-hour session.
    */
   get zoomSliderPos(): number {
-    const lo = this.minZoom, hi = this.ZOOM_MAX;
+    const lo = this.minZoom, hi = ZOOM_MAX;
     if (!(hi > lo)) return 1000;
     const p = Math.log(this.pxPerSec / lo) / Math.log(hi / lo);
     return Math.round(1000 * Math.min(1, Math.max(0, p)));
@@ -2250,7 +1810,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   onZoomSlider(value: number): void {
     // Slider zooms about the playhead (keeps it fixed on screen).
-    const lo = this.minZoom, hi = this.ZOOM_MAX;
+    const lo = this.minZoom, hi = ZOOM_MAX;
     const pps = hi > lo ? lo * Math.pow(hi / lo, Number(value) / 1000) : hi;
     const anchorX = this.timeToX(this.playheadTime);
     this.setZoom(pps, this.playheadTime, anchorX);
@@ -3104,7 +2664,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   onCanvasContextMenu(ev: MouseEvent): void {
     if (!this.hasStories() || this.errorMessage || !this.manifest) return;
     const y = this.canvasEventY(ev);
-    if (y <= this.RULER_H || y > this.RULER_H + this.ribbonHeight) return;
+    if (y <= RULER_H || y > RULER_H + this.ribbonHeight) return;
     const hit = this.storyRegionAtEdited(this.canvasEventTime(ev));
     if (!hit) return;
     ev.preventDefault();
@@ -3695,7 +3255,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     let over = false;
     if (this.hasStories() && !this.draggingStoryEdge) {
       const y = this.canvasEventY(ev);
-      if (y > this.RULER_H && y <= this.RULER_H + this.ribbonHeight) {
+      if (y > RULER_H && y <= RULER_H + this.ribbonHeight) {
         over = !!this.storyEdgeAtX(this.timeToX(this.canvasEventTime(ev)));
       }
     }
