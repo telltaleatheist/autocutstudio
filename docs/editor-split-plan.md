@@ -9,6 +9,44 @@ be byte-identical — mechanical decomposition, not redesign.**
 Status legend: each step gets ✅ + commit hash when landed. Run the §6 checklist
 after every step, no exceptions.
 
+## STATUS — steps 1–7 complete (2026-08-07)
+
+Landed in seven independently-shippable commits: step 1 `d40ec86`, step 2
+`509ef0a`, step 5 `b3aeeb2`, step 6 `1a22ca0`, step 3 `ee23d21`, step 4
+`dc4a7be`, step 7 (this commit). `editor.component.ts` went **5783 → 4703**
+(−1080), the template 660 → 488 (−172), the stylesheet 1868 → 1179 (−689);
+2451 lines now live in six new directories (`model/`, `timeline/`, `styles/`,
+`activity-dock/`, `export-modals/`, `transcript-pane/`). Pure-TS steps ran
+first (types, math/format/story helpers, waveform cache, the 498-line canvas
+renderer behind a readonly `TimelineScene`), then the three component
+extractions. Every moved block was machine-diffed against its parent commit
+under an explicit substitution set — all 13 draw functions, all 26 pure
+helpers, every moved template and stylesheet region byte-identical.
+
+Four plan corrections found during implementation are folded into this doc:
+the §1 keyframes rule; the step 10 `.modal-backdrop`-only / diverged
+`.modal-btn` correction; `chooseTickStep` and `storiesForDisplay` needing
+parameters (step 2); `transcribeEtaLabel` staying in the shell because step 3
+already binds it to the activity dock (step 7 contract now takes `etaLabel`).
+
+Runtime hazards documented in commit messages and code comments: class-field
+initializers referencing constructor-injected services must stay lazy arrows
+(`waveforms`, `renderer`); `readonly GUTTER_W = GUTTER_W` resolves to the
+module import; `selectedGroupStart/End` went public for
+`strictInputAccessModifiers`.
+
+**Not yet done: the visual verification (§6 items 1–5).** Steps 3, 4, 6, 7
+shipped UI changes with no app run. Next launch must walk: no-session empty
+workspace → load session → timeline (ribbon, cuts, marquee, move-drag ghost,
+waveforms) → transcript pane (four states, chips, search, click-to-select,
+karaoke scroll during playback) → tab switch → activity dock (drag +
+close/reopen position memory) → export chooser/result → split modal backdrop →
+session switch.
+
+Steps 8–12 (viewer, analysis service, split modal, story list, topbar) remain
+per §5 — each carries a bigger contract than the reduction it buys; take them
+in a later pass if wanted.
+
 ---
 
 ## 0. Ground truth corrections (verified against source)

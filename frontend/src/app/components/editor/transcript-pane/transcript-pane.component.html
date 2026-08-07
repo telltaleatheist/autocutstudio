@@ -1,0 +1,66 @@
+<!-- State 1 — no sidecar yet. -->
+<div class="tx-empty" *ngIf="state === 'none'">
+  <button class="tx-transcribe-btn" (click)="transcribeRequested.emit()">Transcribe</button>
+  <div class="tx-empty-note">
+    Runs Whisper on each source track (mic, screen) — takes a while for long sessions.
+  </div>
+</div>
+
+<!-- State 2 — running (progress + cancel). -->
+<div class="tx-running" *ngIf="state === 'running'">
+  <div class="tx-progress-track">
+    <div class="tx-progress-fill" [style.width.%]="progress"></div>
+  </div>
+  <div class="tx-progress-row">
+    <span class="tx-progress-msg">{{ message }}</span>
+    <span class="tx-progress-pct">{{ progress }}%</span>
+  </div>
+  <div class="tx-progress-eta">{{ etaLabel }}</div>
+  <button class="tx-cancel-btn" (click)="cancelRequested.emit()">Cancel</button>
+</div>
+
+<!-- Error — verbatim message + retry. -->
+<div class="tx-error-state" *ngIf="state === 'error'">
+  <div class="tx-error-title">Transcription failed</div>
+  <div class="tx-error-body">{{ error }}</div>
+  <button class="tx-retry-btn" (click)="transcribeRequested.emit()">Try again</button>
+</div>
+
+<!-- State 3 — transcript preview: source filter + search, then a clean group list. -->
+<div class="tx-ready" *ngIf="state === 'ready'">
+  <div class="tx-header">
+    <div class="tx-filter">
+      <button *ngFor="let tr of tracks" class="tx-chip"
+              [class.active]="sourceFilter === tr.id"
+              (click)="sourceFilterChanged.emit(tr.id)">{{ prettyLabel(tr.label) }}</button>
+      <button class="tx-chip"
+              [class.active]="sourceFilter === 'merged'"
+              (click)="sourceFilterChanged.emit('merged')">Merged</button>
+    </div>
+    <div class="tx-searchrow">
+      <div class="tx-search">
+        <span class="tx-search-icon">🔍</span>
+        <input class="tx-search-input" type="text" placeholder="Search transcript…"
+               [value]="searchQuery"
+               (input)="searchChanged.emit($any($event.target).value)" />
+        <button class="tx-search-clear" *ngIf="searchQuery" (click)="searchCleared.emit()" title="Clear">×</button>
+      </div>
+      <span class="tx-results" *ngIf="searchQuery">{{ searchResultCount }} {{ searchResultCount === 1 ? 'result' : 'results' }}</span>
+      <button class="tx-retranscribe" (click)="transcribeRequested.emit()">re-transcribe</button>
+    </div>
+  </div>
+  <div class="tx-groups" #txGroupsEl>
+    <div class="tx-group" *ngFor="let g of groups; let i = index"
+         [class.selected]="isGroupSelected(g)"
+         [class.now-playing]="i === activeGroupIdx"
+         (click)="groupSelected.emit(g)" title="Select on timeline">
+      <div class="tx-group-head">
+        <span class="tx-dot" [style.background]="g.color"></span>
+        <span class="tx-speaker">{{ prettyLabel(g.label) }}</span>
+        <span class="tx-tc">{{ g.timecode }}</span>
+      </div>
+      <div class="tx-group-text">{{ g.text }}</div>
+    </div>
+    <div class="tx-empty-results" *ngIf="groups.length === 0">No matching lines.</div>
+  </div>
+</div>

@@ -24,6 +24,7 @@ import {
   storyColor, storiesForDisplay, isStoryEmpty, regionFingerprint, storyChapterState,
   storyApproxChapters, setStoryChapters, toStoryChapters, clipStoryChapters
 } from './model/story-utils';
+import { TranscriptPaneComponent } from './transcript-pane/transcript-pane.component';
 import { WaveformCache } from './timeline/waveform-cache';
 import { TimelineRenderer } from './timeline/timeline-renderer';
 import { TimelineScene } from './timeline/timeline-scene';
@@ -64,7 +65,12 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   @ViewChild('timelineCanvas') canvasRef!: ElementRef<HTMLCanvasElement>;
   @ViewChild('viewerVideo') viewerVideoRef!: ElementRef<HTMLVideoElement>;
   @ViewChild('topRegion') topRegionRef?: ElementRef<HTMLElement>;
-  @ViewChild('txGroupsEl') txGroupsRef?: ElementRef<HTMLElement>;
+  /**
+   * The transcript body, when it is rendered (Edit tab, session loaded). Optional and always
+   * reached with `?.` — the karaoke scroll fires from the rAF tick, which runs while the pane
+   * is behind its *ngIf (Stories tab) or not yet created.
+   */
+  @ViewChild(TranscriptPaneComponent) transcriptPane?: TranscriptPaneComponent;
 
   // ── Resizable layout (FCPX-style panes) ─────────────────────────────────────
   // splitV: fraction of the top region's WIDTH given to the transcript (left) pane.
@@ -221,8 +227,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // The transcript group (identified by its ORIGINAL span) currently reflected in the
   // timeline selection — drives the pane's SELECTED highlight. Cleared whenever the
   // selection is set by any non-group action or is cleared.
-  private selectedGroupStart: number | null = null;
-  private selectedGroupEnd: number | null = null;
+  // Public only because the template feeds them to app-transcript-pane, which owns the
+  // highlight test (strictInputAccessModifiers rejects a private member in a binding).
+  selectedGroupStart: number | null = null;
+  selectedGroupEnd: number | null = null;
 
   // ── Export ──────────────────────────────────────────────────────────────────
   exporting = false;
@@ -4394,13 +4402,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   /** True when a rendered group is the one currently reflected in the timeline selection. */
-  isGroupSelected(g: TranscriptGroupView): boolean {
-    return this.selectedGroupStart !== null
-      && Math.abs(this.selectedGroupStart - g.originalStart) <= EPS
-      && this.selectedGroupEnd !== null
-      && Math.abs(this.selectedGroupEnd - g.originalEnd) <= EPS;
-  }
-
   /** Scroll so the current selection is on screen (reuses clampScroll). No-op if none. */
   private ensureSelectionVisible(): void {
     const r = this.selRange();
@@ -4411,11 +4412,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.scrollOffset = this.clampScroll(r.lo - this.viewportSec * 0.1);
       this.requestRender();
     }
-  }
-
-  /** "N results" count for the search UI (visible groups when a query is active). */
-  get searchResultCount(): number {
-    return this.visibleGroups.length;
   }
 
   /**
@@ -4438,20 +4434,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // Only chase the highlight down the list during playback, and only when it actually moved.
     if (allowScroll && this.isPlaying && idx >= 0 && idx !== this.lastScrolledGroupIdx) {
       this.lastScrolledGroupIdx = idx;
-      this.scrollActiveGroupIntoView(idx);
-    }
-  }
-
-  /** Scroll the transcript list so line `idx` sits ~a third from the top (only its container). */
-  private scrollActiveGroupIntoView(idx: number): void {
-    const cont = this.txGroupsRef?.nativeElement;
-    if (!cont) return;
-    const child = cont.children[idx] as HTMLElement | undefined;
-    if (!child) return;
-    const top = child.offsetTop;
-    const bottom = top + child.offsetHeight;
-    if (top < cont.scrollTop || bottom > cont.scrollTop + cont.clientHeight) {
-      cont.scrollTop = Math.max(0, top - cont.clientHeight * 0.35);
+      this.transcriptPane?.scrollGroupIntoView(idx);
     }
   }
 

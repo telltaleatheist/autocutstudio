@@ -20,6 +20,7 @@ import { MetadataReportsComponent } from './components/metadata-reports/metadata
 import { ProjectSidebarComponent } from './components/project-sidebar/project-sidebar.component';
 import { ActivityDockComponent } from './components/editor/activity-dock/activity-dock.component';
 import { ExportModalsComponent } from './components/editor/export-modals/export-modals.component';
+import { TranscriptPaneComponent } from './components/editor/transcript-pane/transcript-pane.component';
 import { ProjectSetupModalComponent } from './components/project-setup-modal/project-setup-modal.component';
 
 @NgModule({
@@ -31,6 +32,7 @@ import { ProjectSetupModalComponent } from './components/project-setup-modal/pro
     ProjectSidebarComponent,
     ActivityDockComponent,
     ExportModalsComponent,
+    TranscriptPaneComponent,
     ProjectSetupModalComponent,
     MetadataComponent,
     MetadataReportsComponent,
