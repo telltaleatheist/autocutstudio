@@ -8,10 +8,22 @@ import { ProjectsService, ProjectEntry } from '../../services/projects.service';
 import { ProjectSidebarComponent } from '../project-sidebar/project-sidebar.component';
 import { EditorManifest, EditorSegment, EditorTrack } from '../../models/editor-manifest';
 import {
-  Peaks, TranscriptWord, TranscriptTrack, Transcript, TranscriptGroup, TranscriptGroupView,
-  TranscriptState, RecentSession, ToolMode, Cut, Story, StoryChapter, StorySplitCache,
+  Peaks, TranscriptWord, Transcript, TranscriptGroup, TranscriptGroupView,
+  TranscriptState, RecentSession, ToolMode, Cut, Story, StoryChapter,
   KeptInterval, EditSnapshot, ActivityEntry, TrackRow, MoveDrag
 } from './model/editor-types';
+import {
+  EPS, mergeRanges, mergeRegions, mergeCuts, nearestBoundary, normalizeSequence, segmentAtIn,
+  isMultiPick, isTypingTarget
+} from './model/editor-math';
+import {
+  chooseTickStep, pad2, formatRulerLabel, formatTimecode, fmtClock, pathToFileUrl,
+  cleanChapterLabel, prettyLabel, deriveName
+} from './model/editor-format';
+import {
+  storyColor, storiesForDisplay, isStoryEmpty, regionFingerprint, storyChapterState,
+  storyApproxChapters, setStoryChapters, toStoryChapters, clipStoryChapters
+} from './model/story-utils';
 
 /**
  * Timeline editor (its own chromeless Electron window).
@@ -157,7 +169,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // whichever an action changed — a ripple delete, a dropped blade, or a reorder.
   private undoStack: EditSnapshot[] = [];
   private redoStack: EditSnapshot[] = [];
-  private readonly EPS = 1e-9;           // seconds; sub-frame slop for interval intersection
 
   // ── Selection (EDITED seconds; either edge may be pending/null) ──────────────
   selStart: number | null = null;        // 'i' mark / drag start
@@ -263,8 +274,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // Stories ticked for merging. Deliberately separate from `storySelection` (which drives region
   // editing and paint targeting) so ticking a box never disturbs what the timeline is showing.
   storyMergeIds = new Set<string>();
-  // Stable, distinct color per story NUMBER (cycled). Dark FCP-friendly hues.
-  private readonly STORY_COLORS = ['#e8a33d', '#4a9eff', '#7bc98f', '#c98fd6', '#d67b7b', '#7bd6cf', '#e0c650', '#9a8ff0'];
 
   // ── Story analysis (local Ollama LLM) ────────────────────────────────────────
   // Chapter splitting + title suggestions. Ollama-only for now (no downloads); the model is the
@@ -344,7 +353,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // ── Project picker (far-left FCPX-libraries column) ─────────────────────────
   // Shares 'editor.recentSessions' with the launcher (same shape, prune, sort).
   private readonly RECENTS_KEY = 'editor.recentSessions';
-  private readonly COMPOUNDS_SUFFIX = '_compounds.zip';
   recents: RecentSession[] = [];
 
   // ── Rendering ───────────────────────────────────────────────────────────────
@@ -733,14 +741,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         const ce = c.endFrame * fs;
         if (ce <= cursor) continue;        // wholly before what's left of this entry
         if (cs >= end) break;              // cuts are sorted; nothing further overlaps the entry
-        if (cs > cursor + this.EPS) {
+        if (cs > cursor + EPS) {
           const len = cs - cursor;
           kept.push({ os: cursor, oe: cs, es: acc, ee: acc + len, seq: s });
           acc += len;
         }
         if (ce > cursor) cursor = ce;      // may overshoot `end`; the tail guard below catches it
       }
-      if (end > cursor + this.EPS) {
+      if (end > cursor + EPS) {
         const len = end - cursor;
         kept.push({ os: cursor, oe: end, es: acc, ee: acc + len, seq: s });
         acc += len;
@@ -763,7 +771,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
           if (iv.oe <= ts) continue;
           const os = Math.max(ts, iv.os);
           const oe = Math.min(te, iv.oe);
-          if (oe - os <= this.EPS) continue;
+          if (oe - os <= EPS) continue;
           out.push({
             trackId: seg.trackId,
             timelineStart: iv.es + (os - iv.os),   // rippled AND resequenced position
@@ -801,7 +809,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     pts.sort((a, b) => a - b);
     const out: number[] = [];
     for (const p of pts) {
-      if (out.length === 0 || p - out[out.length - 1] > this.EPS) out.push(p);
+      if (out.length === 0 || p - out[out.length - 1] > EPS) out.push(p);
     }
     this.snapPoints = out;
   }
@@ -885,14 +893,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private editedRangesForOriginal(start: number, end: number): { lo: number; hi: number }[] {
     const out: { lo: number; hi: number }[] = [];
     for (const iv of this.keptByOriginal) {
-      if (iv.os >= end - this.EPS) break;        // sorted by os; nothing further overlaps
-      if (iv.oe <= start + this.EPS) continue;
+      if (iv.os >= end - EPS) break;        // sorted by os; nothing further overlaps
+      if (iv.oe <= start + EPS) continue;
       const os = Math.max(start, iv.os);
       const oe = Math.min(end, iv.oe);
-      if (oe - os <= this.EPS) continue;
+      if (oe - os <= EPS) continue;
       out.push({ lo: iv.es + (os - iv.os), hi: iv.es + (oe - iv.os) });
     }
-    return this.mergeRanges(out);
+    return mergeRanges(out);
   }
 
   /**
@@ -906,18 +914,18 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private originalSpansForEdited(lo: number, hi: number): { start: number; end: number }[] {
     const iv = this.keptBySequence;
     const out: { start: number; end: number }[] = [];
-    if (iv.length === 0 || hi - lo <= this.EPS) return out;
+    if (iv.length === 0 || hi - lo <= EPS) return out;
     // First span whose edited end is past `lo`; from there the walk is contiguous in `es`.
     let a = 0, b = iv.length - 1, first = iv.length;
     while (a <= b) {
       const mid = (a + b) >> 1;
-      if (iv[mid].ee > lo + this.EPS) { first = mid; b = mid - 1; } else { a = mid + 1; }
+      if (iv[mid].ee > lo + EPS) { first = mid; b = mid - 1; } else { a = mid + 1; }
     }
     for (let i = first; i < iv.length; i++) {
-      if (iv[i].es >= hi - this.EPS) break;
+      if (iv[i].es >= hi - EPS) break;
       const es = Math.max(lo, iv[i].es);
       const ee = Math.min(hi, iv[i].ee);
-      if (ee - es <= this.EPS) continue;
+      if (ee - es <= EPS) continue;
       out.push({ start: iv[i].os + (es - iv[i].es), end: iv[i].os + (ee - iv[i].es) });
     }
     return out;
@@ -1060,23 +1068,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   // ── Segment lookup (binary search over sorted segments) ─────────────────────
   private segmentAt(trackId: string, t: number): EditorSegment | null {
-    const arr = this.segsByTrack.get(trackId);
-    if (!arr || arr.length === 0) return null;
-    let lo = 0, hi = arr.length - 1, found: EditorSegment | null = null;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      const s = arr[mid];
-      if (s.timelineStart <= t) {
-        // Candidate: the last segment whose start <= t. Keep searching right.
-        if (t < s.timelineStart + s.duration) found = s;
-        lo = mid + 1;
-      } else {
-        hi = mid - 1;
-      }
-    }
-    // `found` was only set when t fell inside a segment. If the last start<=t segment
-    // ended before t (a gap), found stays null — which is correct.
-    return found;
+    return segmentAtIn(this.segsByTrack.get(trackId), t);
   }
 
   // ── Rendering (rAF-batched) ─────────────────────────────────────────────────
@@ -1277,25 +1269,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     for (const r of this.selectedRanges) {
       const lo = Math.min(r.start, r.end);
       const hi = Math.max(r.start, r.end);
-      if (hi - lo > this.EPS) ranges.push({ lo, hi });
+      if (hi - lo > EPS) ranges.push({ lo, hi });
     }
     const single = this.selRange();
     if (single) ranges.push(single);
-    return this.mergeRanges(ranges);
-  }
-
-  /** Sort + merge [lo,hi] ranges, coalescing any that overlap or touch. */
-  private mergeRanges(ranges: { lo: number; hi: number }[]): { lo: number; hi: number }[] {
-    if (ranges.length <= 1) return ranges;
-    const sorted = [...ranges].sort((a, b) => a.lo - b.lo);
-    const out: { lo: number; hi: number }[] = [{ ...sorted[0] }];
-    for (let i = 1; i < sorted.length; i++) {
-      const cur = out[out.length - 1];
-      const nx = sorted[i];
-      if (nx.lo <= cur.hi + this.EPS) cur.hi = Math.max(cur.hi, nx.hi);
-      else out.push({ ...nx });
-    }
-    return out;
+    return mergeRanges(ranges);
   }
 
   /** Clear every trace of the current selection (single, marquee, and group highlight). */
@@ -1348,11 +1326,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     for (let i = 0; i < bounds.length - 1; i++) {
       const s = bounds[i];
       const e = bounds[i + 1];
-      if (e - s <= this.EPS) continue;
+      if (e - s <= EPS) continue;
       // Section [s,e] intersects the marquee [lo,hi] (endpoints-only touch excluded via EPS).
-      if (s < hi - this.EPS && e > lo + this.EPS) hits.push({ lo: s, hi: e });
+      if (s < hi - EPS && e > lo + EPS) hits.push({ lo: s, hi: e });
     }
-    const merged = this.mergeRanges(hits);
+    const merged = mergeRanges(hits);
     this.selectedRanges = merged.map(r => ({ start: r.lo, end: r.hi }));
     this.selStart = null;
     this.selEnd = null;
@@ -1376,7 +1354,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // already and must not spawn a zero-width sliver.
     const interior: number[] = [];
     for (const b of bladeEdited) {
-      if (b > ts + this.EPS && b < te - this.EPS) interior.push(b);
+      if (b > ts + EPS && b < te - EPS) interior.push(b);
     }
     interior.sort((a, b) => a - b);
     const edges = [ts, ...interior, te];
@@ -1601,7 +1579,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     ctx.stroke();
     ctx.globalAlpha = 1;
 
-    const step = this.chooseTickStep();
+    const step = chooseTickStep(this.pxPerSec);
     const first = Math.ceil(this.scrollOffset / step) * step;
     ctx.strokeStyle = '#4a4a50';
     ctx.fillStyle = '#8a8a90';
@@ -1615,28 +1593,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       ctx.moveTo(x + 0.5, this.RULER_H - 8);
       ctx.lineTo(x + 0.5, this.RULER_H);
       ctx.stroke();
-      ctx.fillText(this.formatRulerLabel(t), x + 4, this.RULER_H - 10);
+      ctx.fillText(formatRulerLabel(t), x + 4, this.RULER_H - 10);
     }
-  }
-
-  /** Pick a "nice" tick interval so labels sit ~80 px apart at the current zoom. */
-  private chooseTickStep(): number {
-    const targetPx = 80;
-    const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
-    for (const s of steps) {
-      if (s * this.pxPerSec >= targetPx) return s;
-    }
-    return steps[steps.length - 1];
-  }
-
-  private pad2(n: number): string { return n < 10 ? '0' + n : String(n); }
-
-  private formatRulerLabel(t: number): string {
-    const total = Math.round(t);
-    const h = Math.floor(total / 3600);
-    const m = Math.floor((total % 3600) / 60);
-    const s = total % 60;
-    return h > 0 ? `${h}:${this.pad2(m)}:${this.pad2(s)}` : `${m}:${this.pad2(s)}`;
   }
 
   /**
@@ -1665,7 +1623,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
     const by = top + 1;
     const bh = h - 2;
-    for (const s of this.storiesForDisplay()) {
+    for (const s of storiesForDisplay(this.stories)) {
       const color = this.storyColor(s.number);
       const isActive = s.id === this.activeStoryId;
       const isPicked = this.storyMergeIds.has(s.id);
@@ -1733,27 +1691,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   // ── Timecode readout (HH:MM:SS:FF, NDF colons) ──────────────────────────────
-  /** Format an EDITED-timeline time (seconds) as HH:MM:SS:FF at the manifest frame rate. */
-  private formatTimecode(t: number): string {
-    const fs = this.manifest?.frameSeconds || (1001 / 30000);
-    const fps = Math.round(1 / fs);
-    const totalFrames = Math.round(t / fs);
-    const ff = totalFrames % fps;
-    const totalSeconds = Math.floor(totalFrames / fps);
-    const ss = totalSeconds % 60;
-    const mm = Math.floor(totalSeconds / 60) % 60;
-    const hh = Math.floor(totalSeconds / 3600);
-    return `${this.pad2(hh)}:${this.pad2(mm)}:${this.pad2(ss)}:${this.pad2(ff)}`;
+  get timecode(): string {
+    return formatTimecode(this.playheadTime, this.manifest?.frameSeconds || (1001 / 30000));
   }
-
-  get timecode(): string { return this.formatTimecode(this.playheadTime); }
 
   get sessionName(): string { return this.manifest?.session || ''; }
-
-  // ── File URL (copied technique from alignment.component.ts) ──────────────────
-  private pathToFileUrl(p: string): string {
-    return 'file://' + p.split('/').map(encodeURIComponent).join('/');
-  }
 
   // ── Scrub / drag on canvas ──────────────────────────────────────────────────
   onCanvasMouseDown(ev: MouseEvent): void {
@@ -1780,7 +1722,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       // gesture as in the story list, so a run of mis-split stories can be picked off the ribbon
       // where the split is actually visible. Checked before the edge grab so a ⌘-click near a
       // boundary picks rather than starting an edge drag.
-      if (this.isMultiPick(ev)) {
+      if (isMultiPick(ev)) {
         const hit = this.storyRegionAtEdited(t);
         if (hit) this.toggleStoryMerge(hit.storyId);   // re-renders the ribbon itself
         return;
@@ -1791,7 +1733,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         const story = this.stories.find(st => st.id === edgeHit.storyId);
         if (story) {
           // Canonicalize so the display-region index addresses story.regions directly.
-          story.regions = this.mergeRegions(story.regions);
+          story.regions = mergeRegions(story.regions);
           this.draggingStoryEdge = edgeHit;
           window.addEventListener('mousemove', this.onWindowMouseMove);
           window.addEventListener('mouseup', this.onWindowMouseUp);
@@ -1866,7 +1808,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // including the lanes where the band crosses a gap.
     if (this.toolMode === 'select' && this.rowAt(y)) {
       const held = this.allSelectionRanges();
-      if (held.some(r => t > r.lo + this.EPS && t < r.hi - this.EPS)) {
+      if (held.some(r => t > r.lo + EPS && t < r.hi - EPS)) {
         this.moveDrag = {
           ranges: held,
           grabTime: t,
@@ -1951,10 +1893,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const bounds = this.sectionBoundaries();
     let lo: number | null = null, hi: number | null = null;
     for (const b of bounds) {
-      if (b <= t + this.EPS) { if (lo === null || b > lo) lo = b; }
-      if (b > t + this.EPS) { if (hi === null || b < hi) hi = b; }
+      if (b <= t + EPS) { if (lo === null || b > lo) lo = b; }
+      if (b > t + EPS) { if (hi === null || b < hi) hi = b; }
     }
-    if (lo === null || hi === null || hi - lo <= this.EPS) {
+    if (lo === null || hi === null || hi - lo <= EPS) {
       this.selStart = null;
       this.selEnd = null;
     } else {
@@ -1977,12 +1919,12 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
     for (const b of this.bladeBoundaries) {
       const e = this.originalToEdited(b);
-      if (e > this.EPS && e < this.editedDuration - this.EPS) out.push(e);
+      if (e > EPS && e < this.editedDuration - EPS) out.push(e);
     }
     out.sort((a, b) => a - b);
     const dedup: number[] = [];
     for (const v of out) {
-      if (dedup.length === 0 || v - dedup[dedup.length - 1] > this.EPS) dedup.push(v);
+      if (dedup.length === 0 || v - dedup[dedup.length - 1] > EPS) dedup.push(v);
     }
     return dedup;
   }
@@ -1995,23 +1937,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private updateMoveDrag(ev: MouseEvent): void {
     const d = this.moveDrag!;
     const t = this.canvasEventTime(ev);
-    d.dropAt = this.nearestBoundary(d.boundaries, t);
+    d.dropAt = nearestBoundary(d.boundaries, t);
     // Same 3px promotion threshold the marquee uses: a jittery click must never relocate footage.
     if (Math.abs(this.timeToX(t) - this.timeToX(d.grabTime)) > 3) d.moved = true;
     this.requestRender();
-  }
-
-  /** Nearest value in a SORTED grid (binary search, then only the neighbours can be nearer). */
-  private nearestBoundary(grid: number[], t: number): number {
-    if (grid.length === 0) return t;
-    let lo = 0, hi = grid.length - 1;
-    while (lo < hi) { const mid = (lo + hi) >> 1; if (grid[mid] < t) lo = mid + 1; else hi = mid; }
-    let best = grid[lo];
-    for (const i of [lo - 1, lo + 1]) {
-      if (i < 0 || i >= grid.length) continue;
-      if (Math.abs(grid[i] - t) < Math.abs(best - t)) best = grid[i];
-    }
-    return best;
   }
 
   /**
@@ -2070,9 +1999,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       const edges: number[] = [seq[s].start];
       const editedEdges: number[] = [es];
       for (const e of splitTimes) {
-        if (e <= es + this.EPS || e >= ee - this.EPS) continue;
+        if (e <= es + EPS || e >= ee - EPS) continue;
         const o = this.editedToOriginal(e);
-        if (o > edges[edges.length - 1] + this.EPS && o < seq[s].end - this.EPS) {
+        if (o > edges[edges.length - 1] + EPS && o < seq[s].end - EPS) {
           edges.push(o);
           editedEdges.push(e);
         }
@@ -2086,16 +2015,16 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         // (entirely cut) has no midpoint to test, so it moves only when strictly enclosed —
         // otherwise removed footage parked on the selection's edge would follow the block and
         // undoing the cut would resurrect it in the wrong place.
-        const wide = pieceEe - pieceEs > this.EPS;
+        const wide = pieceEe - pieceEs > EPS;
         const probe = wide ? (pieceEs + pieceEe) / 2 : pieceEs;
         const isMoved = wide
           ? ranges.some(r => probe > r.lo && probe < r.hi)
-          : ranges.some(r => probe > r.lo + this.EPS && probe < r.hi - this.EPS);
+          : ranges.some(r => probe > r.lo + EPS && probe < r.hi - EPS);
         if (isMoved) { moved.push({ start: edges[j], end: edges[j + 1] }); continue; }
         // The block lands before the first STAYING sub-entry at or after the drop — computed
         // against the post-removal list, so a drop inside the selection is a no-op instead of an
         // off-by-the-selection's-length jump.
-        if (insertIdx < 0 && pieceEs >= dropAt - this.EPS) insertIdx = stay.length;
+        if (insertIdx < 0 && pieceEs >= dropAt - EPS) insertIdx = stay.length;
         stay.push({ start: edges[j], end: edges[j + 1] });
       }
     }
@@ -2104,14 +2033,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
     this.pushUndo();
     this.redoStack = [];
-    this.sequence = this.normalizeSequence([
+    this.sequence = normalizeSequence([
       ...stay.slice(0, insertIdx), ...moved, ...stay.slice(insertIdx),
-    ]);
+    ], this.manifest?.timelineDuration || 0);
     this.rebuildEditedModel();
 
     // Re-select the block where it now lives: the user just placed it, and losing the highlight
     // would make a follow-up nudge impossible without re-marqueeing.
-    const landed = this.mergeRanges(
+    const landed = mergeRanges(
       moved.flatMap(p => this.editedRangesForOriginal(p.start, p.end)));
     this.selStart = null;
     this.selEnd = null;
@@ -2124,34 +2053,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.landPlayheadAfterEdit(landed.length > 0 ? landed[0].lo : this.playheadTime, true);
   }
 
-  /**
-   * Canonicalize a freshly built sequence: drop slivers, re-join entries that ended up adjacent in
-   * ORIGINAL time as well as in playback order, and collapse a sequence that is once again plain
-   * source order back to null. Without this the entry list only ever grows — every move fragments
-   * it further, the rebuild walk is O(entries × cuts), and a sidecar would carry a `sequence` field
-   * describing nothing.
-   */
-  private normalizeSequence(list: { start: number; end: number }[]): { start: number; end: number }[] | null {
-    const out: { start: number; end: number }[] = [];
-    for (const e of list) {
-      if (e.end - e.start <= this.EPS) continue;
-      const last = out[out.length - 1];
-      if (last && Math.abs(last.end - e.start) <= this.EPS) last.end = e.end;
-      else out.push({ start: e.start, end: e.end });
-    }
-    const dur = this.manifest?.timelineDuration || 0;
-    if (out.length === 0) return null;
-    if (out.length === 1 && Math.abs(out[0].start) <= this.EPS && Math.abs(out[0].end - dur) <= this.EPS) {
-      return null;
-    }
-    return out;
-  }
-
   /** Add a blade boundary (ORIGINAL seconds), sorted + de-duplicated. Undoable (Cmd+Z). */
   private addBladeBoundary(originalSec: number): void {
     const t = Math.min(this.manifest?.timelineDuration || 0, Math.max(0, originalSec));
     for (const b of this.bladeBoundaries) {
-      if (Math.abs(b - t) <= this.EPS) return; // already present — no-op, no undo entry
+      if (Math.abs(b - t) <= EPS) return; // already present — no-op, no undo entry
     }
     // A dropped blade is an undoable edit: snapshot first, clear redo, then add immutably
     // (so the snapshot's blade array is not mutated underneath it).
@@ -2169,7 +2075,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!fs) return;
     this.bladeBoundaries = this.bladeBoundaries.filter(b => {
       for (const c of this.cuts) {
-        if (b > c.startFrame * fs + this.EPS && b < c.endFrame * fs - this.EPS) return false;
+        if (b > c.startFrame * fs + EPS && b < c.endFrame * fs - EPS) return false;
       }
       return true;
     });
@@ -2222,7 +2128,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // crossed a sibling region of the same story).
     if (this.draggingStoryEdge) {
       const story = this.stories.find(s => s.id === this.draggingStoryEdge!.storyId);
-      if (story) story.regions = this.mergeRegions(story.regions);
+      if (story) story.regions = mergeRegions(story.regions);
       this.draggingStoryEdge = null;
       this.scheduleEditsSave();
     }
@@ -2473,7 +2379,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
     // Ignore every editor shortcut while the user is typing (e.g. the transcript search
     // box) — space, A/B, I/O, Delete, Cmd+X, Cmd+E must reach the input, not the timeline.
-    if (this.isTypingTarget(ev.target)) return;
+    if (isTypingTarget(ev.target)) return;
     if (ev.key === ' ' || ev.code === 'Space') {
       ev.preventDefault();
       this.togglePlayback();
@@ -2560,39 +2466,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
   }
 
-  /** True when a keydown target is an editable field (input / textarea / contentEditable). */
-  private isTypingTarget(target: EventTarget | null): boolean {
-    const el = target as HTMLElement | null;
-    if (!el) return false;
-    const tag = el.tagName;
-    return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable === true;
-  }
-
   // ── Selection + cut editing ─────────────────────────────────────────────────
   /** Normalized selection [lo, hi] in EDITED seconds, or null when absent/one-sided/empty. */
   private selRange(): { lo: number; hi: number } | null {
     if (this.selStart == null || this.selEnd == null) return null;
     const lo = Math.min(this.selStart, this.selEnd);
     const hi = Math.max(this.selStart, this.selEnd);
-    if (hi - lo <= this.EPS) return null;
+    if (hi - lo <= EPS) return null;
     return { lo, hi };
-  }
-
-  /** Merge a cut list into sorted, non-overlapping order (adjacent frame ranges coalesce). */
-  private mergeCuts(list: Cut[]): Cut[] {
-    if (list.length === 0) return [];
-    const sorted = [...list].sort((a, b) => a.startFrame - b.startFrame);
-    const out: Cut[] = [{ ...sorted[0] }];
-    for (let i = 1; i < sorted.length; i++) {
-      const cur = out[out.length - 1];
-      const next = sorted[i];
-      if (next.startFrame <= cur.endFrame) {
-        cur.endFrame = Math.max(cur.endFrame, next.endFrame);
-      } else {
-        out.push({ ...next });
-      }
-    }
-    return out;
   }
 
   /**
@@ -2661,7 +2542,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
     this.pushUndo();
     this.redoStack = [];
-    this.cuts = this.mergeCuts([...this.cuts, ...newCuts]);
+    this.cuts = mergeCuts([...this.cuts, ...newCuts]);
     this.rebuildEditedModel();
     this.pruneBladeBoundaries();   // drop any boundary the new cuts swallowed
     this.clearSelection();
@@ -2728,7 +2609,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const sec = Math.round(this.removedSeconds);
     const m = Math.floor(sec / 60);
     const s = sec % 60;
-    return `${m}:${this.pad2(s)}`;
+    return `${m}:${pad2(s)}`;
   }
 
   // ── Edit-state persistence ───────────────────────────────────────────────────
@@ -2939,9 +2820,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       // a gap or an overlap between neighbours. Math.round is monotonic, so a span can never invert.
       const start = Math.round(k.os / fs) * fs;
       const end = Math.round(k.oe / fs) * fs;
-      if (end - start <= this.EPS) continue;      // collapsed to nothing by alignment
+      if (end - start <= EPS) continue;      // collapsed to nothing by alignment
       const last = out[out.length - 1];
-      if (last && Math.abs(last.end - start) <= this.EPS) last.end = end;
+      if (last && Math.abs(last.end - start) <= EPS) last.end = end;
       else out.push({ start, end });
     }
     return out.length > 0 ? out : undefined;
@@ -2977,127 +2858,30 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * PUBLIC — the export wiring will call it later.
    */
   resolveStoryRegions(): { number: number; title: string; regions: { start: number; end: number }[] }[] {
-    return this.storiesForDisplay().map(({ number, title, regions }) => ({ number, title, regions }));
+    return storiesForDisplay(this.stories).map(({ number, title, regions }) => ({ number, title, regions }));
   }
 
-  /**
-   * Stories in export/project order (number ascending, creation order breaking ties), each
-   * with its regions merged (overlapping/adjacent spans a user painted in separate drags
-   * collapsed into one) and carrying its `id` so the ribbon/strip can flag the active story.
-   * Internal — resolveStoryRegions() strips the id for the export payload. PURE.
-   */
-  private storiesForDisplay(): { id: string; number: number; title: string; regions: { start: number; end: number }[] }[] {
-    return this.stories
-      .map((s, i) => ({ i, id: s.id, number: s.number, title: s.title, regions: this.mergeRegions(s.regions) }))
-      .sort((a, b) => (a.number - b.number) || (a.i - b.i))
-      .map(({ id, number, title, regions }) => ({ id, number, title, regions }));
-  }
-
-  /**
-   * Merge a story's regions: sort by start and coalesce any that overlap or touch (within
-   * EPS), so repeated drags onto the same story become clean disjoint spans. Sub-EPS slivers
-   * are dropped. Pure — never mutates the input.
-   */
-  private mergeRegions(regions: { start: number; end: number }[]): { start: number; end: number }[] {
-    const sorted = regions
-      .filter(r => r.end - r.start > this.EPS)
-      .map(r => ({ start: r.start, end: r.end }))
-      .sort((a, b) => a.start - b.start);
-    const out: { start: number; end: number }[] = [];
-    for (const r of sorted) {
-      const last = out[out.length - 1];
-      if (last && r.start <= last.end + this.EPS) {
-        if (r.end > last.end) last.end = r.end;   // extend the open span
-      } else {
-        out.push({ ...r });
-      }
-    }
-    return out;
-  }
-
+  // Template-callable delegates for the pure helpers in model/story-utils.ts. strictTemplates
+  // cannot call an imported function, so the shell keeps a one-line method for each name the
+  // .html reads. The doc comments live with the implementations.
   /** True when a story has no regions (nothing to export). */
   isStoryEmpty(story: Story): boolean {
-    return this.mergeRegions(story.regions).length === 0;
+    return isStoryEmpty(story);
   }
 
-  /**
-   * Fingerprint of a set of regions — the identity of the SPAN a story's chapters were derived
-   * from. Stored on the story as `chaptersFrom`; a mismatch against the story's regions right now
-   * is what "stale" means.
-   *
-   * This is a fingerprint and not an invalidate-on-edit call for one reason: regions are mutated
-   * in a dozen places — the ribbon edge drag, Split ▸ Apply, merge, story delete, the timeline
-   * move, auto-split — and every new one of those is another site that has to REMEMBER to
-   * invalidate. That is the thing that gets forgotten quietly, and forgetting it leaves chapter
-   * markers pointing at content the upload no longer contains. Comparing a fingerprint makes
-   * staleness derived, so it cannot be forgotten; there are deliberately no invalidation calls at
-   * the mutation sites.
-   *
-   * Merged and sorted first, so a span painted in two touching drags, or in the other order,
-   * fingerprints identically to the same span painted in one. Rounded to milliseconds because
-   * region edges are arithmetic results and land an ULP either side of where they started —
-   * float noise must never read as a redrawn story. `r1:` is the format's own version: change the
-   * rounding or the layout below and every stored fingerprint must stop matching rather than be
-   * compared against strings built by different rules.
-   */
-  private regionFingerprint(regions: { start: number; end: number }[]): string {
-    return 'r1:' + this.mergeRegions(regions)
-      .map(r => `${r.start.toFixed(3)}-${r.end.toFixed(3)}`)
-      .join(',');
-  }
-
-  /**
-   * Where a story's chapters stand against its regions RIGHT NOW.
-   *
-   *   'fresh' — derived for exactly these regions, per story, with consolidation off.
-   *   'stale' — chapters exist but describe a different span, or were derived at whole-recording
-   *             cadence (provisional, `chaptersFrom` unset). Usable, never trusted; re-derived on
-   *             the next demand.
-   *   'none'  — nothing to use. Fewer than two markers is nothing a description can carry, which
-   *             is why the floor is 2 rather than 1.
-   */
+  /** Where a story's chapters stand against its regions RIGHT NOW ('fresh' | 'stale' | 'none'). */
   storyChapterState(story: Story): 'fresh' | 'stale' | 'none' {
-    if ((story.chapters?.length ?? 0) < 2) return 'none';
-    return story.chaptersFrom && story.chaptersFrom === this.regionFingerprint(story.regions)
-      ? 'fresh' : 'stale';
+    return storyChapterState(story);
   }
 
-  /**
-   * How many of a story's chapter starts are ±45 s guesses rather than mapped quotes. Surfaced in
-   * the story list because nothing else can show it: an approximate start produces a description
-   * line that looks exactly like a good one, and the user finds out by clicking a published marker
-   * and landing half a minute into the wrong thing.
-   */
+  /** How many of a story's chapter starts are ±45 s guesses rather than mapped quotes. */
   storyApproxChapters(story: Story): number {
-    return (story.chapters || []).filter(c => c.startApprox).length;
-  }
-
-  /**
-   * The ONLY writer of `story.chapters`. Chapters and the span they came from are set together so
-   * they cannot drift apart — a list stamped by one code path and replaced by another is a list
-   * that lies about being fresh.
-   *
-   * `from` is the fingerprint to stamp: pass the one taken BEFORE a long derivation (regions can
-   * move while hundreds of model calls run, and stamping the current regions afterwards would
-   * mark chapters fresh for a span they never saw), or `null` for provisional chapters that must
-   * always read stale. Fewer than two markers clears both fields.
-   */
-  private setStoryChapters(story: Story, chapters: StoryChapter[] | undefined, from?: string | null): void {
-    if (!chapters || chapters.length < 2) {
-      delete story.chapters;
-      delete story.chaptersFrom;
-      return;
-    }
-    story.chapters = chapters;
-    const stamp = from === undefined ? this.regionFingerprint(story.regions) : from;
-    if (stamp) story.chaptersFrom = stamp; else delete story.chaptersFrom;
+    return storyApproxChapters(story);
   }
 
   /** Stable, distinct color for a story NUMBER (palette cycled; safe for any integer). */
   storyColor(n: number): string {
-    const len = this.STORY_COLORS.length;
-    const i = (((Math.round(n) - 1) % len) + len) % len;
-    return this.STORY_COLORS[i];
+    return storyColor(n);
   }
 
 
@@ -3134,7 +2918,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (this.stories.length === 0) return;
     const keyOf = (s: Story): number => {
       let best = Infinity;
-      for (const r of this.mergeRegions(s.regions)) {
+      for (const r of mergeRegions(s.regions)) {
         const pieces = this.editedRangesForOriginal(r.start, r.end);
         if (pieces.length > 0 && pieces[0].lo < best) best = pieces[0].lo;
       }
@@ -3167,7 +2951,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * preventDefault() stops the title field stealing focus on the way.
    */
   onStoryRowMouseDown(story: Story, ev: MouseEvent): void {
-    if (!this.isMultiPick(ev)) {
+    if (!isMultiPick(ev)) {
       // A plain press clears any stale suppression from a press that never produced a click
       // (mousedown here, mouseup elsewhere) — otherwise it would eat the NEXT ordinary click.
       this.suppressStoryClick = false;
@@ -3216,11 +3000,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private paintStoryRegion(startOrig: number, endOrig: number): void {
     const lo = Math.min(startOrig, endOrig);
     const hi = Math.max(startOrig, endOrig);
-    if (!(hi - lo > this.EPS)) return;
+    if (!(hi - lo > EPS)) return;
 
     const active = this.activeStoryId ? this.stories.find(s => s.id === this.activeStoryId) : null;
     if (active) {
-      active.regions = this.mergeRegions([...active.regions, { start: lo, end: hi }]);
+      active.regions = mergeRegions([...active.regions, { start: lo, end: hi }]);
     } else {
       const number = this.stories.length + 1;
       const story: Story = {
@@ -3254,7 +3038,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   selectWholeStory(story: Story): void {
     this.storySelection = { storyId: story.id, regionIndex: null };
     this.activeStoryId = story.id;
-    this.selectResolvedStory({ regions: this.mergeRegions(story.regions) });
+    this.selectResolvedStory({ regions: mergeRegions(story.regions) });
     this.requestRender();
   }
 
@@ -3264,7 +3048,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   selectStoryChunk(storyId: string, regionIndex: number): void {
     const story = this.stories.find(s => s.id === storyId);
     if (!story) return;
-    story.regions = this.mergeRegions(story.regions);
+    story.regions = mergeRegions(story.regions);
     this.storySelection = { storyId, regionIndex };
     this.activeStoryId = storyId;
     const region = story.regions[regionIndex];
@@ -3284,7 +3068,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.deleteStory(story);
       return;
     }
-    story.regions = this.mergeRegions(story.regions);
+    story.regions = mergeRegions(story.regions);
     if (sel.regionIndex >= 0 && sel.regionIndex < story.regions.length) {
       story.regions.splice(sel.regionIndex, 1);
     }
@@ -3296,12 +3080,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   // ── Merging stories ─────────────────────────────────────────────────────────
-  /** ⌘-click (⌃-click on Windows/Linux) is the multi-pick modifier, in the story list and on the
-   *  timeline ribbon alike. Accepting both keys costs nothing and avoids a platform check. */
-  private isMultiPick(ev: MouseEvent): boolean {
-    return ev.metaKey || ev.ctrlKey;
-  }
-
   /** Add/remove a story from the merge pick. */
   toggleStoryMerge(id: string): void {
     if (this.storyMergeIds.has(id)) this.storyMergeIds.delete(id);
@@ -3459,7 +3237,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (chosen.length < 2) return;
     const target = chosen[0];
 
-    target.regions = this.mergeRegions(chosen.flatMap(s => s.regions));
+    target.regions = mergeRegions(chosen.flatMap(s => s.regions));
     // The absorbed stories' chapters are deliberately NOT concatenated onto the target any more.
     // A merge redraws the boundary, so what comes out is a new unit: two lists that each chaptered
     // half of it do not chapter the whole, and a title conditioned on the concatenation describes
@@ -3691,7 +3469,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // The story's surviving footage in PLAYBACK order: edited time is sequence order by
     // construction (rebuildEditedModel accumulates `es` walking the sequence), so sorting by `lo`
     // is the order the exporter concatenates these pieces in.
-    const pieces = this.mergeRegions(story.regions)
+    const pieces = mergeRegions(story.regions)
       .flatMap(r => this.editedRangesForOriginal(r.start, r.end))
       .sort((a, b) => a.lo - b.lo);
     if (!pieces.length) {
@@ -3718,7 +3496,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       const et = this.originalToEdited(c.startSeconds);
       const inside = pieces.findIndex(p => et >= p.lo - EDGE && et <= p.hi + EDGE);
       if (inside !== -1) {
-        return { timestamp: this.formatRulerLabel(Math.floor(outputAt(inside, et))), title: c.label.trim() };
+        return { timestamp: formatRulerLabel(Math.floor(outputAt(inside, et))), title: c.label.trim() };
       }
 
       // Outside every piece: snap to the nearest EDGE if it is within the placement fuzz.
@@ -3732,7 +3510,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         }
       });
       if (best !== -1 && bestGap <= EDGE_SNAP) {
-        return { timestamp: this.formatRulerLabel(Math.floor(outputAt(best, bestTime))), title: c.label.trim() };
+        return { timestamp: formatRulerLabel(Math.floor(outputAt(best, bestTime))), title: c.label.trim() };
       }
 
       throw new Error(
@@ -3838,12 +3616,12 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    */
   private async deriveStoryChapters(story: Story, model: string): Promise<StoryChapter[]> {
     const name = story.title.trim() || `Story ${story.number}`;
-    const regions = this.mergeRegions(story.regions);
+    const regions = mergeRegions(story.regions);
     const segments = this.segmentsForRegions(regions);
     if (segments.length === 0) {
       throw new Error(`“${name}” has no transcript in its regions — nothing to chapter.`);
     }
-    const from = this.regionFingerprint(regions);
+    const from = regionFingerprint(regions);
 
     this.analyzeMessage = `Finding chapters in “${name}”…`;
     this.cdr.detectChanges();
@@ -3865,7 +3643,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
     const derived = returned
       .map(c => ({
-        startSeconds: c.startSeconds, endSeconds: c.endSeconds, label: this.cleanChapterLabel(c.label),
+        startSeconds: c.startSeconds, endSeconds: c.endSeconds, label: cleanChapterLabel(c.label),
         ...((c.detail || '').trim() ? { detail: c.detail.trim() } : {}),
         ...(c.startApprox ? { startApprox: true } : {}),
       }))
@@ -3876,7 +3654,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (derived.length < 2) {
       throw new Error(`Chapter analysis returned ${derived.length} chapter(s) for “${name}” — not a usable chapter list.`);
     }
-    this.setStoryChapters(story, derived, from);
+    setStoryChapters(story, derived, from);
     this.scheduleEditsSave();
     this.requestRender();
     return derived;
@@ -3925,7 +3703,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    *  long the story runs, not where it sits. A region count is appended when it has more than
    *  one. Tracks cuts via originalToEdited. */
   storyDuration(story: Story): string {
-    const regions = this.mergeRegions(story.regions);
+    const regions = mergeRegions(story.regions);
     if (regions.length === 0) return '—';
     let total = 0;
     for (const r of regions) {
@@ -3945,7 +3723,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    *  display (merged) regions, whose indices match the story's canonicalized regions array. */
   private storyEdgeAtX(x: number): { storyId: string; regionIndex: number; edge: 'start' | 'end' } | null {
     const TOL = 5;
-    for (const s of this.storiesForDisplay()) {
+    for (const s of storiesForDisplay(this.stories)) {
       for (let i = 0; i < s.regions.length; i++) {
         const r = s.regions[i];
         // The grabbable edges are the region's OUTER ends: its first piece's left and its last
@@ -4001,7 +3779,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // move gesture, which has no other affordance.
     if (this.toolMode === 'select' && this.rowAt(this.canvasEventY(ev))) {
       const t = this.canvasEventTime(ev);
-      if (this.allSelectionRanges().some(r => t > r.lo + this.EPS && t < r.hi - this.EPS)) {
+      if (this.allSelectionRanges().some(r => t > r.lo + EPS && t < r.hi - EPS)) {
         canvas.style.cursor = 'grab';
         return;
       }
@@ -4013,10 +3791,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    *  hit in number order wins (matches storyAtEdited). The index addresses the story's CANONICAL
    *  (merged) regions — selectStoryChunk canonicalizes before using it. */
   private storyRegionAtEdited(t: number): { storyId: string; regionIndex: number } | null {
-    for (const s of this.storiesForDisplay()) {
+    for (const s of storiesForDisplay(this.stories)) {
       for (let i = 0; i < s.regions.length; i++) {
         for (const p of this.editedRangesForOriginal(s.regions[i].start, s.regions[i].end)) {
-          if (t >= p.lo - this.EPS && t <= p.hi + this.EPS) return { storyId: s.id, regionIndex: i };
+          if (t >= p.lo - EPS && t <= p.hi + EPS) return { storyId: s.id, regionIndex: i };
         }
       }
     }
@@ -4148,7 +3926,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    */
   private segmentsForRegions(regions: { start: number; end: number }[]): { text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }[] {
     const words = (this.transcript?.words || []).filter(w =>
-      regions.some(r => w.timelineEnd > r.start + this.EPS && w.timelineStart < r.end - this.EPS)
+      regions.some(r => w.timelineEnd > r.start + EPS && w.timelineStart < r.end - EPS)
     );
     if (words.length === 0) return [];
 
@@ -4241,7 +4019,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     try {
       if (this.hasStories()) {
         // One pass per story that has transcript to work from (empties and scrap excluded).
-        const workable = this.stories.filter(s => this.transcriptTextForRegions(this.mergeRegions(s.regions)));
+        const workable = this.stories.filter(s => this.transcriptTextForRegions(mergeRegions(s.regions)));
         // The whole run, listed in the dock up front: story 1 running, the rest waiting. Each row
         // is removed as its story finishes, so "how much is left" is the list itself and the bar
         // below is free to mean one thing only — see the scale note at the top of the loop.
@@ -4342,14 +4120,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
           const story: Story = {
             id: `story-${++this.storyIdCounter}`,
             number: i + 1,
-            title: this.cleanChapterLabel(c.label) || `Story ${i + 1}`,
+            title: cleanChapterLabel(c.label) || `Story ${i + 1}`,
             regions: [{ start: c.startSeconds, end: c.endSeconds }],
           };
           // PROVISIONAL (no fingerprint): these sub-chapters were cut at whole-recording cadence
           // — ~6 min apart on a multi-hour stream where this story wants ~3.5 — and before the
           // user curated the boundary. They are worth keeping as markers, but run 2 must re-derive
           // them rather than accept them as this story's chapter layer.
-          this.setStoryChapters(story, this.toStoryChapters(c.subChapters), null);
+          setStoryChapters(story, toStoryChapters(c.subChapters), null);
           return story;
         });
         this.stories = [...this.stories, ...created];
@@ -4445,7 +4223,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // Re-run re-detects the SAME section that was first analyzed (sticky span from the cache), so
     // reworking after an Apply doesn't silently re-scope to the story's shrunken leftover regions.
     // A first run (no cache yet) analyzes the story's current regions.
-    const regions = this.splitAnalyzedRegions.length ? this.splitAnalyzedRegions : this.mergeRegions(story.regions);
+    const regions = this.splitAnalyzedRegions.length ? this.splitAnalyzedRegions : mergeRegions(story.regions);
     this.splitRunning = true;
     this.analyzeStopRequested = false;
     this.splitFromCache = false;
@@ -4459,8 +4237,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       const res = await this.electron.analyzeStoryChapters({ segments, model: this.selectedOllamaModel });
       this.splitChapters = (res.chapters || []).map(c => ({
         index: c.index, startSeconds: c.startSeconds, endSeconds: c.endSeconds,
-        label: this.cleanChapterLabel(c.label),
-        subChapters: this.toStoryChapters(c.subChapters),
+        label: cleanChapterLabel(c.label),
+        subChapters: toStoryChapters(c.subChapters),
       }));
       if (this.splitChapters.length === 0) throw new Error('No chapters detected.');
       // No pre-selection — the user chooses which chapters go into which story (unassigned = scrap).
@@ -4528,15 +4306,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    *  silently empty the story (everything left as scrap). */
   get splitAnyAssigned(): boolean { return this.splitAssign.some(b => b >= 0); }
 
-  /** Compact clock (H:MM:SS / M:SS, no frames). */
-  private fmtClock(seconds: number): string {
-    const total = Math.max(0, Math.floor(seconds));
-    const h = Math.floor(total / 3600);
-    const m = Math.floor((total % 3600) / 60);
-    const s = total % 60;
-    return h > 0 ? `${h}:${this.pad2(m)}:${this.pad2(s)}` : `${m}:${this.pad2(s)}`;
-  }
-
   /**
    * STORY-LOCAL time of an ORIGINAL-second position: how far into the story's OWN content the
    * position sits, i.e. the sum of the story's earlier regions' edited durations plus the edited
@@ -4551,8 +4320,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       // Per-piece sums, so a region whose footage a reorder scattered still reports its real
       // length instead of collapsing to 0 on a backwards end-minus-start.
       const pieces = this.editedRangesForOriginal(r.start, r.end);
-      if (originalSeconds <= r.start + this.EPS) return acc;                 // before this region
-      if (originalSeconds <= r.end + this.EPS) {                             // inside this region
+      if (originalSeconds <= r.start + EPS) return acc;                 // before this region
+      if (originalSeconds <= r.end + EPS) {                             // inside this region
         // Content of the region that precedes `originalSeconds` IN ORIGINAL TIME. Story-local
         // time is a chapter clock for the exported project, which lays a story's regions out in
         // original order — it deliberately does not follow a within-region reorder.
@@ -4570,59 +4339,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   /** Story-local clock for a chapter boundary in the open Split modal (relative to the split
    *  story's own content, excluding between-region gaps — matching the FCP output). */
   chapterClock(originalSeconds: number): string {
-    const regions = this.splitStory ? this.mergeRegions(this.splitStory.regions) : [];
-    return this.fmtClock(this.storyLocalTime(originalSeconds, regions));
-  }
-
-  /**
-   * Normalize an analyzer sub-chapter list into a story's retained markers. A single entry means
-   * the chapter was never merged, so there is no internal structure to keep — returning undefined
-   * there keeps "has chapters" honest instead of storing a marker list of one that no description
-   * could use.
-   */
-  private toStoryChapters(subChapters?: StoryChapter[]): StoryChapter[] | undefined {
-    if (!subChapters || subChapters.length < 2) return undefined;
-    return subChapters
-      .map(c => ({
-        startSeconds: c.startSeconds, endSeconds: c.endSeconds, label: this.cleanChapterLabel(c.label),
-        ...((c.detail || '').trim() ? { detail: c.detail!.trim() } : {}),
-        ...(c.startApprox ? { startApprox: true } : {}),
-      }))
-      .sort((a, b) => a.startSeconds - b.startSeconds);
-  }
-
-  /**
-   * The retained markers overlapping a set of ORIGINAL-second regions, clamped to them. Used when
-   * a split hands part of an analyzed span to a different story: a marker outside the regions that
-   * story actually kept would point at content the upload does not contain.
-   */
-  private clipStoryChapters(chapters: StoryChapter[] | undefined, regions: { start: number; end: number }[]): StoryChapter[] | undefined {
-    if (!chapters?.length || !regions.length) return undefined;
-    const out: StoryChapter[] = [];
-    for (const c of chapters) {
-      for (const r of regions) {
-        const lo = Math.max(r.start, c.startSeconds);
-        const hi = Math.min(r.end, c.endSeconds);
-        // The approximate-placement flag only survives when the START is the one that was placed.
-        // A marker clipped forward to a region edge starts where the user drew the edge, which is
-        // exact — keeping the flag there would report a precision problem that no longer exists.
-        if (hi - lo > this.EPS) {
-          out.push({
-            startSeconds: lo, endSeconds: hi, label: c.label,
-            ...(c.startApprox && lo <= c.startSeconds + this.EPS ? { startApprox: true } : {}),
-          });
-        }
-      }
-    }
-    out.sort((a, b) => a.startSeconds - b.startSeconds);
-    return out.length >= 2 ? out : undefined;
-  }
-
-  /** Strip a leading "Chapter:", "Chapter 3:", "3." etc. that models often prepend, so story/chapter
-   *  labels read cleanly. Falls back to the original if stripping would empty it. */
-  private cleanChapterLabel(label: string): string {
-    const cleaned = (label || '').replace(/^\s*(chapter|part|section)\s*\d*\s*[:\-.)]?\s*/i, '').trim();
-    return cleaned || (label || '').trim();
+    const regions = this.splitStory ? mergeRegions(this.splitStory.regions) : [];
+    return fmtClock(this.storyLocalTime(originalSeconds, regions));
   }
 
   /**
@@ -4635,7 +4353,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!story) { this.cancelSplit(); return; }
     // Intersect against the ANALYZED span, not the story's current regions: on a rework the story
     // was already shrunk by a prior Apply, but the chapters still address the original span.
-    const basis = this.splitAnalyzedRegions.length ? this.splitAnalyzedRegions : this.mergeRegions(story.regions);
+    const basis = this.splitAnalyzedRegions.length ? this.splitAnalyzedRegions : mergeRegions(story.regions);
     // Remove the stories the previous Apply of THIS split created, so a rework replaces rather
     // than duplicates them (missing ids — a child the user already deleted — are simply skipped).
     const oldChildIds = story.split?.childIds || [];
@@ -4652,16 +4370,16 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       for (const r of basis) {
         const lo = Math.max(r.start, ch.startSeconds);
         const hi = Math.min(r.end, ch.endSeconds);
-        if (hi - lo > this.EPS) bucketRegions[b].push({ start: lo, end: hi });
+        if (hi - lo > EPS) bucketRegions[b].push({ start: lo, end: hi });
       }
       if (ch.subChapters?.length) bucketChapters[b].push(...ch.subChapters);
     });
     // Bucket 0 rewrites the original story (empty ⇒ it keeps nothing, shown as empty).
-    story.regions = this.mergeRegions(bucketRegions[0]);
+    story.regions = mergeRegions(bucketRegions[0]);
     // PROVISIONAL (no fingerprint): these markers were cut for the PARENT story's span at the
     // parent's cadence, then clipped to whatever this bucket kept. They describe the content
     // honestly, but a story half the size wants roughly twice as many, so run 2 re-derives.
-    this.setStoryChapters(story, this.clipStoryChapters(bucketChapters[0], story.regions), null);
+    setStoryChapters(story, clipStoryChapters(bucketChapters[0], story.regions), null);
     if (this.splitBuckets[0].title.trim()) {
       story.title = this.splitBuckets[0].title.trim();
       if (this.splitBuckets[0].touched) story.titleTouched = true;
@@ -4670,14 +4388,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const newStories: Story[] = [];
     const childIds: string[] = [];
     for (let i = 1; i < this.splitBuckets.length; i++) {
-      const regions = this.mergeRegions(bucketRegions[i]);
+      const regions = mergeRegions(bucketRegions[i]);
       if (regions.length === 0) continue;
       const id = `story-${++this.storyIdCounter}`;
       const child: Story = {
         id, number: 0, title: this.splitBuckets[i].title.trim() || 'Story', regions,
         ...(this.splitBuckets[i].touched ? { titleTouched: true } : {}),
       };
-      this.setStoryChapters(child, this.clipStoryChapters(bucketChapters[i], regions), null);
+      setStoryChapters(child, clipStoryChapters(bucketChapters[i], regions), null);
       newStories.push(child);
       childIds.push(id);
     }
@@ -4733,22 +4451,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     void this.pickProject();
   }
 
-  /**
-   * Friendly DISPLAY name for a track/speaker id: strip a trailing '_voiceiso_processed',
-   * '_processed', or '_voiceiso' (longest first), turn remaining underscores into spaces,
-   * collapse whitespace, trim, and capitalize the first character. Pure — never mutates the
-   * underlying track ids used for logic. 'mic audio_voiceiso_processed' → 'Mic audio';
-   * 'screen audio_processed' → 'Screen audio'; 'merged'/'Merged' → 'Merged'.
-   */
+  /** Friendly DISPLAY name for a track/speaker id — template-callable delegate (see
+   *  model/editor-format.ts for the rules). */
   prettyLabel(raw: string): string {
-    if (!raw) return raw;
-    let s = raw;
-    for (const suf of ['_voiceiso_processed', '_processed', '_voiceiso']) {
-      if (s.toLowerCase().endsWith(suf)) { s = s.slice(0, s.length - suf.length); break; }
-    }
-    s = s.replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
-    if (s.length === 0) return s;
-    return s.charAt(0).toUpperCase() + s.slice(1);
+    return prettyLabel(raw);
   }
 
   // ── Project picker (recents shared with the launcher) ───────────────────────
@@ -4767,13 +4473,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private writeRecents(list: RecentSession[]): void {
     localStorage.setItem(this.RECENTS_KEY, JSON.stringify(list));
-  }
-
-  /** Filename minus the _compounds.zip suffix (mirrors the launcher's deriveName). */
-  private deriveName(zipPath: string): string {
-    const base = zipPath.split(/[\\/]/).pop() || zipPath;
-    if (base.endsWith(this.COMPOUNDS_SUFFIX)) return base.slice(0, -this.COMPOUNDS_SUFFIX.length);
-    return base.replace(/\.zip$/i, '');
   }
 
   /**
@@ -4795,7 +4494,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
     kept.sort((a, b) => (b.lastOpened || '').localeCompare(a.lastOpened || ''));
     if (kept.length === 0 && this.currentZipPath) {
-      kept.push({ zipPath: this.currentZipPath, name: this.deriveName(this.currentZipPath), lastOpened: new Date().toISOString() });
+      kept.push({ zipPath: this.currentZipPath, name: deriveName(this.currentZipPath), lastOpened: new Date().toISOString() });
     }
     this.recents = kept;
     this.writeRecents(kept);
@@ -4808,7 +4507,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * async prune yet) so a bootstrap can never clobber the launcher's other recents.
    */
   private recordRecent(zipPath: string): void {
-    const entry: RecentSession = { zipPath, name: this.deriveName(zipPath), lastOpened: new Date().toISOString() };
+    const entry: RecentSession = { zipPath, name: deriveName(zipPath), lastOpened: new Date().toISOString() };
     const rest = this.readRecents().filter(r => r.zipPath !== zipPath);
     this.recents = [entry, ...rest];
     this.writeRecents(this.recents);
@@ -5070,7 +4769,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         originalEnd: g.originalEnd,
         editedStart,
         editedEnd: pieces[pieces.length - 1].hi,
-        timecode: this.formatTimecode(editedStart),
+        timecode: formatTimecode(editedStart, this.manifest?.frameSeconds || (1001 / 30000)),
       });
     }
     // updateActiveGroup() walks this list assuming ascending editedStart and BREAKS at the first
@@ -5114,7 +4813,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     for (const c of this.cuts) {
       const cs = c.startFrame * fs;
       const ce = c.endFrame * fs;
-      if (g.originalStart >= cs - this.EPS && g.originalEnd <= ce + this.EPS) return true;
+      if (g.originalStart >= cs - EPS && g.originalEnd <= ce + EPS) return true;
     }
     return false;
   }
@@ -5199,7 +4898,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.selStart = null;
     this.selEnd = null;
     if (pieces.length === 1) {
-      if (pieces[0].hi - pieces[0].lo > this.EPS) {
+      if (pieces[0].hi - pieces[0].lo > EPS) {
         this.selStart = pieces[0].lo;
         this.selEnd = pieces[0].hi;
       }
@@ -5215,9 +4914,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   /** True when a rendered group is the one currently reflected in the timeline selection. */
   isGroupSelected(g: TranscriptGroupView): boolean {
     return this.selectedGroupStart !== null
-      && Math.abs(this.selectedGroupStart - g.originalStart) <= this.EPS
+      && Math.abs(this.selectedGroupStart - g.originalStart) <= EPS
       && this.selectedGroupEnd !== null
-      && Math.abs(this.selectedGroupEnd - g.originalEnd) <= this.EPS;
+      && Math.abs(this.selectedGroupEnd - g.originalEnd) <= EPS;
   }
 
   /** Scroll so the current selection is on screen (reuses clampScroll). No-op if none. */
@@ -5248,7 +4947,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     let idx = -1;
     const groups = this.visibleGroups;
     for (let i = 0; i < groups.length; i++) {
-      if (groups[i].editedStart <= t + this.EPS) idx = i;
+      if (groups[i].editedStart <= t + EPS) idx = i;
       else break;
     }
     if (idx !== this.activeGroupIdx) {
@@ -5522,7 +5221,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
     if (this.viewerLoadedFile !== seg.file) {
       v.onerror = () => this.onMediaError(`Could not load video: ${seg.file}`);
-      v.src = this.pathToFileUrl(seg.file);
+      v.src = pathToFileUrl(seg.file);
       this.viewerLoadedFile = seg.file;
       try { v.playbackRate = this.playbackRate; } catch { /* set on play */ }
     }
@@ -5545,7 +5244,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     el.muted = false; // audio elements ARE the sound
     el.preload = 'auto';
     el.onerror = () => this.onMediaError(`Could not load audio: ${file}`);
-    el.src = this.pathToFileUrl(file);
+    el.src = pathToFileUrl(file);
     try { el.playbackRate = this.playbackRate; } catch { /* set on play */ }
     this.audioEls.set(file, el);
     return el;
