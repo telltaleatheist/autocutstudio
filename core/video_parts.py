@@ -346,55 +346,30 @@ def _locate_by_picture(part: dict, reference_path: str, expected_start: float,
     Used when audio cannot answer: either the part's audio is silent (a lost
     feed) or its streams disagree in length, which makes "where its audio sits
     plus how long its video runs" an unsafe way to find where its picture ends.
+
+    The measurement itself lives in :func:`core.video_align.locate_by_picture`,
+    which the normal per-session alignment path also uses. This wrapper only
+    supplies what is specific to a SEAM: the part's picture duration (its
+    container's duration can disagree, which is often the very reason we are
+    here) and the wider seam span.
     """
-    from .video_align import (measure_picture_offset, scene_change_offset,
-                              quadrant_crop, VideoAlignError)
-
-    crop = quadrant_crop(source_type) if source_type else None
-    if crop is None:
-        log(f"    (no known master quadrant for '{source_type}'; comparing the "
-            f"whole master frame, which is markedly less reliable)")
-
-    span = min(2400.0, max(600.0, content_span(part) * 0.5))
-    # Cuts are sampled from the region whose timing we need: the tail of a part
-    # whose finish matters, the head of one whose start does.
-    source_start = max(0.0, content_span(part) - span) if at_end else 0.0
-
-    # SCENE CHANGES FIRST. Correlation is defeated by a screen that sits still --
-    # measured on the 2026-08-05 session it spread over 4 frames, where cut
-    # matching agreed to 0.55 frames across 48 pairs.
+    from .video_align import (locate_by_picture, SEAM_SPAN_SECONDS,
+                              VideoAlignError)
     try:
-        result = scene_change_offset(
+        return locate_by_picture(
             part['path'], reference_path, expected_start=expected_start,
-            search_radius_seconds=SEAM_SEARCH_RADIUS, span_seconds=span,
-            source_start=source_start, reference_crop=crop, log=log)
-        result['method'] = 'scene-change'
-        log(f"    scene-change alignment: {part['name']} at "
-            f"{result['start_seconds']:.4f}s ({result['matched_pairs']} matched "
-            f"cut pairs, scatter {result['spread_seconds'] * 1000:.0f}ms)")
-        return result
-    except VideoAlignError as scene_err:
-        log(f"    scene-change alignment unavailable ({scene_err}); "
-            f"falling back to motion correlation")
-
-    fractions = ((0.55, 0.65, 0.75, 0.82, 0.88, 0.93, 0.97) if at_end
-                 else (0.02, 0.08, 0.15, 0.25, 0.35, 0.45, 0.55))
-    try:
-        result = measure_picture_offset(
-            part['path'], reference_path, expected_start=expected_start,
+            source_type=source_type, at_end=at_end,
             search_radius_seconds=SEAM_SEARCH_RADIUS,
-            window_seconds=120.0, probe_fractions=fractions,
-            reference_crop=crop, log=lambda m: None)
+            span_seconds=SEAM_SPAN_SECONDS,
+            source_duration=content_span(part), log=log)
     except VideoAlignError as err:
         raise VideoPartsError(
             f"could not locate {part['name']} by picture either: {err} "
-            f"Supply this seam's gap manually.") from err
-
-    log(f"    motion alignment: {part['name']} at {result['start_seconds']:.4f}s "
-        f"({result['locked_windows']}/{result['total_windows']} windows locked, "
-        f"conf {result['confidence']:.2f}, spread "
-        f"{result['spread_seconds'] * 1000:.0f}ms)")
-    return result
+            f"Check first that the master actually covers this part and that "
+            f"'{source_type}' names the right quadrant — a hand-supplied gap is "
+            f"a last resort, because getting one right means accounting for how "
+            f"far the previous part's picture has drifted by the time it reaches "
+            f"the seam, which this measurement does for you.") from err
 
 
 def measure_seams(
@@ -717,12 +692,20 @@ def _cache_key(plan: MergePlan) -> dict:
     }
 
 
+# How close two gaps must be to count as the same splice. A thousandth of a
+# frame cannot change a single output frame -- the gap is quantized to whole
+# frames at build time -- but it is enormous next to floating-point noise. A
+# MEASURED gap is re-derived on every run, and comparing it bit-for-bit meant one
+# last-place difference silently triggered a 19-minute, 30 GB rebuild.
+_GAP_CACHE_TOLERANCE_FRAMES = 0.001
+
+
 def cached_merge(plan: MergePlan) -> Optional[str]:
-    """Return the existing merged file when it was built from exactly this plan.
+    """Return the existing merged file when it was built from this same plan.
 
     A spliced capture runs to tens of gigabytes, so rebuilding it on every run
     would dominate the session. The sidecar records the inputs' sizes and mtimes
-    along with the gaps that were applied; any difference rebuilds.
+    along with the gaps that were applied; any real difference rebuilds.
     """
     out = Path(plan.output_path)
     sidecar = _sidecar_path(plan.output_path)
@@ -732,8 +715,28 @@ def cached_merge(plan: MergePlan) -> Optional[str]:
         stored = json.loads(sidecar.read_text())
     except (OSError, json.JSONDecodeError):
         return None
-    if stored.get('key') != _cache_key(plan):
+    stored_key = stored.get('key')
+    if not isinstance(stored_key, dict):
         return None
+    key = _cache_key(plan)
+
+    # Everything except the gaps has to match exactly.
+    if {k: v for k, v in stored_key.items() if k != 'gaps'} != \
+            {k: v for k, v in key.items() if k != 'gaps'}:
+        return None
+
+    stored_gaps = stored_key.get('gaps')
+    if not isinstance(stored_gaps, list) or len(stored_gaps) != len(key['gaps']):
+        return None
+    tolerance = _GAP_CACHE_TOLERANCE_FRAMES / float(
+        Fraction(plan.target['video']['frame_rate']))
+    for stored_gap, gap in zip(stored_gaps, key['gaps']):
+        try:
+            if abs(float(stored_gap) - float(gap)) > tolerance:
+                return None
+        except (TypeError, ValueError):
+            return None
+
     if stored.get('output_size') != out.stat().st_size:
         return None
     return str(out)
@@ -956,6 +959,66 @@ def target_timescale(target: dict) -> int:
     return ticks
 
 
+def _verify_seam_continuity(plan: MergePlan, part_frames: List[int],
+                            gap_frames: List[int], rate: Fraction,
+                            work: Path, log) -> None:
+    """Check that each seam's frames are ONE frame apart in the output.
+
+    The total-length check catches a hole that changes the overall duration. This
+    catches one that does not -- a segment that lost time where another gained
+    it -- by looking at the only place a splice can go wrong: the boundary. Reads
+    a couple of seconds of packet headers per seam, so it costs nothing even on a
+    30 GB file.
+    """
+    frame = 1.0 / float(rate)
+    window = 4.0
+    position = 0
+    for i in range(len(plan.seams)):
+        position += part_frames[i]
+        boundary = position * frame            # where the filler should start
+        lo, hi = max(0.0, boundary - window), boundary + window
+        # An ABSOLUTE end, not `%+duration`: ffprobe applies a duration from
+        # wherever its seek actually landed (the preceding keyframe, which on a
+        # short file is the very start), so `%+8` can return a window that never
+        # reaches the seam at all.
+        cmd = [_ffprobe(), '-v', 'error', '-select_streams', 'v:0',
+               '-show_entries', 'packet=pts_time', '-of', 'csv=p=0',
+               '-read_intervals', f'{lo:.6f}%{hi:.6f}', plan.output_path]
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if proc.returncode != 0:
+            raise VideoPartsError(
+                f"could not read packet timestamps around seam {i + 1}: "
+                f"{proc.stderr.decode('utf-8', 'replace')[-2000:]}")
+        times = sorted(float(t) for t in
+                       proc.stdout.decode('utf-8', 'replace').split()
+                       if t.strip())
+        if len(times) < 2:
+            raise VideoPartsError(
+                f"seam {i + 1} near {boundary:.4f}s returned {len(times)} frame "
+                f"timestamp(s); the splice cannot be verified")
+
+        # Look for the largest step between consecutive frames rather than
+        # checking a specific frame index. The output's first frame does not
+        # necessarily sit at t=0 (an edit list can offset the whole track), so
+        # "frame N is at N/rate" is not safe to assume -- but "no two adjacent
+        # frames are more than one frame apart" holds regardless of any offset.
+        worst, at = 0.0, times[0]
+        for a, b in zip(times, times[1:]):
+            if b - a > worst:
+                worst, at = b - a, a
+        if worst > 1.5 * frame:
+            raise VideoPartsError(
+                f"seam {i + 1}: frames either side of {at:.6f}s are "
+                f"{worst:.6f}s apart, where one frame ({frame:.6f}s) belongs — "
+                f"{(worst - frame) * float(rate):+.1f} frames of dead timeline "
+                f"sit at this seam, displacing everything after it. Segments are "
+                f"left in {work} for inspection.")
+        log(f"  ✓ seam {i + 1} continuous near {boundary:.4f}s "
+            f"(largest step {worst * float(rate):.2f} frames across "
+            f"{len(times)} frames)")
+        position += gap_frames[i]
+
+
 def build_merged(
     plan: MergePlan,
     reuse_cache: bool = True,
@@ -1087,10 +1150,25 @@ def build_merged(
             log(f"  rendering the spliced audio track in one pass")
             _build_audio_track(plan, pieces, audio_track, progress, log)
 
+        # Every entry carries an explicit `duration`, taken from the frame count
+        # that segment actually holds.
+        #
+        # WITHOUT it, the concat demuxer advances the output timeline by each
+        # input's CONTAINER duration -- and a container's duration is its LONGEST
+        # stream. A part whose audio outran its video (a recorder that lost
+        # picture data) therefore pushes everything after it later by exactly that
+        # overhang, opening a hole in the video timeline at the seam. Measured on
+        # the 2026-08-05 session: part 1's audio ran 2.5353s past its picture, and
+        # the first black filler frame landed at 11597.9306s instead of
+        # 11595.3954s -- 76 frames of silent, invisible desync for the whole rest
+        # of the capture. Every frame was present and correct; only their
+        # timestamps were wrong, which is why the frame-count check below passed.
         listing = work / 'concat.txt'
         listing.write_text(''.join(
-            "file '{}'\n".format(str(s.resolve()).replace("'", "'\\''"))
-            for s in segments))
+            "file '{}'\nduration {:.6f}\n".format(
+                str(s.resolve()).replace("'", "'\\''"),
+                frames / float(rate))
+            for s, frames in zip(segments, pieces)))
 
         log(f"  concatenating {len(segments)} segments -> "
             f"{Path(plan.output_path).name}")
@@ -1116,6 +1194,20 @@ def build_merged(
                 f"{total_frames}. Everything after the first seam would be in the "
                 f"wrong place, so the result is not usable. Segments are left in "
                 f"{work} for inspection.")
+        # Counting frames is NOT enough. A concat can deliver every frame and
+        # still space them wrongly -- which is exactly what happened before the
+        # `duration` directives above were added, and it is invisible to a count.
+        # The video's declared length must agree with the frames it holds.
+        if abs(actual_v - expected) > AV_DURATION_TOLERANCE:
+            raise VideoPartsError(
+                f"spliced capture holds the right {actual_frames} frames but its "
+                f"video runs {actual_v:.4f}s, where {actual_frames} frames at "
+                f"{rate}fps are {expected:.4f}s "
+                f"({(actual_v - expected) / float(AV_DURATION_TOLERANCE):+.1f} "
+                f"frames of slack). The frames are spaced wrongly, so everything "
+                f"after a seam is displaced even though nothing is missing. "
+                f"Segments are left in {work} for inspection.")
+        _verify_seam_continuity(plan, part_frames, gap_frames, rate, work, log)
         if result.get('audio') and result['audio'].get('duration') is not None:
             skew = result['audio']['duration'] - expected
             if abs(skew) > AV_DURATION_TOLERANCE:

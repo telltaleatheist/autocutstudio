@@ -103,6 +103,53 @@ def _ffmpeg() -> str:
     return _resolve_ffmpeg(_make_processor())
 
 
+def video_duration(path: str) -> float:
+    """Length of a file's VIDEO stream, in seconds.
+
+    Deliberately NOT ``core.audio_processor.get_duration_seconds``: that reads
+    the audio stream and raises when a file has none -- and a file with no usable
+    audio is the whole reason this module exists. Several game captures carry no
+    audio track at all, and picture alignment is the only thing that can place
+    them; asking an audio probe how long they are would refuse them at the door.
+
+    Prefers the video stream's own duration and falls back to the container's,
+    because some muxers declare one and not the other.
+    """
+    import json as _json
+    cmd = [_ffprobe(), '-v', 'error', '-select_streams', 'v:0',
+           '-show_entries', 'stream=duration:format=duration',
+           '-of', 'json', str(path)]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if proc.returncode != 0:
+        raise VideoAlignError(
+            f"ffprobe could not read {path!r}: "
+            f"{proc.stderr.decode('utf-8', 'replace')[-2000:]}")
+    data = _json.loads(proc.stdout.decode('utf-8', 'replace') or '{}')
+    streams = data.get('streams') or []
+    if not streams:
+        raise VideoAlignError(
+            f"{path!r} has no video stream, so it cannot be aligned by picture")
+    for value in (streams[0].get('duration'),
+                  (data.get('format') or {}).get('duration')):
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            continue
+        if seconds > 0:
+            return seconds
+    raise VideoAlignError(
+        f"{path!r} declares no usable duration on its video stream or its "
+        f"container, so its analysis windows cannot be planned")
+
+
+def _ffprobe() -> str:
+    from .audio_processor import AudioProcessor
+    probe = getattr(AudioProcessor({}), 'ffprobe_path', None)
+    if not probe:
+        raise VideoAlignError("ffprobe could not be resolved")
+    return str(probe)
+
+
 def motion_signal(path: str, start: float, duration: float,
                   frame_rate: str = '30000/1001',
                   crop: Optional[Tuple[float, float, float, float]] = None
@@ -210,11 +257,9 @@ def measure_picture_offset(
     correlation sees only the region that actually holds it.
     """
     _check_dependencies()
-    from .gcc_phat_align import _make_processor
 
-    processor = _make_processor()
-    ref_dur = float(processor.get_duration_seconds(str(reference_path)))
-    src_dur = float(processor.get_duration_seconds(str(source_path)))
+    ref_dur = video_duration(str(reference_path))
+    src_dur = video_duration(str(source_path))
     rate = float(eval_fraction(frame_rate))
     max_lag = int(round(search_radius_seconds * rate))
 
@@ -567,6 +612,147 @@ def scene_change_offset(
     }
 
 
+# ============================================================================
+# The public entry point: locate a source on the master by its PICTURE
+# ============================================================================
+# Two spans, because the two callers ask different questions. A seam wants to
+# know where a part sits using as much material as it can afford; a placement
+# measurement only cares about the HEAD of the session, because that is what the
+# clip's start offset means, and measuring it over hours of material would fold
+# any drift into the answer.
+SEAM_SPAN_SECONDS = 2400.0
+PLACEMENT_SPAN_SECONDS = 900.0
+_MIN_SPAN_SECONDS = 600.0
+
+# Motion-correlation probe points, as fractions of the source. The head set is
+# deliberately bunched near the start: it backs up a PLACEMENT measurement, and
+# spreading it across the file would average drift into the offset.
+_HEAD_FRACTIONS = (0.01, 0.03, 0.06, 0.10, 0.15, 0.22, 0.30)
+_TAIL_FRACTIONS = (0.55, 0.65, 0.75, 0.82, 0.88, 0.93, 0.97)
+
+# How much wider the second cut-matching attempt looks. Three-fold, because the
+# failure it recovers from is "too few cuts in this window" and a marginal
+# widening would just fail again a little more slowly.
+_SPAN_ESCALATION = 3.0
+
+
+def _escalating_spans(span: float, source_duration: float,
+                      at_end: bool) -> List[float]:
+    """Spans for cut matching to try, narrowest first.
+
+    Starting narrow keeps the common case cheap -- a session with plenty of cuts
+    answers from the first window and never decodes the rest. Widening only when
+    that fails means the expensive pass is paid for exactly when it buys
+    something.
+    """
+    spans = [min(span, source_duration)]
+    wider = min(span * _SPAN_ESCALATION, source_duration)
+    if wider > spans[0] * 1.5:
+        spans.append(wider)
+    return spans
+
+
+def locate_by_picture(
+    source_path: str,
+    reference_path: str,
+    expected_start: float,
+    source_type: Optional[str] = None,
+    at_end: bool = False,
+    search_radius_seconds: float = 30.0,
+    span_seconds: Optional[float] = None,
+    source_duration: Optional[float] = None,
+    probe_fractions: Optional[Sequence[float]] = None,
+    log=lambda msg: print(msg, file=sys.stderr),
+) -> dict:
+    """Locate ``source_path`` on ``reference_path`` by picture alone.
+
+    Shaped like :func:`core.gcc_phat_align.locate_source` -- ``start_seconds`` is
+    the reference time at which the source's first frame sits -- so a caller can
+    swap one for the other, plus a ``method`` naming which technique answered.
+
+    Scene-change matching is tried FIRST and correlation is the fallback, not the
+    other way round: a cut is a single-frame event with an exact timestamp, so
+    matching cut lists is both more precise and immune to the failure that
+    defeats correlation (a shared screen that sits perfectly still matches
+    equally well at every offset). Measured on the 2026-08-05 session, cut
+    matching agreed to 0.55 frames across 48 pairs where correlation spread over
+    4 frames.
+
+    ``source_type`` names the master quadrant to crop to. Passing it is close to
+    mandatory when the reference is a composited master: without the crop the
+    source's motion competes with three unrelated feeds, and only 3 of 18
+    windows locked on the session this was built for.
+
+    ``at_end`` measures the source's TAIL rather than its head, for a caller that
+    needs to know where a part finishes.
+    """
+    _check_dependencies()
+
+    crop = quadrant_crop(source_type) if source_type else None
+    if source_type and crop is None:
+        raise VideoAlignError(
+            f"'{source_type}' has no known quadrant in the master composite "
+            f"(known: {sorted(MASTER_QUADRANTS)}). Comparing against the whole "
+            f"master frame pits this source's motion against every other feed at "
+            f"once, which does not produce a trustworthy answer, so it is not "
+            f"done silently.")
+    if crop is None:
+        log(f"    (no master quadrant requested; comparing the whole reference "
+            f"frame, which is markedly less reliable)")
+
+    if source_duration is None:
+        source_duration = video_duration(str(source_path))
+    if span_seconds is None:
+        span_seconds = SEAM_SPAN_SECONDS if at_end else PLACEMENT_SPAN_SECONDS
+    span = min(span_seconds, max(_MIN_SPAN_SECONDS, source_duration * 0.5))
+    # Cuts are sampled from the region whose timing we need: the tail of a part
+    # whose finish matters, the head of one whose start does.
+    source_start = max(0.0, source_duration - span) if at_end else 0.0
+
+    # Cut matching fails on ONE thing: not enough cuts in the window. A longer
+    # window is the direct fix, and it is worth paying for -- measured on the
+    # 2026-08-05 session a 900s span yielded only 6 matched pairs, exactly the
+    # minimum, so a slightly quieter opening would have dropped a far better
+    # method for a far worse one. Escalate once before giving up.
+    scene_err = None
+    for attempt_span in _escalating_spans(span, source_duration, at_end):
+        attempt_start = (max(0.0, source_duration - attempt_span) if at_end
+                         else source_start)
+        try:
+            result = scene_change_offset(
+                source_path, reference_path, expected_start=expected_start,
+                search_radius_seconds=search_radius_seconds,
+                span_seconds=attempt_span, source_start=attempt_start,
+                reference_crop=crop, log=log)
+            result['method'] = 'scene-change'
+            log(f"    scene-change alignment: {Path(source_path).name} at "
+                f"{result['start_seconds']:.4f}s ({result['matched_pairs']} "
+                f"matched cut pairs, scatter "
+                f"{result['spread_seconds'] * 1000:.0f}ms, "
+                f"{attempt_span:.0f}s span)")
+            return result
+        except VideoAlignError as err:
+            scene_err = err
+            log(f"    scene-change alignment over {attempt_span:.0f}s: {err}")
+    log(f"    scene-change alignment unavailable ({scene_err}); "
+        f"falling back to motion correlation")
+
+    if probe_fractions is None:
+        probe_fractions = _TAIL_FRACTIONS if at_end else _HEAD_FRACTIONS
+    result = measure_picture_offset(
+        source_path, reference_path, expected_start=expected_start,
+        search_radius_seconds=search_radius_seconds,
+        window_seconds=120.0, probe_fractions=probe_fractions,
+        reference_crop=crop, log=lambda m: None)
+    result['method'] = 'motion'
+    log(f"    motion alignment: {Path(source_path).name} at "
+        f"{result['start_seconds']:.4f}s ({result['locked_windows']}/"
+        f"{result['total_windows']} windows locked, conf "
+        f"{result['confidence']:.2f}, spread "
+        f"{result['spread_seconds'] * 1000:.0f}ms)")
+    return result
+
+
 def picture_drift_profile(
     source_path: str,
     reference_path: str,
@@ -588,9 +774,8 @@ def picture_drift_profile(
     and last point.
     """
     _check_dependencies()
-    from .gcc_phat_align import _make_processor
 
-    src_dur = float(_make_processor().get_duration_seconds(str(source_path)))
+    src_dur = video_duration(str(source_path))
     fractions = [i / (points - 1) for i in range(points)] if points > 1 else [0.0]
 
     samples: List[dict] = []

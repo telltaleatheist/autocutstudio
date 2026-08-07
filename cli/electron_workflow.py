@@ -252,20 +252,24 @@ def _write_alignment_sidecar(output_dir, clean_name, master_video, processed_aud
             entry['trusted'] = bool(sync_info['alignment_trusted'])
         sources.append(entry)
 
-    # VIDEO — every source with a resolved timeline offset.
+    # VIDEO — every source with a resolved timeline offset. `meta` is whatever
+    # _measure_video_offset resolved, including which method actually answered
+    # and what the OTHER method said, so a later question about a clip that looks
+    # a frame out can be settled from the sidecar instead of by re-measuring.
     for vtype, offset in video_offsets.items():
-        method = 'manual-override' if vtype in video_overrides else 'gcc-phat'
+        meta = video_offset_meta.get(vtype) or {}
         entry = {
             'kind': 'video',
             'type': vtype,
             'offsetSeconds': offset,
             'driftFactor': video_drift_factors.get(vtype),
-            'method': method,
+            'method': ('manual-override' if vtype in video_overrides
+                       else meta.get('method', 'gcc-phat')),
         }
-        meta = video_offset_meta.get(vtype)
-        if meta is not None:
-            entry['confidence'] = meta['confidence']
-            entry['trusted'] = meta['trusted']
+        for key in ('confidence', 'trusted', 'pictureOffsetSeconds',
+                    'audioOffsetSeconds', 'disagreementSeconds'):
+            if key in meta:
+                entry[key] = meta[key]
         sources.append(entry)
 
     payload = {
@@ -522,10 +526,163 @@ def _splice_capture_parts(video_type, primary, continuations, seam_gaps,
     plan = plan_merge(parts, master_video,
                       manual_gaps=seam_gaps if seam_gaps else None,
                       source_type=video_type)
-    merged = build_merged(plan)
+
+    # A splice re-encodes and rewrites tens of gigabytes and can run for many
+    # minutes. build_merged reports each ffmpeg pass as a 0..1 fraction of that
+    # pass; surface it so the UI is not simply frozen for the duration.
+    # ffmpeg reports twice a second; forwarding every line would put thousands of
+    # IPC messages on stdout for one pass. Half a percent is finer than the bar
+    # can show.
+    last_emitted = {'what': None, 'fraction': -1.0}
+
+    def _splice_progress(fraction, what):
+        if what == last_emitted['what'] and fraction - last_emitted['fraction'] < 0.005:
+            return
+        last_emitted.update(what=what, fraction=fraction)
+        emit_progress(35, f'Splicing {video_type} capture — {what}',
+                      sub_progress=100.0 * fraction)
+
+    merged = build_merged(plan, progress=_splice_progress)
     print(f"✓ {video_type} capture spliced from {len(parts)} parts: "
           f"{Path(merged).name}", file=sys.stderr)
     return merged
+
+
+# A video source's PICTURE and its embedded AUDIO should describe the same
+# instant. When they differ by more than this the recording is damaged -- the
+# capture dropped frames without gapping its timestamps, so its picture runs
+# ahead of its own sound -- and the user needs to be told rather than handed the
+# audio answer for a clip that will visibly not line up.
+PICTURE_AUDIO_DISAGREEMENT_FRAMES = 2.0
+
+# Picture measurement searches the master independently of the audio answer, so
+# a wrong audio offset cannot drag it anywhere. Companion captures start within
+# seconds of the master, so this is generous.
+PICTURE_SEARCH_RADIUS_SECONDS = 30.0
+
+
+def _measure_video_offset(v_type, v_path, master_video, allow_picture=True):
+    """Resolve ONE video source's timeline offset, by PICTURE first.
+
+    A video clip is placed on the timeline so that its PICTURE lines up with the
+    master's. Measuring its embedded audio instead answers a different question
+    and only coincides when the recorder kept sound and picture in step -- which
+    is exactly what fails on a capture that dropped frames. So the picture is
+    measured against the master cropped to this source's quadrant, and the audio
+    is measured too, as an independent cross-check rather than as the answer.
+
+    Returns a dict shaped for both the sidecar and the measure-only payload:
+    ``offsetSeconds``, ``confidence``, ``trusted``, ``method``, plus whichever of
+    ``pictureOffsetSeconds`` / ``audioOffsetSeconds`` were obtained and their
+    ``disagreementSeconds``.
+
+    Raises when NEITHER method can answer. It used to store 0.0 there, which is a
+    specific, plausible, wrong placement -- the clip lands exactly where an
+    unmeasured clip would, so nothing downstream can tell the difference.
+    """
+    from core.gcc_phat_align import (measure_offset, CONFIDENCE_THRESHOLD,
+                                     FRAME_SECONDS)
+
+    name = Path(v_path).name
+    audio = None
+    audio_error = None
+    try:
+        result = measure_offset(v_path, master_video)
+        windows_ok = [w for w in result['per_window']
+                      if w['confidence'] >= CONFIDENCE_THRESHOLD]
+        # Trust gating mirrors core/audio_sync.py analyze_sync exactly.
+        trusted = (result['confidence'] >= CONFIDENCE_THRESHOLD
+                   or (len(windows_ok) >= 2
+                       and result['spread_seconds'] <= FRAME_SECONDS))
+        audio = {'offset': result['tau_seconds'],
+                 'confidence': result['confidence'],
+                 'trusted': bool(trusted)}
+        print(f"    audio offset: {audio['offset']:+.4f}s "
+              f"({audio['offset'] / FRAME_SECONDS:+.1f} fr, conf "
+              f"{audio['confidence']:.2f}"
+              f"{'' if trusted else ', UNTRUSTED'})", file=sys.stderr)
+    except Exception as err:
+        audio_error = err
+        print(f"    audio offset unavailable: {err}", file=sys.stderr)
+
+    picture = None
+    picture_error = None
+    if allow_picture:
+        try:
+            from core.video_align import locate_by_picture
+            result = locate_by_picture(
+                v_path, master_video, expected_start=0.0, source_type=v_type,
+                at_end=False,
+                search_radius_seconds=PICTURE_SEARCH_RADIUS_SECONDS)
+            picture = {'offset': result['start_seconds'],
+                       'confidence': result['confidence'],
+                       'method': result['method']}
+        except Exception as err:
+            picture_error = err
+            print(f"    picture offset unavailable: {err}", file=sys.stderr)
+
+    entry = {}
+    if audio is not None:
+        entry['audioOffsetSeconds'] = audio['offset']
+    if picture is not None:
+        entry['pictureOffsetSeconds'] = picture['offset']
+
+    if picture is not None:
+        entry.update({
+            'offsetSeconds': picture['offset'],
+            'confidence': picture['confidence'],
+            'trusted': True,
+            'method': f"picture-{picture['method']}",
+        })
+        if audio is not None:
+            gap = picture['offset'] - audio['offset']
+            entry['disagreementSeconds'] = gap
+            if abs(gap) > PICTURE_AUDIO_DISAGREEMENT_FRAMES * FRAME_SECONDS:
+                print(
+                    f"  ⚠️  {v_type} ({name}): its PICTURE sits "
+                    f"{gap / FRAME_SECONDS:+.1f} frames from where its own AUDIO "
+                    f"says it does ({picture['offset']:+.4f}s vs "
+                    f"{audio['offset']:+.4f}s). The recorder lost sync between "
+                    f"its own streams — usually dropped frames. Placed by "
+                    f"PICTURE, which is what has to line up on screen; the "
+                    f"embedded audio of this clip will be that far out.",
+                    file=sys.stderr)
+        print(f"  ✓ {v_type} video offset: {entry['offsetSeconds']:+.4f}s "
+              f"({entry['offsetSeconds'] / FRAME_SECONDS:+.1f} fr) "
+              f"by {entry['method']}", file=sys.stderr)
+        return entry
+
+    if audio is None:
+        raise RuntimeError(
+            f"could not measure where {v_type} ({name}) belongs on the timeline. "
+            f"Picture alignment: {picture_error if allow_picture else 'not attempted'}. "
+            f"Audio alignment: {audio_error}. Placing it at 0.0 would put it "
+            f"exactly where an unmeasured clip lands, so this run stops instead. "
+            f"Set an alignment override for this source, or drop it and use the "
+            f"master's quadrant.")
+
+    entry.update({
+        'offsetSeconds': audio['offset'],
+        'confidence': audio['confidence'],
+        'trusted': audio['trusted'],
+        'method': 'gcc-phat',
+    })
+    reason = ('not attempted (the master is not a quadrant composite in this mode)'
+              if not allow_picture else picture_error)
+    print(f"  ✓ {v_type} video offset: {audio['offset']:+.4f}s "
+          f"({audio['offset'] / FRAME_SECONDS:+.1f} fr, conf "
+          f"{audio['confidence']:.2f}) by embedded audio — picture alignment "
+          f"{reason}", file=sys.stderr)
+    if not audio['trusted']:
+        print(f"  ⚠️  LOW-CONFIDENCE offset for {v_type} ({name}) and no picture "
+              f"measurement to corroborate it. Stored best-effort — VERIFY THIS "
+              f"VIDEO MANUALLY.", file=sys.stderr)
+    elif audio['offset'] < -FRAME_SECONDS:
+        # Sources normally LAG the master; a leftward lead is unusual.
+        print(f"  ⚠️  Unusual LEFTWARD offset for {v_type} ({name}): "
+              f"{audio['offset']:+.3f}s — sources normally lag the master. "
+              f"Applied as measured.", file=sys.stderr)
+    return entry
 
 
 def _run_measure_only(master_video, audio_sources_input, video_sources):
@@ -581,10 +738,6 @@ def _run_measure_only(master_video, audio_sources_input, video_sources):
         print(f"  measuring audio {normalized_type} ({Path(audio_path).name})", file=sys.stderr)
         audio_results[normalized_type] = _measure(audio_path)
 
-    # Reused solely for its ffprobe-based audio-stream probe (no numpy/scipy needed).
-    from core.audio_sync import MediaSyncProcessor
-    _stream_probe = MediaSyncProcessor()
-
     video_results = {}
     for v_type in ['screen', 'game', 'cam1', 'cam2']:
         v_path = (video_sources or {}).get(v_type)
@@ -593,16 +746,19 @@ def _run_measure_only(master_video, audio_sources_input, video_sources):
         if not Path(v_path).exists():
             emit_error(f"Measure-only: video source {v_type} not found: {v_path}")
             raise FileNotFoundError(f"video source {v_type} not found: {v_path}")
-        # A video with NO audio stream (e.g. many game captures) is structurally
-        # impossible to align by GCC-PHAT — there is no signal to correlate. That is
-        # not a silent fallback: omit it from the emitted map with a note so the
-        # frontend treats it as not-measurable (a probe FAILURE still raises loudly).
-        if not _stream_probe._has_audio_stream(v_path):
-            print(f"  ⤷ skipping video {v_type} ({Path(v_path).name}): no audio stream — "
-                  f"not measurable, omitted from results", file=sys.stderr)
-            continue
         print(f"  measuring video {v_type} ({Path(v_path).name})", file=sys.stderr)
-        video_results[v_type] = _measure(v_path)
+        # Measured exactly as a real run measures it — picture first — so the
+        # wizard seeds from the same number the run would have used. A source
+        # with no audio stream at all (many game captures) is no longer skipped:
+        # its picture is still there to align.
+        try:
+            video_results[v_type] = _measure_video_offset(v_type, v_path, master_video)
+        except Exception as err:
+            # Neither picture nor audio could answer. Omit it from the emitted map
+            # with a note so the frontend treats it as not-measurable — never emit
+            # a fabricated / zero result.
+            print(f"  ⤷ video {v_type} ({Path(v_path).name}) is not measurable: "
+                  f"{err} — omitted from results", file=sys.stderr)
 
     print(json.dumps({
         'type': 'measure_result',
@@ -1297,11 +1453,13 @@ def main():
 
         # Step 3.6: Measure per-source VIDEO alignment offsets.
         # Companion video sources (screen, game, cam1, cam2) are separate files whose
-        # start time drifts a few frames from the master. We measure each dedicated
-        # source's EMBEDDED AUDIO against the master mix via GCC-PHAT and record a
-        # POSITIVE tau (seconds) that DELAYS the clip rightward on the timeline to align
-        # it. The generators ADD tau to the clip's timeline offset (never to start), so a
-        # missing / zero entry is an exact no-op (existing outputs unchanged).
+        # start time drifts a few frames from the master. Each is located by its
+        # PICTURE against the master cropped to that source's quadrant, because the
+        # picture is what has to line up on screen; its embedded audio is measured
+        # too, but as an independent cross-check (see _measure_video_offset). The
+        # result is a POSITIVE tau (seconds) that DELAYS the clip rightward on the
+        # timeline to align it. The generators ADD tau to the clip's timeline offset
+        # (never to start), so a missing entry is an exact no-op.
         video_offsets = {}
         # Per-source manual retime factors (r) for video, threaded into the generators'
         # calculate_retime_map. Only EXPLICIT driftFactors land here (including an
@@ -1329,7 +1487,7 @@ def main():
                     f"present in this session (present: {present})")
             video_offsets[src] = spec['offsetSeconds']
             print(f"  ✓ {src} video offset (manual override): "
-                  f"{spec['offsetSeconds']:.3f}s — GCC-PHAT skipped", file=sys.stderr)
+                  f"{spec['offsetSeconds']:.3f}s — not measured", file=sys.stderr)
             if spec['driftFactor'] is not None:
                 if src == 'cam1':
                     if spec['driftFactor'] != 1.0:
@@ -1342,75 +1500,27 @@ def main():
                     video_drift_factors[src] = spec['driftFactor']
 
         if AUDIO_SYNC_AVAILABLE:
-            measure_offset = None
-            try:
-                from core.gcc_phat_align import (
-                    measure_offset, CONFIDENCE_THRESHOLD, FRAME_SECONDS
-                )
-            except Exception as imp_err:
-                measure_offset = None
-                print(f"⚠️  Video offset measurement unavailable (import failed): {imp_err}",
-                      file=sys.stderr)
-            if measure_offset is not None:
-                print("\n▶ Measuring per-source video alignment offsets", file=sys.stderr)
-                for v_type in ['screen', 'game', 'cam1', 'cam2']:
-                    v_path = video_sources.get(v_type)
-                    if not v_path:
-                        continue
-                    # A manual override already set this source's offset above — never
-                    # measure over it.
-                    if v_type in video_overrides:
-                        continue
-                    try:
-                        # video's embedded audio vs master mix
-                        result = measure_offset(v_path, master_video)
-                        tau = result['tau_seconds']
-                        conf = result['confidence']
-                        spread = result['spread_seconds']
-                        # Trust/gating mirrors core/audio_sync.py analyze_sync: trust when
-                        # the worst-window confidence clears the gate OR at least two
-                        # windows clear it AND all windows agree to within one frame.
-                        windows_ok = [w for w in result['per_window']
-                                      if w['confidence'] >= CONFIDENCE_THRESHOLD]
-                        agree = spread <= FRAME_SECONDS
-                        trusted = (conf >= CONFIDENCE_THRESHOLD
-                                   or (len(windows_ok) >= 2 and agree))
-                        if not trusted:
-                            # Fail LOUD but keep the best-effort tau (do not silently drop).
-                            print(
-                                f"  ⚠️  LOW-CONFIDENCE video offset for {v_type} "
-                                f"({Path(v_path).name}): tau={tau:.3f}s "
-                                f"({tau / FRAME_SECONDS:+.1f} fr), min_conf={conf:.2f}, "
-                                f"spread={spread * 1000:.0f}ms across "
-                                f"{len(result['per_window'])} windows. Stored best-effort "
-                                f"— VERIFY THIS VIDEO MANUALLY.",
-                                file=sys.stderr
-                            )
-                        elif tau < -FRAME_SECONDS:
-                            # Sources normally LAG the master; a leftward lead is unusual.
-                            print(
-                                f"  ⚠️  Unusual LEFTWARD video offset for {v_type} "
-                                f"({Path(v_path).name}): tau={tau:.3f}s "
-                                f"({tau / FRAME_SECONDS:+.1f} fr) — sources normally lag the "
-                                f"master. Confidence {conf:.2f}; applied as measured.",
-                                file=sys.stderr
-                            )
-                        video_offsets[v_type] = tau
-                        video_offset_meta[v_type] = {'confidence': conf, 'trusted': bool(trusted)}
-                        print(
-                            f"  ✓ {v_type} video offset: {tau:.3f}s "
-                            f"({tau / FRAME_SECONDS:+.1f} fr, conf {conf:.2f})",
-                            file=sys.stderr
-                        )
-                    except Exception as meas_err:
-                        # A measurement failure must not abort the whole render, but it
-                        # must be visible; treat this source as no shift (0.0).
-                        print(
-                            f"  ⚠️  Failed to measure video offset for {v_type} "
-                            f"({Path(v_path).name}): {meas_err} — using 0.0 (no shift)",
-                            file=sys.stderr
-                        )
-                        video_offsets[v_type] = 0.0
+            # Picture alignment crops the master to the quadrant holding each
+            # source. Stream-recovery mode's master is a downloaded broadcast with
+            # a different layout, so that crop would point at the wrong region;
+            # there the embedded audio is the only thing that can answer.
+            allow_picture = not use_downloaded_stream
+            print("\n▶ Measuring per-source video alignment offsets"
+                  f" ({'picture first, audio as cross-check' if allow_picture else 'audio only — stream-recovery master'})",
+                  file=sys.stderr)
+            pending = [v for v in ['screen', 'game', 'cam1', 'cam2']
+                       if video_sources.get(v) and v not in video_overrides]
+            for done, v_type in enumerate(pending):
+                v_path = video_sources[v_type]
+                emit_progress(36, f'Aligning {v_type} video to the master...',
+                              sub_progress=100.0 * done / len(pending))
+                print(f"  {v_type} ({Path(v_path).name}):", file=sys.stderr)
+                entry = _measure_video_offset(v_type, v_path, master_video,
+                                              allow_picture=allow_picture)
+                video_offsets[v_type] = entry['offsetSeconds']
+                video_offset_meta[v_type] = entry
+            if pending:
+                emit_progress(36, 'Video alignment measured', sub_progress=100.0)
         else:
             print("⚠ Video offset measurement skipped (advanced sync deps unavailable)",
                   file=sys.stderr)

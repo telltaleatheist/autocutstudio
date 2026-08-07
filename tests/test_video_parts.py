@@ -352,6 +352,159 @@ class PlanAndBuildTest(unittest.TestCase):
         other = self.plan(gap=2.0, output_path=str(out))
         self.assertIsNone(vp.cached_merge(other))
 
+    def test_floating_point_noise_in_a_measured_gap_still_hits(self):
+        # A measured gap is re-derived every run. Comparing it bit-for-bit meant
+        # one last-place difference silently triggered a full rebuild — 19
+        # minutes and 30 GB on the session this was built for.
+        import math
+        out = self.dir / 'noisy.mp4'
+        plan = self.plan(gap=1.0, output_path=str(out))
+        vp.build_merged(plan, log=lambda m: None)
+
+        nudged = 1.0
+        for _ in range(4):
+            nudged = math.nextafter(nudged, 2.0)
+        self.assertNotEqual(nudged, 1.0)
+        self.assertIsNotNone(
+            vp.cached_merge(self.plan(gap=nudged, output_path=str(out))))
+
+    def test_a_gap_difference_big_enough_to_move_a_frame_misses(self):
+        out = self.dir / 'moved.mp4'
+        plan = self.plan(gap=1.0, output_path=str(out))
+        vp.build_merged(plan, log=lambda m: None)
+        rate = float(Fraction(plan.target['video']['frame_rate']))
+        # Half a frame: quantization can land this on a different frame count.
+        self.assertIsNone(
+            vp.cached_merge(self.plan(gap=1.0 + 0.5 / rate, output_path=str(out))))
+
+
+class ConcatTimelineTest(unittest.TestCase):
+    """A part whose AUDIO outruns its video must not displace the seam.
+
+    This is the bug that shipped a 30 GB spliced capture with 76 frames of dead
+    timeline in it (2026-08-05). The concat demuxer advances by each input's
+    CONTAINER duration, which is its LONGEST stream — so a recorder that lost
+    picture data pushes everything after the seam later by exactly the overhang.
+
+    Every frame is present and correct when this happens. Only the timestamps are
+    wrong, so a frame COUNT cannot see it; that is why the checks here are on
+    duration and on the seam boundary itself.
+    """
+
+    OVERHANG = 2.5          # seconds of audio past the end of the picture
+
+    @classmethod
+    def setUpClass(cls):
+        if not HAVE_FFMPEG:
+            return
+        cls.tmp = tempfile.TemporaryDirectory()
+        d = Path(cls.tmp.name)
+        cls.dir = d
+        video = d / 'v.mp4'
+        audio = d / 'a.m4a'
+        subprocess.run([vp._ffmpeg(), '-v', 'error', '-y', '-f', 'lavfi', '-i',
+                        'testsrc=s=160x90:r=30000/1001:d=6', '-c:v', 'libx264',
+                        '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+                        str(video)], check=True, capture_output=True)
+        subprocess.run([vp._ffmpeg(), '-v', 'error', '-y', '-f', 'lavfi', '-i',
+                        f'sine=frequency=440:sample_rate=48000:'
+                        f'duration={6 + cls.OVERHANG}', '-c:a', 'aac',
+                        str(audio)], check=True, capture_output=True)
+        # Muxed separately so the overhang survives: a single -i pair with
+        # -shortest would trim it away, which is the whole thing under test.
+        cls.p1 = str(d / 'overhang 1.mp4')
+        subprocess.run([vp._ffmpeg(), '-v', 'error', '-y', '-i', str(video),
+                        '-i', str(audio), '-map', '0:v:0', '-map', '1:a:0',
+                        '-c', 'copy', cls.p1], check=True, capture_output=True)
+        cls.p2 = make_clip(d / 'overhang 2.mp4', 3, rate='60/1')
+
+    @classmethod
+    def tearDownClass(cls):
+        if HAVE_FFMPEG:
+            cls.tmp.cleanup()
+
+    @unittest.skipUnless(HAVE_FFMPEG, 'ffmpeg not available')
+    def test_the_fixture_really_has_an_audio_overhang(self):
+        # Guard the guard: if the fixture ever stops reproducing the condition,
+        # the tests below would pass for the wrong reason.
+        params = vp.probe_media_params(self.p1)
+        self.assertGreater(vp.av_skew(params), 1.0,
+                           'fixture no longer has an audio overhang')
+
+    @unittest.skipUnless(HAVE_FFMPEG, 'ffmpeg not available')
+    def test_the_overhang_does_not_stretch_the_spliced_timeline(self):
+        out = Path(self.dir) / 'spliced.mp4'
+        plan = vp.plan_merge([self.p1, self.p2], '/nonexistent/master.mp4',
+                             manual_gaps=[1.0], output_path=str(out),
+                             log=lambda m: None)
+        result = vp.build_merged(plan, log=lambda m: None)
+
+        probe = vp.probe_media_params(result)
+        rate = float(Fraction(plan.target['video']['frame_rate']))
+        implied = probe['video']['nb_frames'] / rate
+        drift = probe['video']['duration'] - implied
+        self.assertLess(
+            abs(drift), vp.AV_DURATION_TOLERANCE,
+            f"{drift:+.4f}s of dead timeline ({drift * rate:+.1f} frames) — the "
+            f"container duration leaked into the seam")
+
+    @unittest.skipUnless(HAVE_FFMPEG, 'ffmpeg not available')
+    def test_the_frames_either_side_of_the_seam_are_one_frame_apart(self):
+        out = Path(self.dir) / 'spliced2.mp4'
+        plan = vp.plan_merge([self.p1, self.p2], '/nonexistent/master.mp4',
+                             manual_gaps=[1.0], output_path=str(out),
+                             log=lambda m: None)
+        result = vp.build_merged(plan, log=lambda m: None)
+
+        rate = float(Fraction(plan.target['video']['frame_rate']))
+        n1 = vp.probe_media_params(self.p1)['video']['nb_frames']
+        boundary = n1 / rate
+        # Absolute interval end: `%+duration` measures from wherever ffprobe's
+        # seek landed, which on a short file is the start of the file.
+        proc = subprocess.run(
+            [vp._ffprobe(), '-v', 'error', '-select_streams', 'v:0',
+             '-show_entries', 'packet=pts_time', '-of', 'csv=p=0',
+             '-read_intervals', f'{max(0.0, boundary - 2):.6f}%{boundary + 2:.6f}',
+             result],
+            capture_output=True)
+        times = sorted(float(t) for t in proc.stdout.decode().split() if t.strip())
+        self.assertGreater(len(times), 2, 'no frames read around the seam')
+        # The whole track can be offset by an edit list, so compare ADJACENT
+        # frames rather than trusting that frame N sits at N/rate.
+        worst = max(b - a for a, b in zip(times, times[1:]))
+        self.assertLess(worst * rate, 1.5,
+                        f'{worst * rate:.1f} frames of step at the seam')
+
+    @unittest.skipUnless(HAVE_FFMPEG, 'ffmpeg not available')
+    def test_a_hole_at_the_seam_is_caught_rather_than_shipped(self):
+        # Drive the verifier directly against a file built the OLD way (no
+        # duration directives), which is what a regression would produce.
+        d = Path(self.dir)
+        listing = d / 'naive.txt'
+        gap = d / 'gap.mp4'
+        subprocess.run([vp._ffmpeg(), '-v', 'error', '-y', '-f', 'lavfi', '-i',
+                        'color=c=black:s=160x90:r=30000/1001', '-f', 'lavfi',
+                        '-i', 'anullsrc=r=48000:cl=stereo', '-c:v', 'libx264',
+                        '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a',
+                        'aac', '-frames:v', '30', str(gap)],
+                       check=True, capture_output=True)
+        listing.write_text(f"file '{self.p1}'\nfile '{gap}'\nfile '{self.p2}'\n")
+        naive = d / 'naive.mp4'
+        subprocess.run([vp._ffmpeg(), '-v', 'error', '-y', '-f', 'concat',
+                        '-safe', '0', '-i', str(listing), '-c', 'copy',
+                        str(naive)], check=True, capture_output=True)
+
+        plan = vp.plan_merge([self.p1, self.p2], '/nonexistent/master.mp4',
+                             manual_gaps=[1.0], output_path=str(naive),
+                             log=lambda m: None)
+        n1 = vp.probe_media_params(self.p1)['video']['nb_frames']
+        n2 = vp.probe_media_params(self.p2)['video']['nb_frames']
+        with self.assertRaises(VideoPartsError) as ctx:
+            vp._verify_seam_continuity(plan, [n1, n2], [30],
+                                       Fraction(plan.target['video']['frame_rate']),
+                                       d, lambda m: None)
+        self.assertIn('dead timeline', str(ctx.exception))
+
 
 class SilenceGuardTest(unittest.TestCase):
     """A silent track must be distinguishable from a weak measurement."""
@@ -510,16 +663,13 @@ class PictureAggregationTest(unittest.TestCase):
         self.video_align.motion_signal = behaviour
 
     def _patch_durations(self, src=1000.0, ref=2000.0):
-        from core import gcc_phat_align
-
-        class _Proc:
-            @staticmethod
-            def get_duration_seconds(path):
-                return ref if 'ref' in str(path) else src
-
-        self.real_duration = gcc_phat_align._make_processor
-        gcc_phat_align._make_processor = lambda: _Proc()
-        self.addCleanup(setattr, gcc_phat_align, '_make_processor',
+        # video_align asks for the VIDEO stream's duration, not the audio's:
+        # a capture with no audio track at all is exactly what picture alignment
+        # is for, and an audio probe refuses those outright.
+        self.real_duration = self.video_align.video_duration
+        self.video_align.video_duration = (
+            lambda path: ref if 'ref' in str(path) else src)
+        self.addCleanup(setattr, self.video_align, 'video_duration',
                         self.real_duration)
 
     def test_a_single_unusable_window_does_not_abort_the_sweep(self):
