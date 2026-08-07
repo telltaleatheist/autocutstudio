@@ -35,7 +35,11 @@ export class ProjectsService {
   private readonly projectsSubject = new BehaviorSubject<ProjectEntry[]>([]);
   private readonly errorSubject = new BehaviorSubject<string | null>(null);
 
-  /** The list, sorted most-recently-opened first. */
+  /**
+   * The list. Sorted most-recently-opened first ONCE per load(); the order then stays
+   * stable for the window's life — opening a project updates its timestamp (persisted,
+   * so the next launch sorts it up) without reshuffling the rows mid-session.
+   */
   readonly projects$: Observable<ProjectEntry[]> = this.projectsSubject.asObservable();
   /** Non-null when the on-disk registry could not be read; the UI shows it and disables adds. */
   readonly error$: Observable<string | null> = this.errorSubject.asObservable();
@@ -74,9 +78,14 @@ export class ProjectsService {
       lastOpened: row.lastOpened,
       scan: await this.scanOrReport(row.path)
     })));
+    this.sortByRecency();
     this.publish();
 
     await this.migrateLegacyRecents();
+    // Migration appends in iteration order; fold the imported timestamps into the
+    // recency order once, so the first post-migration render matches the next launch.
+    this.sortByRecency();
+    this.publish();
   }
 
   /**
@@ -101,7 +110,9 @@ export class ProjectsService {
       lastOpened: lastOpened || new Date().toISOString(),
       scan
     };
-    await this.commit([...this.entries, entry]);
+    // Newest first, matching where the load()-time recency sort would put it — without
+    // reshuffling the rows already on screen.
+    await this.commit([entry, ...this.entries]);
     return entry;
   }
 
@@ -113,9 +124,11 @@ export class ProjectsService {
   }
 
   /**
-   * Stamp an entry as just-opened and re-sort. `path` may be either the project folder or the
-   * session's compounds zip, because the editor opens sessions by zip path. A path matching
-   * nothing in the registry is not an error — plenty of sessions are opened outside the list.
+   * Stamp an entry as just-opened — WITHOUT reordering the visible list (the row must not
+   * jump under the cursor; recency ordering is applied once per load). `path` may be either
+   * the project folder or the session's compounds zip, because the editor opens sessions by
+   * zip path. A path matching nothing in the registry is not an error — plenty of sessions
+   * are opened outside the list.
    */
   async markOpened(path: string): Promise<void> {
     const idx = this.entries.findIndex(e => e.path === path || e.scan?.zipPath === path);
@@ -196,11 +209,15 @@ export class ProjectsService {
     this.publish();
   }
 
+  /** Emit the list AS ORDERED — sorting is load()'s job, exactly once per read. */
   private publish(): void {
-    const sorted = this.entries
+    this.projectsSubject.next(this.entries.slice());
+  }
+
+  private sortByRecency(): void {
+    this.entries = this.entries
       .slice()
       .sort((a, b) => (b.lastOpened || '').localeCompare(a.lastOpened || ''));
-    this.projectsSubject.next(sorted);
   }
 
   private basename(p: string): string {

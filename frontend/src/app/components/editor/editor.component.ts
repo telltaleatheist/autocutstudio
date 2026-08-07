@@ -102,7 +102,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // ── Load / error state ──────────────────────────────────────────────────────
   loading = true;
   loadingMessage = 'Loading…';
-  errorMessage = '';        // fatal, full-screen error (nothing else interactive)
+  errorMessage = '';        // failed load — shown in the workspace; sidebar/topbar stay live
   transportError = '';      // non-fatal-to-render but playback-stopping (shown in transport)
   manifest: EditorManifest | null = null;
 
@@ -929,9 +929,18 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * SAME project retries instead of short-circuiting on "already loaded".
    */
   dismissError(): void {
+    // A load can fail AFTER the manifest was ingested (e.g. reading the edits sidecar), so
+    // dismissing must discard the half-loaded session, not just the message — otherwise the
+    // panes would render a session with no zipPath behind them.
+    this.resetSessionState();
     this.errorMessage = '';
     this.loading = false;
     this.currentZipPath = null;
+  }
+
+  /** The session panes render only when a session is fully loaded and healthy. */
+  get sessionReady(): boolean {
+    return !!this.manifest && !this.loading && !this.errorMessage;
   }
 
   // ── Track layout (shared by canvas draw + the DOM gutter) ────────────────────
@@ -4010,7 +4019,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   /** Click a recents row → load it INTO THIS WINDOW via the existing bootstrap (no new window). */
   openProject(r: RecentSession): void {
-    if (r.zipPath === this.currentZipPath) return; // already loaded here
+    // Same-path click is a no-op — unless the last load FAILED, where it means "retry".
+    if (r.zipPath === this.currentZipPath && !this.errorMessage) return;
     void this.bootstrap(r.zipPath);
   }
 
@@ -4044,7 +4054,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       );
       return;
     }
-    if (zipPath === this.currentZipPath) return; // already loaded here
+    // Same-path click is a no-op — unless the last load FAILED, where it means "retry".
+    if (zipPath === this.currentZipPath && !this.errorMessage) return;
     void this.bootstrap(zipPath);                // bootstrap() records it as opened
   }
 
