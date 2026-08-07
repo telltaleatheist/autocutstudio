@@ -138,7 +138,28 @@ EXCLUDE_MS = 5.0
 # ambiguous / mis-placed ones are flagged for manual review.
 CONFIDENCE_THRESHOLD = 0.80
 
+# RMS below which an analysis window carries no signal to correlate. A 16-bit
+# track whose samples are all zero decodes to exactly 0.0; real desktop audio
+# sits around 0.04-0.12 (-28 to -18 dBFS) even in quiet passages. 1e-5 is
+# ~-100 dBFS -- far under any real recording, far over exact silence.
+#
+# This exists because a screen capture whose audio feed was lost records a
+# perfectly valid, perfectly EMPTY audio track. PHAT whitening then divides
+# noise by noise and returns a tau pinned to the search rail with confidence
+# 0.0, which reads like a weak measurement rather than the absence of one.
+# Callers must be able to tell those two apart, so a silent window raises.
+SILENCE_RMS_FLOOR = 1e-5
+
 _EPS = 1e-12
+
+
+class SilentAudioError(RuntimeError):
+    """An analysis window contains no signal (digital silence / dead feed).
+
+    Distinct from a low-confidence measurement: there is nothing to align, so
+    no amount of retrying or window-shifting will produce an answer. The caller
+    must obtain the offset another way (picture alignment, manual entry).
+    """
 
 
 # ============================================================================
@@ -342,6 +363,24 @@ def _decode_mono_window(ffmpeg: str, path: str, fs: int,
     return samples
 
 
+def _require_signal(samples: "np.ndarray", path: str, start: float, dur: float,
+                    role: str) -> float:
+    """Raise :class:`SilentAudioError` if an analysis window is digital silence.
+
+    Returns the window's RMS so callers can log it. See SILENCE_RMS_FLOOR for
+    why silence is an error rather than a low-confidence result.
+    """
+    rms = float(np.sqrt(np.mean(samples * samples)))
+    if rms < SILENCE_RMS_FLOOR:
+        raise SilentAudioError(
+            f"{role} audio is silent: {path!r} has no signal in the window "
+            f"[{start:.3f}s, {start + dur:.3f}s] (RMS {rms:.3e}, floor "
+            f"{SILENCE_RMS_FLOOR:.0e}). There is nothing to correlate, so this "
+            f"file's offset cannot be measured from audio."
+        )
+    return rms
+
+
 # ============================================================================
 # High-level: measure the signed offset of a source within a reference
 # ============================================================================
@@ -441,9 +480,23 @@ def measure_offset(
         planned.append((start, wdur))
 
     per_window = []
+    silent_windows = []
     for start, wdur in planned:
         ref_win = _decode_mono_window(ffmpeg, reference_path, fs, start, wdur)
         src_win = _decode_mono_window(ffmpeg, source_path, fs, start, wdur)
+        # A window can be silent without the FILE being silent: a capture that
+        # was spliced from parts has silence wherever a part's feed was lost or
+        # across the black filler between parts. Skipping such a window and
+        # measuring on the rest is right; only a source with no usable window
+        # anywhere is unmeasurable. (Raising per-window instead made a spliced
+        # capture unmeasurable whenever one of the three probe points happened
+        # to land past the seam.)
+        try:
+            _require_signal(ref_win, str(reference_path), start, wdur, "Reference")
+            _require_signal(src_win, str(source_path), start, wdur, "Source")
+        except SilentAudioError as err:
+            silent_windows.append((start, wdur, str(err)))
+            continue
         tau, conf = gcc_phat(src_win, ref_win, fs,
                              max_tau_seconds=max_tau_seconds, interp=4)
         per_window.append({
@@ -453,6 +506,18 @@ def measure_offset(
             "tau_seconds": tau,
             "confidence": conf,
         })
+
+    if not per_window:
+        raise SilentAudioError(
+            f"every analysis window of {source_path!r} (or of the reference) was "
+            f"silent — {len(silent_windows)} of {len(planned)} windows carried no "
+            f"signal. There is nothing to correlate anywhere in this file, so its "
+            f"offset cannot be measured from audio.\n  "
+            + "\n  ".join(msg for _, _, msg in silent_windows))
+    if silent_windows:
+        print(f"  ⚠️  {len(silent_windows)} of {len(planned)} analysis windows were "
+              f"silent and were skipped; measured on the remaining "
+              f"{len(per_window)}.", file=sys.stderr)
 
     taus = [w["tau_seconds"] for w in per_window]
     confs = [w["confidence"] for w in per_window]
@@ -479,4 +544,152 @@ def measure_offset(
         "fs": fs,
         "reference_duration": ref_dur,
         "source_duration": src_dur,
+    }
+
+
+# ============================================================================
+# High-level: locate a source that starts PART WAY INTO the reference
+# ============================================================================
+def locate_source(
+    source_path: str,
+    reference_path: str,
+    expected_start: float,
+    search_radius_seconds: float = 30.0,
+    fs: int = 8000,
+    window_seconds: float = 150.0,
+    probe_fractions: Tuple[float, ...] = (0.05, 0.35, 0.65),
+) -> dict:
+    """Find the reference time at which ``source_path``'s FIRST sample sits.
+
+    :func:`measure_offset` decodes the SAME wall-clock window from both files and
+    correlates them, which only works when the two recordings started at roughly
+    the same moment (its ``max_tau_seconds`` defaults to 5 s). A continuation
+    part of a restarted capture starts hours into the session, so that function
+    cannot see it at all. This one takes an ``expected_start`` and searches
+    +/- ``search_radius_seconds`` around it.
+
+    For a source-local window at time ``s``, the reference window is taken at
+    ``expected_start + s``. Under the SIGN CONVENTION the returned tau is then
+    exactly ``true_start - expected_start``, independent of ``s`` -- so every
+    window measures the same quantity and their spread is a direct robustness
+    check.
+
+    Parameters
+    ----------
+    source_path : str
+        The part to locate (audio or video; its embedded audio is used).
+    reference_path : str
+        A continuous recording spanning the whole session.
+    expected_start : float
+        Best guess (seconds) for where the source begins on the reference.
+    search_radius_seconds : float, optional
+        Half-width of the search. Must leave real overlap: windows are
+        ``window_seconds`` long, so a radius near the window length leaves
+        almost nothing to correlate. Default 30 s.
+    fs, window_seconds, probe_fractions
+        Analysis rate, window length, and where in the SOURCE (as fractions of
+        its duration) to place the probe windows. Fractions are of the source,
+        not the reference, because the source is the shorter file here.
+
+    Returns
+    -------
+    dict
+        ``start_seconds``   : median reference time of the source's first sample.
+        ``tau_seconds``     : median ``start_seconds - expected_start``.
+        ``confidence``      : worst-case confidence across windows.
+        ``spread_seconds``  : max-minus-min ``start_seconds`` across windows.
+        ``per_window``      : one dict per window.
+        plus ``fs``, ``reference_duration``, ``source_duration``,
+        ``expected_start``, ``search_radius_seconds``.
+
+    Raises
+    ------
+    SilentAudioError
+        If any probe window of the source (or reference) is digital silence.
+    RuntimeError
+        If the search radius leaves too little overlap, or a window cannot be
+        placed inside both files.
+    """
+    _check_dependencies()
+
+    if window_seconds <= 0:
+        raise RuntimeError(f"Invalid window_seconds {window_seconds!r}")
+    if search_radius_seconds <= 0:
+        raise RuntimeError(
+            f"Invalid search_radius_seconds {search_radius_seconds!r}")
+    # Correlating two equal-length windows offset by tau leaves
+    # (window - |tau|) of overlap. Below half the window the peak degrades
+    # badly, so refuse rather than return a confident-looking wrong answer.
+    if search_radius_seconds > window_seconds / 2.0:
+        raise RuntimeError(
+            f"search_radius_seconds ({search_radius_seconds:.1f}s) exceeds half "
+            f"the analysis window ({window_seconds:.1f}s); a hit at the rail "
+            f"would have under 50% overlap. Widen window_seconds or narrow the "
+            f"search.")
+
+    processor = _make_processor()
+    ffmpeg = _resolve_ffmpeg(processor)
+
+    ref_dur = float(processor.get_duration_seconds(str(reference_path)))
+    src_dur = float(processor.get_duration_seconds(str(source_path)))
+
+    if window_seconds > src_dur:
+        raise RuntimeError(
+            f"File too short for even one {window_seconds:.1f}s analysis window: "
+            f"{source_path} is only {src_dur:.3f}s long. Refusing to shrink to a "
+            f"degenerate window.")
+
+    # Place each probe window inside the SOURCE, then require its matching
+    # reference window (shifted by expected_start, widened by the search radius)
+    # to fit inside the reference.
+    planned: List[float] = []
+    for frac in probe_fractions:
+        s = min(max(0.0, frac * src_dur), src_dur - window_seconds)
+        ref_lo = expected_start + s - search_radius_seconds
+        ref_hi = expected_start + s + window_seconds + search_radius_seconds
+        if ref_lo < 0.0 or ref_hi > ref_dur:
+            raise RuntimeError(
+                f"Search window for source-local {s:.1f}s falls outside the "
+                f"reference: needs reference [{ref_lo:.3f}, {ref_hi:.3f}]s but "
+                f"{reference_path} is [0, {ref_dur:.3f}]s. expected_start="
+                f"{expected_start:.3f}s is wrong, or the reference is too short.")
+        planned.append(s)
+
+    per_window = []
+    for s in planned:
+        src_win = _decode_mono_window(ffmpeg, source_path, fs, s, window_seconds)
+        ref_win = _decode_mono_window(ffmpeg, reference_path, fs,
+                                      expected_start + s, window_seconds)
+        src_rms = _require_signal(src_win, str(source_path), s, window_seconds,
+                                  "Source")
+        ref_rms = _require_signal(ref_win, str(reference_path),
+                                  expected_start + s, window_seconds, "Reference")
+        tau, conf = gcc_phat(src_win, ref_win, fs,
+                             max_tau_seconds=search_radius_seconds, interp=4)
+        per_window.append({
+            "source_local": s,
+            "reference_start": expected_start + s,
+            "duration": window_seconds,
+            "tau_seconds": tau,
+            "start_seconds": expected_start + tau,
+            "confidence": conf,
+            "source_rms": src_rms,
+            "reference_rms": ref_rms,
+        })
+
+    starts = [w["start_seconds"] for w in per_window]
+    confs = [w["confidence"] for w in per_window]
+
+    start_median = float(statistics.median(starts))
+    return {
+        "start_seconds": start_median,
+        "tau_seconds": start_median - expected_start,
+        "confidence": float(min(confs)),
+        "spread_seconds": float(max(starts) - min(starts)),
+        "per_window": per_window,
+        "fs": fs,
+        "reference_duration": ref_dur,
+        "source_duration": src_dur,
+        "expected_start": expected_start,
+        "search_radius_seconds": search_radius_seconds,
     }
