@@ -43,3 +43,6 @@ scratch-*/
 # Python bytecode (general — covers any directory, not just the ones above)
 __pycache__/
 *.pyc
+
+# Per-user editor projects registry (dev config dir) — user data, not source
+config/projects.json
