@@ -53,6 +53,15 @@ const AUDIO_EXT = /\.(wav|mp3|aac|flac|ogg|m4a)$/i;
 /** This pipeline's own derived audio. Never an input — offering it invites a silent mistake. */
 const DERIVED_SUFFIX = /_processed\.[a-z0-9]+$/i;
 
+/**
+ * The wav a screen/game CAPTURE writes beside its mp4 ("… screen capture 1.wav"). It carries
+ * the capture's own audio, not the session's desktop feed, and a lost feed still records a
+ * full-length SILENT track — so choosing one can replace the real screen audio with nothing.
+ * `auto-detect-audio` refuses to assign them for exactly that reason; the dropdowns keep the
+ * same rule rather than offering the mistake by hand.
+ */
+const CAPTURE_COMPANION = /\s(?:screen|game)\s*capture(\s*\d+)?\.(wav|mp3|aac|flac|ogg|m4a)$/i;
+
 @Component({
   selector: 'app-project-setup-modal',
   templateUrl: './project-setup-modal.component.html',
@@ -78,6 +87,11 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
   state: ProjectSetupState = 'idle';
   /** Inline failure text for the CURRENT state (detection, payload, start, or the job). */
   error: string | null = null;
+  /**
+   * Said out loud when detection matched nothing. A list of empty dropdowns is otherwise
+   * indistinguishable from a detect that worked and found a folder with nothing in it.
+   */
+  detectNote: string | null = null;
 
   /** The source list, in display order. Left column = these; right column = their files. */
   slots: SourceSlot[] = [];
@@ -154,6 +168,7 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
 
     this.state = 'detecting';
     this.error = null;
+    this.detectNote = null;
     this.cdr.detectChanges();
 
     try {
@@ -194,6 +209,12 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
     for (const path of assigned.values()) this.ensureCandidate(path);
 
     this.slots = this.buildSlots(assigned);
+    // Nothing matched, but there ARE files to match against: the naming convention did not fit
+    // this folder. Say so — every dropdown reading “None” is otherwise a silent failure.
+    this.detectNote = (assigned.size === 0 && this.candidates.length > 0)
+      ? `Nothing matched the naming convention for “${this.basename(master)}”. ` +
+        `Pick the files by hand below.`
+      : null;
     this.state = 'ready';
     this.cdr.detectChanges();
   }
@@ -201,10 +222,15 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
   /**
    * Every media file in the project folder that could be a SOURCE: the master is excluded (it
    * is the thing everything aligns to) and so are this pipeline's own `_processed` outputs.
+   *
+   * The folder is taken from the MASTER's own path, because that is what `auto-detect-audio`
+   * scans (`path.dirname(masterVideoPath)`). Deriving it from the registry entry instead can
+   * yield a different string for the same directory — a symlinked or differently-resolved
+   * project folder — and then every detected path would miss its dropdown entry.
    */
   private async listCandidates(master: string): Promise<FileCandidate[]> {
-    const folder = this.entry?.scan?.realPath || this.entry?.path;
-    if (!folder) throw new Error('this project has no folder path');
+    const folder = this.dirname(master);
+    if (!folder) throw new Error(`could not derive a folder from the master video path: ${master}`);
 
     const res = await this.electron.readDirectory(folder);
     if (!res?.success) {
@@ -281,8 +307,12 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
    */
   slotOptions(slot: SourceSlot): FileCandidate[] {
     const taken = new Set(this.slots.filter(s => s !== slot && s.path).map(s => s.path));
-    return this.candidates.filter(c =>
-      (slot.isVideo ? c.isVideo : true) && !taken.has(c.path));
+    return this.candidates.filter(c => {
+      if (taken.has(c.path)) return false;
+      if (slot.isVideo) return c.isVideo;
+      // Audio slot: video is fine (the track gets extracted), a capture companion is not.
+      return !CAPTURE_COMPANION.test(c.name);
+    });
   }
 
   onSlotFile(slot: SourceSlot, path: string): void {
@@ -562,5 +592,11 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
 
   private basename(p: string): string {
     return p.split(/[\\/]/).pop() || p;
+  }
+
+  /** The containing directory, with no trailing separator — matches Node's path.dirname. */
+  private dirname(p: string): string {
+    const idx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+    return idx > 0 ? p.slice(0, idx) : '';
   }
 }

@@ -40,6 +40,8 @@
             master alone.
           </div>
 
+          <div class="psm-empty" *ngIf="detectNote">{{ detectNote }}</div>
+
           <!-- Fixed left column of source types; the file for each is chosen on the right.
                Every row shares one grid template, so the dropdowns line up down the list. -->
           <div class="psm-slots">
@@ -50,10 +52,15 @@
                 {{ slot.label }}
               </span>
 
+              <!-- ngModel, NOT [value]: a plain [value] binding is applied before the *ngFor
+                   has created the options, so the browser has nothing to match and silently
+                   falls back to the first entry. SelectControlValueAccessor re-applies the
+                   value as each option registers, which is what makes Detect's picks stick. -->
               <select class="psm-slot-file"
-                      [value]="slot.path"
-                      [title]="slot.path || 'Not used in this run'"
-                      (change)="onSlotFile(slot, $any($event.target).value)">
+                      [ngModel]="slot.path"
+                      [ngModelOptions]="{ standalone: true }"
+                      (ngModelChange)="onSlotFile(slot, $event)"
+                      [title]="slot.path || 'Not used in this run'">
                 <option value="">— None —</option>
                 <option *ngFor="let c of slotOptions(slot)" [value]="c.path">{{ c.name }}</option>
               </select>
