@@ -1,7 +1,7 @@
 import { Component, EventEmitter, Input, OnDestroy, OnInit, Output, ChangeDetectorRef } from '@angular/core';
 import { Subscription } from 'rxjs';
-import { ElectronService } from '../../services/electron.service';
-import { ProjectEntry, ProjectsService } from '../../services/projects.service';
+import { ElectronService } from '../../../services/electron.service';
+import { ProjectEntry, ProjectsService } from '../services/projects.service';
 
 /**
  * The editor's far-left FCPX-libraries column, rendered INSIDE the editor's existing

@@ -1,7 +1,7 @@
-// src/app/services/projects.service.ts
+// src/app/components/editor/services/projects.service.ts
 import { Injectable } from '@angular/core';
 import { BehaviorSubject, Observable } from 'rxjs';
-import { ElectronService, ProjectScanResult, ProjectsRegistry } from './electron.service';
+import { ElectronService, ProjectScanResult, ProjectsRegistry } from '../../../services/electron.service';
 
 /**
  * One row of the projects list: what the registry persists (`path`/`name`/`lastOpened`)
@@ -24,9 +24,12 @@ export interface ProjectEntry {
  * hand, never silently overwritten with an empty one. A folder that cannot be recognized is
  * reported with the scanner's verbatim reason instead of being dropped.
  */
-@Injectable({
-  providedIn: 'root'
-})
+/**
+ * Provided by EditorModule, NOT `providedIn: 'root'`: the service belongs to the editor and
+ * has to travel with it. A root-provided service would keep resolving through the HOST app's
+ * injector, which is exactly the dependency this folder is being freed of.
+ */
+@Injectable()
 export class ProjectsService {
   /** Set once the legacy recents have been folded in; the old key itself is left untouched. */
   private readonly MIGRATED_KEY = 'editor.projectsMigrated.v1';

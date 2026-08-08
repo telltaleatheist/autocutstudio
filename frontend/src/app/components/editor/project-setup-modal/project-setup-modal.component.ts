@@ -1,13 +1,13 @@
 import { Component, EventEmitter, Input, OnDestroy, OnInit, Output, ChangeDetectorRef } from '@angular/core';
 import { Subscription } from 'rxjs';
-import { ElectronService } from '../../services/electron.service';
-import { ProcessingService, ProcessingJob } from '../../services/processing.service';
-import { ProjectEntry } from '../../services/projects.service';
-import { buildWorkflowOptions } from '../../services/workflow-payload';
+import { ElectronService } from '../../../services/electron.service';
+import { ProcessingService, ProcessingJob } from '../../../services/processing.service';
+import { ProjectEntry } from '../services/projects.service';
+import { buildWorkflowOptions } from '../../../services/workflow-payload';
 import {
   AudioSource, AudioSourceType, VideoSourceType, MediaSourceType,
   MEDIA_SOURCE_LABELS, VIDEO_CONTINUATION_PARTS
-} from '../../models/types';
+} from '../../../models/types';
 
 /**
  * Process a RAW project without leaving the editor: detect its companion files, confirm the

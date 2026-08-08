@@ -4,8 +4,8 @@ import {
 import { Subscription } from 'rxjs';
 import { ElectronService } from '../../services/electron.service';
 import { ProcessingService, ProcessingJob } from '../../services/processing.service';
-import { ProjectsService, ProjectEntry } from '../../services/projects.service';
-import { ProjectSidebarComponent } from '../project-sidebar/project-sidebar.component';
+import { ProjectsService, ProjectEntry } from './services/projects.service';
+import { ProjectSidebarComponent } from './project-sidebar/project-sidebar.component';
 import { EditorManifest, EditorSegment } from '../../models/editor-manifest';
 import {
   TranscriptWord, Transcript, TranscriptGroup, TranscriptGroupView,
