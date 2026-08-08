@@ -1,7 +1,7 @@
 // src/app/components/editor/services/projects.service.ts
-import { Injectable } from '@angular/core';
+import { Inject, Injectable } from '@angular/core';
 import { BehaviorSubject, Observable } from 'rxjs';
-import { ElectronService, ProjectScanResult, ProjectsRegistry } from '../../../services/electron.service';
+import { EDITOR_HOST, EditorHost, ProjectScanResult, ProjectsRegistry } from '../editor-host';
 
 /**
  * One row of the projects list: what the registry persists (`path`/`name`/`lastOpened`)
@@ -23,8 +23,7 @@ export interface ProjectEntry {
  * into a read-only mode where no write can ever land — a corrupt list is repaired or deleted by
  * hand, never silently overwritten with an empty one. A folder that cannot be recognized is
  * reported with the scanner's verbatim reason instead of being dropped.
- */
-/**
+ *
  * Provided by EditorModule, NOT `providedIn: 'root'`: the service belongs to the editor and
  * has to travel with it. A root-provided service would keep resolving through the HOST app's
  * injector, which is exactly the dependency this folder is being freed of.
@@ -58,7 +57,7 @@ export class ProjectsService {
   private readOnly = false;
   private entries: ProjectEntry[] = [];
 
-  constructor(private electron: ElectronService) {}
+  constructor(@Inject(EDITOR_HOST) private host: EditorHost) {}
 
   get snapshot(): ProjectEntry[] { return this.projectsSubject.value; }
   get registryError(): string | null { return this.errorSubject.value; }
@@ -70,7 +69,7 @@ export class ProjectsService {
   async load(): Promise<void> {
     let registry: ProjectsRegistry;
     try {
-      registry = await this.electron.readProjectsRegistry();
+      registry = await this.host.readProjectsRegistry();
     } catch (err: any) {
       this.readOnly = true;
       this.entries = [];
@@ -143,7 +142,7 @@ export class ProjectsService {
    * timestamps rather than stamping the whole imported list with "now".
    */
   async addProject(folderPath: string, lastOpened?: string): Promise<ProjectEntry> {
-    const scan = await this.electron.scanProjectFolder(folderPath);
+    const scan = await this.host.scanProjectFolder(folderPath);
     if (scan.state === 'unrecognized') {
       throw new Error(scan.error || `Not a project folder: ${folderPath}`);
     }
@@ -164,7 +163,7 @@ export class ProjectsService {
 
   /** Open the directory chooser and add what comes back. Resolves null when cancelled. */
   async addFromDialog(): Promise<ProjectEntry | null> {
-    const picked = await this.electron.selectDirectory({ title: 'Choose a project folder' });
+    const picked = await this.host.selectDirectory({ title: 'Choose a project folder' });
     if (picked.canceled || !picked.filePaths?.length) return null;
     return this.addProject(picked.filePaths[0]);
   }
@@ -219,7 +218,7 @@ export class ProjectsService {
    */
   private async scanOrReport(folderPath: string): Promise<ProjectScanResult> {
     try {
-      return await this.electron.scanProjectFolder(folderPath);
+      return await this.host.scanProjectFolder(folderPath);
     } catch (err: any) {
       return {
         folder: folderPath,
@@ -251,7 +250,7 @@ export class ProjectsService {
       version: 1,
       projects: next.map(e => ({ path: e.path, name: e.name, lastOpened: e.lastOpened }))
     };
-    await this.electron.writeProjectsRegistry(registry);
+    await this.host.writeProjectsRegistry(registry);
     this.entries = next;
     this.publish();
   }

@@ -6,6 +6,8 @@ Everything the timeline editor is made of, in one folder:
 - `editor.module.ts` — declares and exports all six editor components, provides
   `ProjectsService`. The host app imports this module; the router gets
   `EditorComponent` through its exports.
+- `editor-host.ts` — **the port**: the `EditorHost` interface and the `EDITOR_HOST`
+  injection token. See below.
 - `model/` — pure helpers (types, math, formatting, story utils), no Angular.
 - `timeline/` — canvas renderer, scene building, metrics, waveform cache.
 - `activity-dock/`, `export-modals/`, `transcript-pane/` — child components.
@@ -15,23 +17,29 @@ Everything the timeline editor is made of, in one folder:
   current project. Used only from this folder.
 - `styles/_modal.scss` — shared modal partial, `@use`d by the components here.
 
-## Portability
+## The host port
 
-This folder is meant to be copied wholesale into another Angular app (Content
-Studio). Nothing outside it imports anything inside it except
-`app.module.ts` (imports `EditorModule`) and `app-routing.module.ts` (routes to
-`EditorComponent`).
+Nothing in this folder talks to the host application directly. Everything —
+session payload, edit state, transcription, story analysis, waveform peaks, file
+dialogs, the projects registry, processing jobs — goes through the single
+`EditorHost` interface in `editor-host.ts`, injected via `EDITOR_HOST`.
 
-What it still needs from the host:
+**To re-host this editor: copy this folder, implement `EditorHost`, and bind it in
+the host's root module** (`{ provide: EDITOR_HOST, useClass: YourAdapter }`).
+`EditorModule` deliberately does not provide the token, so this tree contains no
+reference to any implementation. AutoCutStudio's implementation lives outside the
+folder, at `src/app/services/editor-host.adapter.ts`.
 
-- `src/app/models/editor-manifest` — the manifest/segment/track types.
-- `src/app/services/electron.service` — IPC bridge.
-- `src/app/services/processing.service` — job lifecycle, progress, console.
-- `src/app/services/workflow-payload` — the shared workflow payload builder
-  (deliberately shared with `components/workflow`; it is the narrow seam to the
-  Python workflow).
+`sendSubjectsToTitles` is optional — it is AutoCutStudio's Metadata-tab handoff. A
+host that omits it gets a clear message in the editor's transport-error line, never
+a Send button that silently does nothing.
 
-Step B of the portability work replaces those service dependencies with a single
-injected host port, so the folder can be dropped into a host that implements the
-port however it likes. Until then, a copy of this folder must be accompanied by
-the four modules listed above.
+## Remaining shared surface
+
+Three imports still reach outside this folder. They are data/format, not host
+capability, and are the next thing to fold in if the copy has to be truly clean:
+
+- `src/app/models/editor-manifest` — manifest/segment/track types.
+- `src/app/models/types` — media-source enums used by the setup modal.
+- `src/app/services/workflow-payload` — the shared payload builder, deliberately
+  shared with `components/workflow` as the narrow seam to the Python workflow.

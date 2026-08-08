@@ -4,6 +4,8 @@ import { FormsModule } from '@angular/forms';
 
 import { AppRoutingModule } from './app-routing.module';
 import { EditorModule } from './components/editor/editor.module';
+import { EDITOR_HOST } from './components/editor/editor-host';
+import { EditorHostAdapter } from './services/editor-host.adapter';
 import { AppComponent } from './app.component';
 import { WorkflowComponent } from './components/workflow/workflow.component';
 import { FileBrowserComponent } from './components/file-browser/file-browser.component';
@@ -40,7 +42,12 @@ import { MetadataReportsComponent } from './components/metadata-reports/metadata
     AppRoutingModule,
     EditorModule
   ],
-  providers: [],
+  providers: [
+    // The editor depends on the EditorHost port, never on this app's services. The HOST binds
+    // the port to its implementation — EditorModule deliberately does not, so the editor tree
+    // contains no reference to any adapter.
+    { provide: EDITOR_HOST, useClass: EditorHostAdapter }
+  ],
   bootstrap: [AppComponent]
 })
 export class AppModule { }

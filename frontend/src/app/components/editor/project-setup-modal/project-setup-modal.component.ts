@@ -1,7 +1,6 @@
-import { Component, EventEmitter, Input, OnDestroy, OnInit, Output, ChangeDetectorRef } from '@angular/core';
+import { Component, EventEmitter, Inject, Input, OnDestroy, OnInit, Output, ChangeDetectorRef } from '@angular/core';
 import { Subscription } from 'rxjs';
-import { ElectronService } from '../../../services/electron.service';
-import { ProcessingService, ProcessingJob } from '../../../services/processing.service';
+import { EDITOR_HOST, EditorHost, ProcessingJob } from '../editor-host';
 import { ProjectEntry } from '../services/projects.service';
 import { buildWorkflowOptions } from '../../../services/workflow-payload';
 import {
@@ -132,14 +131,13 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
   private jobSub?: Subscription;
 
   constructor(
-    private electron: ElectronService,
-    private processing: ProcessingService,
+    @Inject(EDITOR_HOST) private host: EditorHost,
     private cdr: ChangeDetectorRef
   ) {}
 
   ngOnInit(): void {
     this.attached = this.attachRunning;
-    this.jobSub = this.processing.getCurrentJob().subscribe(job => this.onJob(job));
+    this.jobSub = this.host.getCurrentJob().subscribe(job => this.onJob(job));
     void this.refreshSeparatorStatus();
     if (!this.attachRunning) {
       void this.detect();
@@ -182,7 +180,7 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
 
     let result: { success: boolean; audioFiles?: { [key: string]: string }; videoFiles?: { [key: string]: string }; error?: string };
     try {
-      result = await this.electron.autoDetectAudio(master);
+      result = await this.host.autoDetectAudio(master);
     } catch (err: any) {
       this.state = 'error';
       this.error = `Could not detect the companion files: ${err?.message || String(err)}`;
@@ -232,7 +230,7 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
     const folder = this.dirname(master);
     if (!folder) throw new Error(`could not derive a folder from the master video path: ${master}`);
 
-    const res = await this.electron.readDirectory(folder);
+    const res = await this.host.readDirectory(folder);
     if (!res?.success) {
       throw new Error((res as any)?.error || 'the folder could not be listed');
     }
@@ -276,7 +274,7 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
   /** Install state of the optional voice-isolation component (the Denoise toggle's gate). */
   private async refreshSeparatorStatus(): Promise<void> {
     try {
-      const res = await this.electron.listAssets();
+      const res = await this.host.listAssets();
       const comp = (res.components || []).find((c: any) => c.id === 'voice-separator-env');
       this.separatorInstalled = !!comp && comp.state === 'installed';
     } catch (err) {
@@ -325,7 +323,7 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
   async browseForSlot(slot: SourceSlot): Promise<void> {
     let picked: { canceled: boolean; filePaths: string[] };
     try {
-      picked = await this.electron.selectFile({
+      picked = await this.host.selectFile({
         title: `Choose the file for ${slot.label}`,
         filters: [
           { name: 'All Media Files', extensions: ['wav', 'mp3', 'aac', 'flac', 'ogg', 'm4a', 'mp4', 'mov', 'avi', 'mkv'] },
@@ -478,7 +476,7 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
       this.attached = true;
       this.ownedJobId = null;
       try {
-        await this.processing.startWorkflow(options);
+        await this.host.startWorkflow(options);
       } catch (err: any) {
         this.attached = false;
         this.error = `Could not start processing: ${err?.message || String(err)}`;
@@ -566,7 +564,7 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
   async onSkip(): Promise<void> {
     if (!this.canSkip) return;
     try {
-      await this.electron.sendSkipSignal();
+      await this.host.sendSkipSignal();
     } catch (err: any) {
       this.error = `Could not skip this operation: ${err?.message || String(err)}`;
       this.cdr.detectChanges();
@@ -575,7 +573,7 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
 
   async onConfirmCancel(): Promise<void> {
     this.confirmingCancel = false;
-    await this.processing.cancelJob();
+    await this.host.cancelJob();
   }
 
   // ── Chrome ──────────────────────────────────────────────────────────────────

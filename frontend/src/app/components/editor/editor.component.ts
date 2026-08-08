@@ -1,9 +1,8 @@
 import {
-  Component, OnInit, OnDestroy, AfterViewInit, ViewChild, ElementRef, HostListener, ChangeDetectorRef
+  Component, OnInit, OnDestroy, AfterViewInit, ViewChild, ElementRef, HostListener, ChangeDetectorRef, Inject
 } from '@angular/core';
 import { Subscription } from 'rxjs';
-import { ElectronService } from '../../services/electron.service';
-import { ProcessingService, ProcessingJob } from '../../services/processing.service';
+import { EDITOR_HOST, EditorHost, ProcessingJob } from './editor-host';
 import { ProjectsService, ProjectEntry } from './services/projects.service';
 import { ProjectSidebarComponent } from './project-sidebar/project-sidebar.component';
 import { EditorManifest, EditorSegment } from '../../models/editor-manifest';
@@ -355,7 +354,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   // ── Waveform cache ──────────────────────────────────────────────────────────
   private waveforms = new WaveformCache(
-    o => this.electron.alignmentExtractPeaks(o),
+    o => this.host.alignmentExtractPeaks(o),
     () => this.requestRender(),
   );
   private renderer = new TimelineRenderer((seg, onScreenW) => this.waveforms.getOrRequest(seg, onScreenW));
@@ -414,9 +413,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private jobSub?: Subscription;
 
   constructor(
-    private electron: ElectronService,
+    @Inject(EDITOR_HOST) private host: EditorHost,
     private projectsService: ProjectsService,
-    private processing: ProcessingService,
     private cdr: ChangeDetectorRef
   ) {}
 
@@ -433,14 +431,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     void this.projectsService.load();
     // Processing progress for the project pane's busy row. Only the job this window started
     // (through the setup modal) is attributed to a project — see processingEntryPath.
-    this.jobSub = this.processing.getCurrentJob().subscribe(job => this.onProcessingJob(job));
+    this.jobSub = this.host.getCurrentJob().subscribe(job => this.onProcessingJob(job));
     // Race-free pull + push, like the alignment wizard — but the push listener is
     // PERMANENT: when this window is already open on a session and the launcher opens a
     // DIFFERENT one, the main process pushes the new payload over the same channel
     // without a page reload, and we fully re-initialize onto it. A push carrying the
     // zipPath we already have (or are already loading) is the belt-and-suspenders
     // duplicate of the pull — ignored.
-    this.electron.onEditorPayload((p) => {
+    this.host.onEditorPayload((p) => {
       if (!p?.zipPath) return;
       if (p.zipPath === this.currentZipPath) return;
       void this.bootstrap(p.zipPath);
@@ -448,20 +446,20 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // Transcription job events. Registered ONCE (like onEditorPayload) and kept for the
     // window's life; every event is filtered against the CURRENT job id so a stale job's
     // progress/completion (from a superseded session) can never touch live UI.
-    this.electron.onTranscribeProgress((d) => this.onTranscribeProgress(d));
-    this.electron.onTranscribeComplete((d) => this.onTranscribeComplete(d));
+    this.host.onTranscribeProgress((d) => this.onTranscribeProgress(d));
+    this.host.onTranscribeComplete((d) => this.onTranscribeComplete(d));
     // Load the local Ollama model list for the Stories-tab analyzer (non-blocking; the picker
     // shows "is Ollama running?" until it connects).
     void this.refreshOllamaModels();
     // Per-step progress of a running chapter analysis → the modal bar + activity dock.
-    this.electron.onStoryAnalyzeProgress((p) => {
+    this.host.onStoryAnalyzeProgress((p) => {
       this.aiProgressDone = p.done;
       this.aiProgressTotal = p.total;
       this.aiPhase = p.phase;
       this.cdr.detectChanges();
     });
     try {
-      const res = await this.electron.getEditorPayload();
+      const res = await this.host.getEditorPayload();
       if (res?.zipPath && res.zipPath !== this.currentZipPath) {
         await this.bootstrap(res.zipPath);
       } else if (!res?.zipPath && !this.currentZipPath) {
@@ -488,9 +486,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (this.rafId !== null) { cancelAnimationFrame(this.rafId); this.rafId = null; }
     for (const el of this.audioEls.values()) { try { el.pause(); el.src = ''; } catch { /* gone */ } }
     this.audioEls.clear();
-    this.electron.removeEditorListeners();
-    this.electron.removeTranscribeListeners();
-    this.electron.removeStoryAnalyzeProgressListener();
+    this.host.removeEditorListeners();
+    this.host.removeTranscribeListeners();
+    this.host.removeStoryAnalyzeProgressListener();
   }
 
   // ── Bootstrap: (re)load a session's manifest ────────────────────────────────
@@ -509,7 +507,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.cdr.detectChanges();
     let manifest: EditorManifest;
     try {
-      manifest = await this.electron.getEditorManifest(zipPath);
+      manifest = await this.host.getEditorManifest(zipPath);
     } catch (err: any) {
       if (generation !== this.bootstrapGeneration) return; // superseded by a newer load
       // Python's error message is authoritative — show it verbatim.
@@ -527,7 +525,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // never edited before -> fresh state. A sidecar that exists but cannot be read/parsed
     // is a REAL error and fails the load loudly (fix or delete the file).
     try {
-      const edits = await this.electron.loadEditorEdits({ zipPath });
+      const edits = await this.host.loadEditorEdits({ zipPath });
       if (generation !== this.bootstrapGeneration) return;
       if (edits !== null) this.restoreEdits(edits);
     } catch (err: any) {
@@ -631,7 +629,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // still ignores any straggler events. Listeners persist for the window's life
     // (removed in ngOnDestroy).
     if (this.transcribeJobId) {
-      void this.electron.cancelTranscription({ jobId: this.transcribeJobId });
+      void this.host.cancelTranscription({ jobId: this.transcribeJobId });
     }
     this.transcript = null;
     this.transcriptGroups = [];
@@ -2218,7 +2216,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         undoStack: this.undoStack,
         redoStack: this.redoStack,
       };
-      this.electron.saveEditorEdits({ zipPath, edits }).catch((err: any) => {
+      this.host.saveEditorEdits({ zipPath, edits }).catch((err: any) => {
         // Surface, don't swallow: a failing save means edits are NOT persisting.
         this.transportError = `Failed to save edits: ${err?.message || err}`;
         this.cdr.detectChanges();
@@ -2281,7 +2279,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.cdr.detectChanges();
     try {
       const stories = this.hasStories() ? this.resolveStoryRegions() : undefined;
-      const res = await this.electron.exportEditorCuts({
+      const res = await this.host.exportEditorCuts({
         zipPath: this.currentZipPath!, cuts: this.cuts,
         sequence: this.exportSequence(),
         stories, output: stories ? kind : undefined,
@@ -2347,7 +2345,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   /** Reveal the exported file in Finder/Explorer. */
   onShowExport(): void {
-    if (this.exportResultPath) void this.electron.showInFolder(this.exportResultPath);
+    if (this.exportResultPath) void this.host.showInFolder(this.exportResultPath);
   }
 
   /** Dismiss the export result/error modal. */
@@ -3125,7 +3123,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       if (!this.isStopError(err)) this.analyzeError = err?.message || String(err);
       return story.chapters ?? [];
     } finally {
-      await this.electron.unloadStoryModel({ model: this.selectedOllamaModel }).catch(() => { /* housekeeping */ });
+      await this.host.unloadStoryModel({ model: this.selectedOllamaModel }).catch(() => { /* housekeeping */ });
       this.analyzing = false;
       this.analyzeStopRequested = false;
       this.analyzeMessage = '';
@@ -3171,7 +3169,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.analyzeMessage = `Finding chapters in “${name}”…`;
     this.cdr.detectChanges();
 
-    const res = await this.electron.analyzeStoryChapters({ segments, model, consolidate: false });
+    const res = await this.host.analyzeStoryChapters({ segments, model, consolidate: false });
     const returned = res.chapters || [];
     if (returned.some(c => (c.subChapters?.length ?? 0) > 1)) {
       // Marked as a WIRING fault, not a data one: it will fail identically for every story, so a
@@ -3234,8 +3232,16 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }[]
   ): Promise<void> {
     this.transportError = '';
+    // The titling queue is an OPTIONAL host capability. A host that has no such surface omits
+    // the method, and the user is told so in the same place a failed send is reported — a Send
+    // button that quietly does nothing is the one outcome that must not happen.
+    if (!this.host.sendSubjectsToTitles) {
+      this.transportError = 'This host has no titling queue to send to.';
+      this.cdr.detectChanges();
+      return;
+    }
     try {
-      await this.electron.sendSubjectsToTitles({ handoffs });
+      await this.host.sendSubjectsToTitles({ handoffs });
     } catch (err: any) {
       // Verbatim — the usual cause is the main window having been closed, which the user
       // needs told rather than a button that silently does nothing.
@@ -3380,9 +3386,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   /** (Re)load the list of locally-installed Ollama models and reconcile the selection. */
   async refreshOllamaModels(): Promise<void> {
-    if (!this.electron.isElectron()) return;
+    if (!this.host.isElectron()) return;
     try {
-      const res = await this.electron.ollamaListModels();
+      const res = await this.host.ollamaListModels();
       this.ollamaConnected = res.connected;
       this.ollamaModels = res.models || [];
       const saved = localStorage.getItem(this.OLLAMA_MODEL_KEY) || '';
@@ -3429,7 +3435,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.aiPhase = 'Stopping…';
     this.cdr.detectChanges();
     try {
-      await this.electron.cancelStoryAnalysis();
+      await this.host.cancelStoryAnalysis();
     } catch {
       // Nothing was running, or the bridge is gone — the loop flag still ends it.
     }
@@ -3626,7 +3632,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
               this.aiProgressDone = 0;
               this.aiProgressTotal = 0;
               this.cdr.detectChanges();
-              const res = await this.electron.suggestStoryTitle({ text: subjects, model });
+              const res = await this.host.suggestStoryTitle({ text: subjects, model });
               if (this.sessionChanged(generation)) break;
               s.title = res.title;
               this.scheduleEditsSave();
@@ -3667,7 +3673,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         const dur = this.manifest?.timelineDuration || 0;
         const segments = this.segmentsForRegions([{ start: 0, end: dur > 0 ? dur : Number.MAX_SAFE_INTEGER }]);
         if (segments.length === 0) throw new Error('No transcript to analyze.');
-        const res = await this.electron.analyzeStoryChapters({ segments, model: this.selectedOllamaModel });
+        const res = await this.host.analyzeStoryChapters({ segments, model: this.selectedOllamaModel });
         // The whole-timeline split is one long call: by the time it lands the user may be in a
         // different project, and these stories describe the previous one's timeline.
         if (this.sessionChanged(generation)) return;
@@ -3699,7 +3705,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       // Down the moment the run ends — finished, failed or stopped. Ollama would otherwise hold
       // the weights for its own keep_alive (minutes), and nothing here needs them again.
       // The chapter path also unloads in the main process; a second unload is a harmless no-op.
-      await this.electron.unloadStoryModel({ model }).catch(() => { /* housekeeping only */ });
+      await this.host.unloadStoryModel({ model }).catch(() => { /* housekeeping only */ });
       this.analyzing = false;
       this.analyzeStopRequested = false;
       this.analyzeMessage = '';
@@ -3791,7 +3797,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     try {
       const segments = this.segmentsForRegions(regions);
       if (segments.length === 0) throw new Error('No transcript in this story to split. Transcribe first.');
-      const res = await this.electron.analyzeStoryChapters({ segments, model: this.selectedOllamaModel });
+      const res = await this.host.analyzeStoryChapters({ segments, model: this.selectedOllamaModel });
       this.splitChapters = (res.chapters || []).map(c => ({
         index: c.index, startSeconds: c.startSeconds, endSeconds: c.endSeconds,
         label: cleanChapterLabel(c.label),
@@ -4042,7 +4048,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const kept: RecentSession[] = [];
     for (const r of stored) {
       try {
-        const res = await this.electron.checkFileExists(r.zipPath);
+        const res = await this.host.checkFileExists(r.zipPath);
         if (res?.exists) kept.push(r);
       } catch {
         // Cannot verify (not in Electron / IPC hiccup): keep rather than silently delete.
@@ -4086,7 +4092,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   async pickProject(): Promise<void> {
     let picked: { canceled: boolean; filePaths: string[] };
     try {
-      picked = await this.electron.selectFile({
+      picked = await this.host.selectFile({
         title: 'Choose a session’s _compounds.zip',
         filters: [{ name: 'Compound Session', extensions: ['zip'] }]
       });
@@ -4220,7 +4226,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private async loadTranscriptForSession(zipPath: string, generation: number): Promise<void> {
     let data: any;
     try {
-      data = await this.electron.loadTranscript({ zipPath });
+      data = await this.host.loadTranscript({ zipPath });
     } catch (err: any) {
       if (generation !== this.bootstrapGeneration) return;
       this.transcriptState = 'error';
@@ -4389,7 +4395,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.transcribeJobId = null;
     this.cdr.detectChanges();
     try {
-      const res = await this.electron.transcribeSession({ zipPath: this.currentZipPath });
+      const res = await this.host.transcribeSession({ zipPath: this.currentZipPath });
       const jobId = res?.jobId;
       if (!jobId) throw new Error('Transcription did not start (no job id returned).');
       this.transcribeJobId = jobId;
@@ -4402,7 +4408,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   /** Ask the main process to cancel the running job; the failure lands via the complete event. */
   cancelTranscription(): void {
-    if (this.transcribeJobId) void this.electron.cancelTranscription({ jobId: this.transcribeJobId });
+    if (this.transcribeJobId) void this.host.cancelTranscription({ jobId: this.transcribeJobId });
   }
 
   /** Progress event: ignore anything not from the current job (stale/superseded session). */
@@ -4560,7 +4566,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!head) return;
     this.activitySkipRequested.add(head.id);
     try {
-      await this.electron.cancelStoryAnalysis();
+      await this.host.cancelStoryAnalysis();
     } catch {
       // Nothing in flight — the loop-top check still skips it.
     }

@@ -1,6 +1,6 @@
-import { Component, EventEmitter, Input, OnDestroy, OnInit, Output, ChangeDetectorRef } from '@angular/core';
+import { Component, EventEmitter, Inject, Input, OnDestroy, OnInit, Output, ChangeDetectorRef } from '@angular/core';
 import { Subscription } from 'rxjs';
-import { ElectronService } from '../../../services/electron.service';
+import { EDITOR_HOST, EditorHost } from '../editor-host';
 import { ProjectEntry, ProjectsService } from '../services/projects.service';
 
 /**
@@ -55,7 +55,7 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
 
   constructor(
     private projectsService: ProjectsService,
-    private electron: ElectronService,
+    @Inject(EDITOR_HOST) private host: EditorHost,
     private cdr: ChangeDetectorRef
   ) {}
 
@@ -198,7 +198,7 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
       return;
     }
     for (const file of files) {
-      const path = this.electron.getPathForFile(file);
+      const path = this.host.getPathForFile(file);
       if (!path) {
         this.inlineError = `“${file.name}” is not a filesystem folder.`;
         continue;
