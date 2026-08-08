@@ -2457,6 +2457,27 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.requestRender();
   }
 
+  /**
+   * True once the loaded session has changed since `generation` was captured.
+   *
+   * Long-running renderer work (story analysis is hours of model calls) writes through
+   * `this.stories` and `scheduleEditsSave()`, both of which address whatever session is
+   * loaded AT THE MOMENT OF THE WRITE — not the one the work was started for. Every await
+   * boundary in such a run has to check this, or a project switch mid-run silently files one
+   * session's results in another session's sidecar. The switch itself is reported by the
+   * caller; this only answers the question.
+   */
+  private sessionChanged(generation: number): boolean {
+    if (generation === this.bootstrapGeneration) return false;
+    // Not silent: the run is being abandoned mid-flight and the user gets no finished result.
+    // Console rather than the pane — the message belongs to the session they LEFT, and putting
+    // "analysis stopped" in front of the project they just opened would misattribute it.
+    console.warn('[editor] story analysis abandoned: the loaded session changed mid-run ' +
+      `(started under generation ${generation}, now ${this.bootstrapGeneration}). ` +
+      'Nothing was written to the newly loaded project.');
+    return true;
+  }
+
   /** The active paint target's name, for the hint that says where drags are landing. */
   get activeStoryTitle(): string {
     const story = this.stories.find(s => s.id === this.activeStoryId);
@@ -3532,6 +3553,12 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   async analyzeTimeline(): Promise<void> {
     if (this.analyzing || !this.selectedOllamaModel || this.transcriptState !== 'ready') return;
     const model = this.selectedOllamaModel;
+    // The session this run belongs to. A run is hours of model calls, and everything it
+    // writes — story objects, the edits sidecar via scheduleEditsSave() — targets whatever
+    // session is loaded AT THE TIME OF THE WRITE. Switching projects mid-run would therefore
+    // pour this session's stories into the next one's sidecar. Captured here and checked at
+    // every await boundary; see sessionChanged().
+    const generation = this.bootstrapGeneration;
     this.analyzing = true;
     this.analyzeStopRequested = false;
     this.analyzeError = null;
@@ -3558,6 +3585,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         const failures: string[] = [];
         for (const s of workable) {
           if (this.analyzeStopRequested) break;   // stop between stories, not just mid-call
+          if (this.sessionChanged(generation)) break;   // the project moved out from under us
           // X'd while waiting: its dock row is already gone — it is simply never visited. Not a
           // failure and not advanced (cancelPendingActivity removed the row itself).
           if (this.activitySkipRequested.has(s.id)) continue;
@@ -3579,6 +3607,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
               ? s.chapters!
               : await this.deriveStoryChapters(s, model);
             if (this.analyzeStopRequested) break;
+            if (this.sessionChanged(generation)) break;
 
             // A title the user typed is left exactly as they typed it. They name stories between
             // run 1 and run 2, so overwriting here would destroy that work with no undo.
@@ -3598,6 +3627,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
               this.aiProgressTotal = 0;
               this.cdr.detectChanges();
               const res = await this.electron.suggestStoryTitle({ text: subjects, model });
+              if (this.sessionChanged(generation)) break;
               s.title = res.title;
               this.scheduleEditsSave();
               this.requestRender();
@@ -3638,6 +3668,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         const segments = this.segmentsForRegions([{ start: 0, end: dur > 0 ? dur : Number.MAX_SAFE_INTEGER }]);
         if (segments.length === 0) throw new Error('No transcript to analyze.');
         const res = await this.electron.analyzeStoryChapters({ segments, model: this.selectedOllamaModel });
+        // The whole-timeline split is one long call: by the time it lands the user may be in a
+        // different project, and these stories describe the previous one's timeline.
+        if (this.sessionChanged(generation)) return;
         const chapters = res.chapters || [];
         if (chapters.length === 0) throw new Error('No stories detected.');
         const created: Story[] = chapters.map((c, i) => {
