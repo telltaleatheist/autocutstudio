@@ -31,51 +31,59 @@
       <ng-container *ngIf="state === 'ready'">
         <div class="psm-field">
           <div class="psm-label-row">
-            <span class="psm-label">Sources ({{ rows.length }})</span>
+            <span class="psm-label">Sources ({{ assignedCount }} of {{ slots.length }} assigned)</span>
             <button class="psm-link" (click)="detect()">Detect again</button>
           </div>
 
-          <div class="psm-empty" *ngIf="rows.length === 0">
-            No companion files were found next to the master video. Processing will run on the
+          <div class="psm-empty" *ngIf="candidates.length === 0">
+            No companion media was found next to the master video. Processing will run on the
             master alone.
           </div>
 
-          <div class="psm-rows" *ngIf="rows.length > 0">
-            <div class="psm-row" *ngFor="let row of sortedRows; trackBy: trackByRowId">
-              <span class="psm-row-icon">{{ row.isVideo ? '🎥' : '🎵' }}</span>
-              <span class="psm-row-name" [title]="row.path">{{ row.name }}</span>
+          <!-- Fixed left column of source types; the file for each is chosen on the right.
+               Every row shares one grid template, so the dropdowns line up down the list. -->
+          <div class="psm-slots">
+            <div class="psm-slot" *ngFor="let slot of slots; trackBy: trackBySlotType"
+                 [class.unassigned]="!slot.path">
+              <span class="psm-slot-label" [class.video]="slot.isVideo">
+                <span class="psm-slot-icon">{{ slot.isVideo ? '🎥' : '🎵' }}</span>
+                {{ slot.label }}
+              </span>
 
-              <select class="psm-row-type" [(ngModel)]="row.type" [name]="'type_' + row.id">
-                <option value="" disabled>Select type…</option>
-                <option *ngFor="let t of availableTypes(row.type)" [value]="t">
-                  {{ mediaSourceLabels[t] }}
-                </option>
+              <select class="psm-slot-file"
+                      [value]="slot.path"
+                      [title]="slot.path || 'Not used in this run'"
+                      (change)="onSlotFile(slot, $any($event.target).value)">
+                <option value="">— None —</option>
+                <option *ngFor="let c of slotOptions(slot)" [value]="c.path">{{ c.name }}</option>
               </select>
 
-              <!-- Audio rows only: the two per-source corrections the pipeline reads as one
-                   "this source needs sync work" flag. -->
-              <label class="psm-row-check" *ngIf="!row.isVideo"
-                     title="Correct this source's start offset against the master.">
-                <input type="checkbox" [(ngModel)]="row.syncFix" [name]="'sync_' + row.id" />
-                <span>Sync</span>
-              </label>
-              <label class="psm-row-check" *ngIf="!row.isVideo"
-                     title="Correct this source's clock drift across the session.">
-                <input type="checkbox" [(ngModel)]="row.applyDrift" [name]="'drift_' + row.id" />
-                <span>Drift</span>
-              </label>
+              <span class="psm-slot-actions">
+                <button class="psm-slot-btn" (click)="browseForSlot(slot)"
+                        title="Choose a file from somewhere else">⋯</button>
+                <button class="psm-slot-btn" *ngIf="isRemovable(slot)" (click)="removeSlot(slot)"
+                        title="Remove this source from the list">✕</button>
+              </span>
 
-              <!-- Continuation parts only: the gap before this part starts. -->
-              <input *ngIf="isContinuationPart(row)"
-                     class="psm-row-gap"
-                     type="number" min="0" step="0.001" placeholder="auto"
-                     [value]="row.seamGapSeconds ?? ''"
-                     (input)="setSeamGap(row, $any($event.target).value)"
-                     title="Seconds of nothing between the end of the previous part and the start of this one. Leave blank to measure it against the master; only fill it in when this part has no usable audio." />
-
-              <button class="psm-row-btn" (click)="changeRowFile(row)" title="Choose a different file">⋯</button>
-              <button class="psm-row-btn" (click)="removeRow(row)" title="Remove this source">✕</button>
+              <!-- Continuation parts only: the gap before this part starts. Full-width under
+                   the row, so it never disturbs the column alignment above. -->
+              <label class="psm-slot-gap" *ngIf="isContinuationPart(slot) && slot.path">
+                <span>Gap before this part</span>
+                <input type="number" min="0" step="0.001" placeholder="measure it"
+                       [value]="slot.seamGapSeconds ?? ''"
+                       (input)="setSeamGap(slot, $any($event.target).value)"
+                       title="Seconds of nothing between the end of the previous part and the start of this one. Leave blank to measure it against the master; only fill it in when this part has no usable audio." />
+                <span class="psm-slot-gap-unit">s</span>
+              </label>
             </div>
+          </div>
+
+          <div class="psm-add" *ngIf="addableTypes.length > 0">
+            <select class="psm-add-select" #addSel
+                    (change)="addSlot($any($event.target).value); addSel.value = ''">
+              <option value="">Add source…</option>
+              <option *ngFor="let t of addableTypes" [value]="t">{{ mediaSourceLabels[t] }}</option>
+            </select>
           </div>
         </div>
 
@@ -118,7 +126,10 @@
           </label>
         </div>
 
-        <div class="psm-note">Alignment runs fully automatically here.</div>
+        <div class="psm-note">
+          Alignment is automatic: every source's offset and clock drift are measured against
+          the master during the run.
+        </div>
       </ng-container>
 
       <div class="psm-actions">

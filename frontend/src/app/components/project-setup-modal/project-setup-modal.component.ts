@@ -25,6 +25,34 @@ import {
  */
 export type ProjectSetupState = 'idle' | 'detecting' | 'ready' | 'running' | 'done' | 'error';
 
+/**
+ * One line of the source list. The list is driven by the source types the pipeline can USE
+ * (Camera 1, Mic 1, Screen Audio…), not by whatever files happen to be in the folder: the
+ * left column is fixed and the file is chosen on the right. A slot with no file is simply
+ * not part of the run.
+ */
+export interface SourceSlot {
+  type: MediaSourceType;
+  label: string;
+  isVideo: boolean;
+  /** The chosen file, or '' for "not used in this run". */
+  path: string;
+  /** Continuation parts only: seconds of nothing before this part starts (null = measure it). */
+  seamGapSeconds: number | null;
+}
+
+/** A file that can be assigned to a slot. */
+interface FileCandidate {
+  path: string;
+  name: string;
+  isVideo: boolean;
+}
+
+const VIDEO_EXT = /\.(mp4|mov|avi|mkv|m4v|webm)$/i;
+const AUDIO_EXT = /\.(wav|mp3|aac|flac|ogg|m4a)$/i;
+/** This pipeline's own derived audio. Never an input — offering it invites a silent mistake. */
+const DERIVED_SUFFIX = /_processed\.[a-z0-9]+$/i;
+
 @Component({
   selector: 'app-project-setup-modal',
   templateUrl: './project-setup-modal.component.html',
@@ -51,13 +79,25 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
   /** Inline failure text for the CURRENT state (detection, payload, start, or the job). */
   error: string | null = null;
 
-  rows: AudioSource[] = [];
+  /** The source list, in display order. Left column = these; right column = their files. */
+  slots: SourceSlot[] = [];
+  /** Every file that can be assigned, gathered from the project folder. */
+  candidates: FileCandidate[] = [];
   mediaSourceLabels = MEDIA_SOURCE_LABELS;
+
+  private readonly videoTypes: VideoSourceType[] = ['cam1', 'cam2',
+                                                    'screenVideo', 'screenVideo2', 'screenVideo3',
+                                                    'gameVideo', 'gameVideo2', 'gameVideo3'];
   private readonly audioTypes: AudioSourceType[] = ['mic1', 'mic2', 'mic3', 'mic4', 'screen', 'game', 'soundEffects', 'bluetooth', 'mic1Sb', 'mic2Sb', 'mic3Sb', 'mic4Sb', 'screenSb', 'desktopSb', 'gameSb', 'bluetoothSb', 'soundEffectsSb'];
-  private readonly videoTypes: VideoSourceType[] = ['cam1', 'cam2', 'screenVideo', 'gameVideo',
-                                                    'screenVideo2', 'screenVideo3',
-                                                    'gameVideo2', 'gameVideo3'];
-  private readonly allMediaTypes: MediaSourceType[] = [...this.audioTypes, ...this.videoTypes];
+  /** Display order for the whole list — video first, then audio, then soundboard. */
+  private readonly slotOrder: MediaSourceType[] = [...this.videoTypes, ...this.audioTypes];
+  /**
+   * Always listed, even when nothing was detected for them: the everyday set, so the list
+   * reads as "here is what this project can have" rather than "here is what we found".
+   * Anything else appears once it has a file, or via "Add source".
+   */
+  private readonly coreTypes: MediaSourceType[] =
+    ['cam1', 'cam2', 'screenVideo', 'gameVideo', 'mic1', 'mic2', 'screen', 'game'];
 
   // Options — same defaults as the workflow page.
   autoDuck = true;
@@ -99,9 +139,9 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
   // ── Detection ───────────────────────────────────────────────────────────────
 
   /**
-   * Ask the backend which companion files belong to this project's master video and turn the
-   * answer into editable rows — the same shape (and the same syncFix/applyDrift defaults) the
-   * workflow page's auto-detect produces.
+   * Build the source list: read every assignable file out of the project folder, then let the
+   * backend's naming-convention detector say which file belongs to which source type. The
+   * detector's answer is a starting point — every slot stays editable.
    */
   async detect(): Promise<void> {
     const master = this.entry?.scan?.masterVideo;
@@ -115,6 +155,15 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
     this.state = 'detecting';
     this.error = null;
     this.cdr.detectChanges();
+
+    try {
+      this.candidates = await this.listCandidates(master);
+    } catch (err: any) {
+      this.state = 'error';
+      this.error = `Could not read the project folder: ${err?.message || String(err)}`;
+      this.cdr.detectChanges();
+      return;
+    }
 
     let result: { success: boolean; audioFiles?: { [key: string]: string }; videoFiles?: { [key: string]: string }; error?: string };
     try {
@@ -133,34 +182,69 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
       return;
     }
 
-    const rows: AudioSource[] = [];
-    const stamp = Date.now();
-    for (const [audioType, audioPath] of Object.entries(result.audioFiles || {})) {
-      rows.push({
-        id: `audio_${stamp}_${audioType}`,
-        path: audioPath,
-        name: this.basename(audioPath),
-        type: audioType as AudioSourceType,
-        syncFix: false,
-        applyDrift: false,
-        isVideo: false
-      });
+    const assigned = new Map<MediaSourceType, string>();
+    for (const [type, path] of Object.entries(result.audioFiles || {})) {
+      if (typeof path === 'string' && path) assigned.set(type as MediaSourceType, path);
     }
-    for (const [videoType, videoPath] of Object.entries(result.videoFiles || {})) {
-      if (typeof videoPath !== 'string') continue;
-      rows.push({
-        id: `video_${stamp}_${videoType}`,
-        path: videoPath,
-        name: this.basename(videoPath),
-        type: videoType as VideoSourceType,
-        syncFix: false,
-        applyDrift: false,
-        isVideo: true
-      });
+    for (const [type, path] of Object.entries(result.videoFiles || {})) {
+      if (typeof path === 'string' && path) assigned.set(type as MediaSourceType, path);
     }
-    this.rows = rows;
+    // The detector can name a file the folder listing did not (it resolves paths itself), and a
+    // slot must never point at something its own dropdown cannot show.
+    for (const path of assigned.values()) this.ensureCandidate(path);
+
+    this.slots = this.buildSlots(assigned);
     this.state = 'ready';
     this.cdr.detectChanges();
+  }
+
+  /**
+   * Every media file in the project folder that could be a SOURCE: the master is excluded (it
+   * is the thing everything aligns to) and so are this pipeline's own `_processed` outputs.
+   */
+  private async listCandidates(master: string): Promise<FileCandidate[]> {
+    const folder = this.entry?.scan?.realPath || this.entry?.path;
+    if (!folder) throw new Error('this project has no folder path');
+
+    const res = await this.electron.readDirectory(folder);
+    if (!res?.success) {
+      throw new Error((res as any)?.error || 'the folder could not be listed');
+    }
+    return (res.files || [])
+      .map((f: any) => String(f?.path || ''))
+      .filter(p => p && p !== master && !DERIVED_SUFFIX.test(p))
+      .filter(p => VIDEO_EXT.test(p) || AUDIO_EXT.test(p))
+      .map(p => this.toCandidate(p))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  private toCandidate(path: string): FileCandidate {
+    return { path, name: this.basename(path), isVideo: VIDEO_EXT.test(path) };
+  }
+
+  /** Make a path selectable even if it did not come from the folder listing. */
+  private ensureCandidate(path: string): void {
+    if (this.candidates.some(c => c.path === path)) return;
+    this.candidates = [...this.candidates, this.toCandidate(path)]
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  private buildSlots(assigned: Map<MediaSourceType, string>): SourceSlot[] {
+    const types = new Set<MediaSourceType>(this.coreTypes);
+    for (const type of assigned.keys()) types.add(type);
+    return this.slotOrder
+      .filter(type => types.has(type))
+      .map(type => this.makeSlot(type, assigned.get(type) || ''));
+  }
+
+  private makeSlot(type: MediaSourceType, path: string): SourceSlot {
+    return {
+      type,
+      label: this.mediaSourceLabels[type],
+      isVideo: this.videoTypes.includes(type as VideoSourceType),
+      path,
+      seamGapSeconds: null
+    };
   }
 
   /** Install state of the optional voice-isolation component (the Denoise toggle's gate). */
@@ -185,60 +269,34 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
     return this.entry?.scan?.masterVideo || '';
   }
 
-  /** Audio first, then soundboard, then video in declared order (parts under their base). */
-  get sortedRows(): AudioSource[] {
-    return [...this.rows].sort((a, b) => {
-      const category = (s: AudioSource): number => {
-        if (s.isVideo) return 2;
-        if (s.type && s.type.toString().endsWith('Sb')) return 1;
-        return 0;
-      };
-      const ca = category(a);
-      const cb = category(b);
-      if (ca !== cb) return ca - cb;
-      if (ca === 2) {
-        return this.videoTypes.indexOf(a.type as VideoSourceType)
-             - this.videoTypes.indexOf(b.type as VideoSourceType);
-      }
-      return 0;
-    });
-  }
-
-  availableTypes(currentType: MediaSourceType | ''): MediaSourceType[] {
-    const used = this.rows
-      .filter(s => s.type && s.type !== currentType)
-      .map(s => s.type as MediaSourceType);
-    return this.allMediaTypes.filter(t => !used.includes(t));
-  }
-
-  isContinuationPart(row: AudioSource): boolean {
-    return !!row.type && !!VIDEO_CONTINUATION_PARTS[row.type as string];
+  /** How many slots are actually feeding the run. */
+  get assignedCount(): number {
+    return this.slots.filter(s => s.path).length;
   }
 
   /**
-   * Seam gap entry. Blank means "measure this seam against the master", which is what should
-   * normally happen; a number is only needed when the part carries no audio to measure with.
+   * The files this slot may be given: the right kind, minus any file another slot has already
+   * claimed — one file cannot feed two sources. A VIDEO slot takes video files only; an AUDIO
+   * slot also accepts video, because the pipeline extracts the audio track from one.
    */
-  setSeamGap(row: AudioSource, value: string): void {
-    const trimmed = (value || '').trim();
-    if (!trimmed) {
-      row.seamGapSeconds = null;
-      return;
-    }
-    const parsed = Number(trimmed);
-    row.seamGapSeconds = Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  slotOptions(slot: SourceSlot): FileCandidate[] {
+    const taken = new Set(this.slots.filter(s => s !== slot && s.path).map(s => s.path));
+    return this.candidates.filter(c =>
+      (slot.isVideo ? c.isVideo : true) && !taken.has(c.path));
   }
 
-  /**
-   * Swap the file behind a row. The row's TYPE is what the pipeline dispatches on, so a file
-   * of the wrong kind for that type is refused rather than quietly mapped to the wrong lane —
-   * change the type first if that is what was meant.
-   */
-  async changeRowFile(row: AudioSource): Promise<void> {
+  onSlotFile(slot: SourceSlot, path: string): void {
+    slot.path = path || '';
+    if (!slot.path) slot.seamGapSeconds = null;
+    this.error = null;
+  }
+
+  /** Assign a file from outside the project folder. */
+  async browseForSlot(slot: SourceSlot): Promise<void> {
     let picked: { canceled: boolean; filePaths: string[] };
     try {
       picked = await this.electron.selectFile({
-        title: `Choose the file for ${row.type ? this.mediaSourceLabels[row.type] : 'this source'}`,
+        title: `Choose the file for ${slot.label}`,
         filters: [
           { name: 'All Media Files', extensions: ['wav', 'mp3', 'aac', 'flac', 'ogg', 'm4a', 'mp4', 'mov', 'avi', 'mkv'] },
           { name: 'Audio Files', extensions: ['wav', 'mp3', 'aac', 'flac', 'ogg', 'm4a'] },
@@ -253,25 +311,85 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
     if (picked.canceled || picked.filePaths.length === 0) return;
 
     const path = picked.filePaths[0];
-    const isVideo = /\.(mp4|mov|avi|mkv)$/i.test(path);
-    if (isVideo !== !!row.isVideo) {
-      this.error = row.isVideo
-        ? `“${this.basename(path)}” is not a video file, and this is a video source.`
-        : `“${this.basename(path)}” is a video file, and this is an audio source.`;
+    // A video source cannot be fed an audio file — there would be no picture to place.
+    if (slot.isVideo && !VIDEO_EXT.test(path)) {
+      this.error = `“${this.basename(path)}” is not a video file, and ${slot.label} is a video source.`;
       this.cdr.detectChanges();
       return;
     }
-    row.path = path;
-    row.name = this.basename(path);
+    this.ensureCandidate(path);
+    slot.path = path;
     this.error = null;
     this.cdr.detectChanges();
   }
 
-  removeRow(row: AudioSource): void {
-    this.rows = this.rows.filter(r => r.id !== row.id);
+  /** Source types not on screen yet — the "Add source" picker. */
+  get addableTypes(): MediaSourceType[] {
+    const shown = new Set(this.slots.map(s => s.type));
+    return this.slotOrder.filter(t => !shown.has(t));
   }
 
-  trackByRowId = (_: number, row: AudioSource) => row.id;
+  addSlot(type: string): void {
+    if (!type) return;
+    const media = type as MediaSourceType;
+    if (this.slots.some(s => s.type === media)) return;
+    const next = [...this.slots, this.makeSlot(media, '')];
+    this.slots = next.sort((a, b) =>
+      this.slotOrder.indexOf(a.type) - this.slotOrder.indexOf(b.type));
+    this.error = null;
+  }
+
+  /** Core slots are permanent (they read as the project's shape); the rest can be taken away. */
+  isRemovable(slot: SourceSlot): boolean {
+    return !this.coreTypes.includes(slot.type);
+  }
+
+  removeSlot(slot: SourceSlot): void {
+    this.slots = this.slots.filter(s => s !== slot);
+  }
+
+  isContinuationPart(slot: SourceSlot): boolean {
+    return !!VIDEO_CONTINUATION_PARTS[slot.type as string];
+  }
+
+  /**
+   * Seam gap entry. Blank means "measure this seam against the master", which is what should
+   * normally happen; a number is only needed when the part carries no audio to measure with.
+   */
+  setSeamGap(slot: SourceSlot, value: string): void {
+    const trimmed = (value || '').trim();
+    if (!trimmed) {
+      slot.seamGapSeconds = null;
+      return;
+    }
+    const parsed = Number(trimmed);
+    slot.seamGapSeconds = Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  }
+
+  trackBySlotType = (_: number, slot: SourceSlot) => slot.type;
+
+  /**
+   * Slots → the payload builder's rows. Only assigned slots travel.
+   *
+   * `syncFix`/`applyDrift` are sent false, exactly as this modal's rows always were: the
+   * workflow measures every source's offset and drift itself (GCC-PHAT), and these two flags
+   * are read ONLY by the degraded framerate-only fallback that runs when that sync stack is
+   * unavailable. There was never a correct value for a user to pick here, which is why the
+   * checkboxes are gone rather than merely hidden.
+   */
+  private buildRows(): AudioSource[] {
+    const stamp = Date.now();
+    return this.slots.filter(s => s.path).map(s => ({
+      id: `${s.isVideo ? 'video' : 'audio'}_${stamp}_${s.type}`,
+      path: s.path,
+      name: this.basename(s.path),
+      type: s.type,
+      syncFix: false,
+      applyDrift: false,
+      isVideo: s.isVideo,
+      seamGapSeconds: s.seamGapSeconds
+    }));
+  }
 
   // ── Processing ──────────────────────────────────────────────────────────────
 
@@ -299,9 +417,20 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
     this.starting = true;
     this.error = null;
     try {
+      // The dropdowns already hide a file another slot claims; Browse… can still land on one.
+      // Two sources fed the same file would be aligned and mixed twice — refuse, don't guess.
+      const chosen = this.slots.filter(s => s.path);
+      const duplicate = chosen.find((s, i) => chosen.findIndex(o => o.path === s.path) !== i);
+      if (duplicate) {
+        const others = chosen.filter(s => s.path === duplicate.path).map(s => s.label).join(' and ');
+        this.error = `“${this.basename(duplicate.path)}” is assigned to ${others}. ` +
+                     `Each file can only feed one source.`;
+        return;
+      }
+
       const { options, errors } = buildWorkflowOptions({
         masterVideo: this.masterVideo,
-        sources: this.rows,
+        sources: this.buildRows(),
         autoDuck: this.autoDuck,
         denoiseMics: this.denoiseMics,
         separatorInstalled: this.separatorInstalled,

@@ -162,35 +162,50 @@
   padding: 10px 12px;
 }
 
-.psm-rows {
+/* Source list. Left column = the source types the pipeline can use, right = the file for
+   each. Every row carries the SAME grid template, so the dropdowns are identical in size
+   and sit on the same x down the whole list. */
+.psm-slots {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
 }
 
-.psm-row {
-  display: flex;
+.psm-slot {
+  display: grid;
+  grid-template-columns: 172px minmax(0, 1fr) 46px;
   align-items: center;
   gap: 8px;
   background: #2a2a2f;
   border: 1px solid #3a3a40;
   border-radius: 6px;
-  padding: 6px 8px;
+  padding: 5px 8px;
 
-  .psm-row-icon { flex: 0 0 auto; font-size: 12px; }
+  /* A source with no file is not part of the run — dimmed, never hidden. */
+  &.unassigned {
+    background: #252529;
+    .psm-slot-label { color: #7c7c84; }
+    .psm-slot-file { color: #8a8a92; }
+  }
 
-  .psm-row-name {
-    flex: 1 1 auto;
+  .psm-slot-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    font-size: 11px;
+    font-weight: 500;
     color: #c4c4ca;
+
+    .psm-slot-icon { flex: 0 0 auto; font-size: 11px; opacity: 0.8; }
   }
 
-  .psm-row-type {
-    flex: 0 0 auto;
-    max-width: 190px;
+  .psm-slot-file {
+    width: 100%;
+    min-width: 0;
     font-family: inherit;
     font-size: 11px;
     color: #e2e2e6;
@@ -198,33 +213,18 @@
     border: 1px solid #3a3a40;
     border-radius: 5px;
     padding: 4px 6px;
+
+    &:focus { outline: none; border-color: #e8a33d; }
   }
 
-  .psm-row-check {
-    flex: 0 0 auto;
+  .psm-slot-actions {
     display: flex;
     align-items: center;
-    gap: 4px;
-    font-size: 11px;
-    color: #9a9aa2;
-    cursor: pointer;
-
-    input { accent-color: #e8a33d; margin: 0; cursor: inherit; }
+    justify-content: flex-end;
+    gap: 2px;
   }
 
-  .psm-row-gap {
-    flex: 0 0 auto;
-    width: 74px;
-    font-family: inherit;
-    font-size: 11px;
-    color: #e2e2e6;
-    background: #1c1c1f;
-    border: 1px solid #3a3a40;
-    border-radius: 5px;
-    padding: 4px 6px;
-  }
-
-  .psm-row-btn {
+  .psm-slot-btn {
     flex: 0 0 auto;
     background: transparent;
     border: none;
@@ -234,6 +234,48 @@
     padding: 2px 4px;
 
     &:hover { color: #e8a33d; }
+  }
+
+  /* Spans the full row beneath the columns, so it cannot shift the dropdowns. */
+  .psm-slot-gap {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: #9a9aa2;
+    padding: 2px 0 1px 24px;
+
+    input {
+      width: 92px;
+      font-family: inherit;
+      font-size: 11px;
+      color: #e2e2e6;
+      background: #1c1c1f;
+      border: 1px solid #3a3a40;
+      border-radius: 5px;
+      padding: 3px 6px;
+    }
+
+    .psm-slot-gap-unit { color: #7c7c84; }
+  }
+}
+
+.psm-add {
+  margin-top: 6px;
+
+  .psm-add-select {
+    font-family: inherit;
+    font-size: 11px;
+    color: #c4c4ca;
+    background: #26262a;
+    border: 1px dashed #4a4a50;
+    border-radius: 5px;
+    padding: 4px 8px;
+    cursor: pointer;
+
+    &:hover { border-color: #e8a33d; color: #e8a33d; }
+    &:focus { outline: none; border-color: #e8a33d; }
   }
 }
 
