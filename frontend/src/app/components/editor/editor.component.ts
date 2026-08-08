@@ -1242,9 +1242,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       }
       // A click on a ribbon block SELECTS that story chunk (region) — the target of a
       // chunk-delete — and makes its story active, highlighting just that region. Clicking a
-      // gap in the ribbon (no block) leaves nothing selected.
+      // GAP in the ribbon selects nothing and deselects the active story, so the ribbon can
+      // undo its own selection rather than leaving a paint target the next drag falls into.
       const chunk = this.storyRegionAtEdited(t);
-      if (chunk) this.selectStoryChunk(chunk.storyId, chunk.regionIndex);
+      if (chunk) {
+        this.selectStoryChunk(chunk.storyId, chunk.regionIndex);
+      } else {
+        this.activeStoryId = null;
+      }
       this.requestRender();
       return;
     }
@@ -1650,11 +1655,19 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // section-select outcome from mousedown untouched.
     if (this.marqueeActive) {
       if (this.marqueeForStory) {
-        // A moved Story-Mode drag paints a region; a bare click is a no-op.
         if (this.marqueeMoved) {
+          // A moved Story-Mode drag paints a region — into the active story if there is one,
+          // otherwise into a brand-new story (see paintStoryRegion).
           const lo = Math.min(this.marqueeStartTime, this.marqueeEndTime);
           const hi = Math.max(this.marqueeStartTime, this.marqueeEndTime);
           this.paintStoryRegion(this.editedToOriginal(lo), this.editedToOriginal(hi));
+        } else if (this.activeStoryId) {
+          // A bare click on empty timeline DESELECTS the active story, so the next drag starts
+          // a fresh one. Without this the paint target is sticky: selecting a story to look at
+          // it (row, swatch, or its ribbon block) silently captures every later drag.
+          this.activeStoryId = null;
+          this.requestRender();
+          this.cdr.detectChanges();
         }
       } else if (this.marqueeMoved) {
         this.commitMarquee();
@@ -1961,6 +1974,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       // else. Otherwise clear the timeline selection + transcript highlight + story selection.
       if (this.abortInFlightGesture()) { this.requestRender(); return; }
       this.clearSelection();
+      // Escape also drops the active story: it is the one gesture that always means "I am done
+      // with what I had selected", and a stuck paint target is invisible until a drag lands in
+      // the wrong story. Deliberately NOT inside clearSelection(), which undo/redo and the
+      // cut paths also call — those must not silently change where painting goes.
+      this.activeStoryId = null;
       this.requestRender();
     }
   }
@@ -2437,6 +2455,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   toggleActiveStory(id: string): void {
     this.activeStoryId = this.activeStoryId === id ? null : id;
     this.requestRender();
+  }
+
+  /** The active paint target's name, for the hint that says where drags are landing. */
+  get activeStoryTitle(): string {
+    const story = this.stories.find(s => s.id === this.activeStoryId);
+    if (!story) return '';
+    return story.title?.trim() || `Story ${story.number}`;
   }
 
   /** Strip-row click: select the row's story active, unless the click was on an input/button. */

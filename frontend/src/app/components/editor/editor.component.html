@@ -300,10 +300,14 @@
         <div class="stories-hint" *ngIf="storyMergeIds.size">
           {{ storyMergeIds.size }} picked for merging — ⌘-click more, or hit Merge. Any plain click clears the pick.
         </div>
-        <div class="stories-hint" *ngIf="!storyMergeIds.size">
-          {{ activeStoryId
-              ? 'Adding regions to the selected story — drag on the timeline to add more. Click it again to start a new one.'
-              : 'Drag on the timeline to start a new story — edges take whole clips. Click a story below to add more regions to it; drag its edges in the strip to adjust. Need a mid-clip boundary? Cut it with the Blade (B) first.' }}
+        <div class="stories-hint active-target" *ngIf="!storyMergeIds.size && activeStoryId">
+          Drags are going into <b>{{ activeStoryTitle }}</b>. Click it again, click empty
+          timeline, or press Escape to deselect — then the next drag starts a new story.
+        </div>
+        <div class="stories-hint" *ngIf="!storyMergeIds.size && !activeStoryId">
+          Drag on the timeline to start a new story — edges take whole clips. Click a story
+          below (or its block in the strip) to add more regions to that one instead. Need a
+          mid-clip boundary? Cut it with the Blade (B) first.
         </div>
         <div class="stories-empty" *ngIf="!hasStories()">No stories yet — drag on the timeline to mark one, or Auto-split.</div>
         <ng-container *ngFor="let s of stories">
