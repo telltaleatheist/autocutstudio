@@ -37,9 +37,13 @@ export class ProjectsService {
   private readonly prunedSubject = new BehaviorSubject<string | null>(null);
 
   /**
-   * The list. Sorted most-recently-opened first ONCE per load(); the order then stays
-   * stable for the window's life — opening a project updates its timestamp (persisted,
-   * so the next launch sorts it up) without reshuffling the rows mid-session.
+   * The list, sorted by NAME, ascending. Sessions are named `YYYY-MM-DD`, so that is
+   * chronological order — oldest first, newest at the bottom. Comparison is numeric-aware
+   * (`numeric: true`), so an unpadded or suffixed name still lands where a human would put
+   * it ("2026-08-2" before "2026-08-10", "Session 9" before "Session 10").
+   *
+   * A name never changes while the window is open, so the order is inherently stable: no row
+   * can shift under the cursor the way recency ordering made them.
    */
   readonly projects$: Observable<ProjectEntry[]> = this.projectsSubject.asObservable();
   /** Non-null when the on-disk registry could not be read; the UI shows it and disables adds. */
@@ -81,14 +85,10 @@ export class ProjectsService {
       lastOpened: row.lastOpened,
       scan: await this.scanOrReport(row.path)
     })));
-    this.sortByRecency();
     this.publish();
 
     await this.migrateLegacyRecents();
-    // Migration appends in iteration order; fold the imported timestamps into the
-    // recency order once, so the first post-migration render matches the next launch.
-    this.sortByRecency();
-    this.publish();
+    this.publish();   // whatever the migration folded in takes its place in name order
 
     await this.pruneMissing();
   }
@@ -153,9 +153,9 @@ export class ProjectsService {
       lastOpened: lastOpened || new Date().toISOString(),
       scan
     };
-    // Newest first, matching where the load()-time recency sort would put it — without
-    // reshuffling the rows already on screen.
-    await this.commit([entry, ...this.entries]);
+    // Order is by name, applied on publish, so a new entry lands in its chronological place
+    // on its own — there is nothing to position here.
+    await this.commit([...this.entries, entry]);
     return entry;
   }
 
@@ -167,11 +167,11 @@ export class ProjectsService {
   }
 
   /**
-   * Stamp an entry as just-opened — WITHOUT reordering the visible list (the row must not
-   * jump under the cursor; recency ordering is applied once per load). `path` may be either
-   * the project folder or the session's compounds zip, because the editor opens sessions by
-   * zip path. A path matching nothing in the registry is not an error — plenty of sessions
-   * are opened outside the list.
+   * Stamp an entry as just-opened. This does NOT affect the order — the list is sorted by
+   * name — but the timestamp is still recorded, because it is the only history the registry
+   * keeps of what was worked on when. `path` may be either the project folder or the
+   * session's compounds zip, because the editor opens sessions by zip path. A path matching
+   * nothing in the registry is not an error — plenty of sessions are opened outside the list.
    */
   async markOpened(path: string): Promise<void> {
     const idx = this.entries.findIndex(e => e.path === path || e.scan?.zipPath === path);
@@ -253,15 +253,15 @@ export class ProjectsService {
     this.publish();
   }
 
-  /** Emit the list AS ORDERED — sorting is load()'s job, exactly once per read. */
+  /**
+   * Emit the list in name order. Sorting lives here, not at the call sites, because the key
+   * is immutable for the window's life — every emission can be sorted without any risk of a
+   * row moving in response to something the user just did.
+   */
   private publish(): void {
-    this.projectsSubject.next(this.entries.slice());
-  }
-
-  private sortByRecency(): void {
-    this.entries = this.entries
-      .slice()
-      .sort((a, b) => (b.lastOpened || '').localeCompare(a.lastOpened || ''));
+    this.projectsSubject.next(
+      this.entries.slice().sort((a, b) =>
+        (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' })));
   }
 
   private basename(p: string): string {
