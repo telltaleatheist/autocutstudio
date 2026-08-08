@@ -118,6 +118,29 @@ this one: build the projects layer so it can travel.
 - Do not thread editor state through AutoCutStudio-specific services just
   because they are convenient today.
 
+### Background jobs vs. the loaded project (decided 2026-08-07: DEFERRED)
+
+Background work is **not** independent of the loaded session, and deliberately stays that
+way until the editor moves into Content Studio. Making jobs survive a project switch means
+moving job ownership up into the main process (a real queue, each job bound to the session
+that started it, the dock becoming a viewer of that queue) — and that is exactly the layer
+the Content Studio move will re-host anyway. Building it twice is the only thing worse than
+waiting.
+
+Current behaviour, which is containment and known to be a compromise:
+
+- **Transcription** is actively CANCELLED on a session switch (`resetSessionState`), so a
+  multi-hour Whisper run cannot keep burning CPU for a session nobody is watching. There is
+  one job slot, no queue: a second transcription cannot be lined up behind the first.
+- **Story analysis** aborts at its next await boundary when the session changes
+  (`sessionChanged(generation)`, added in `121a8ed`). Before that guard it kept running and
+  wrote the previous session's stories into the newly-loaded project's `_edits.json` —
+  silent cross-session corruption.
+
+When it IS built, the open design questions are: does the dock list other projects' jobs
+(probably yes, labelled by project); does closing the editor window kill queued work; and is
+the queue global or per-project.
+
 ### Watch out for
 
 - **One job at a time.** `processing.service` assumes a single current job. Either
