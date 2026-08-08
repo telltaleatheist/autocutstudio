@@ -3112,7 +3112,7 @@ interface ProjectScanResult {
   folder: string;
   realPath: string | null;
   exists: boolean;
-  state: 'missing' | 'unrecognized' | 'raw' | 'processed' | 'edited';
+  state: 'missing' | 'unreachable' | 'unrecognized' | 'raw' | 'processed' | 'edited';
   masterVideo?: string;
   session?: string;
   cleanName?: string;
@@ -3145,6 +3145,22 @@ function setupProjectHandlers(): void {
 
   const MASTER_EXTENSIONS = ['.mp4', '.mov', '.avi', '.mkv'];
   const MASTER_PATTERN = /^(.+?)\s+master$/i;
+
+  /**
+   * The mount point a path lives on: `/Volumes/<name>` on macOS, the drive root on Windows,
+   * `/` otherwise. Used to tell "this folder was deleted" from "its disk is not attached",
+   * which decides whether a registry entry is dropped or merely greyed.
+   *
+   * Deliberately lexical, not a mount-table lookup: the whole point is to answer for a path
+   * whose volume is ABSENT, and a disk that has gone away has no mount-table entry to find.
+   */
+  const volumeRootOf = (p: string): string => {
+    const win = /^([a-zA-Z]:[\\/])/.exec(p);
+    if (win) return win[1];
+    const mac = /^(\/Volumes\/[^/]+)/.exec(p);
+    if (mac) return mac[1];
+    return path.parse(p).root || '/';
+  };
 
   ipcMain.handle('projects:read-registry', async (): Promise<ProjectRegistry> => {
     const p = registryPath();
@@ -3213,10 +3229,25 @@ function setupProjectHandlers(): void {
       throw new Error('projects:scan-folder requires a non-empty folderPath string');
     }
 
-    // A folder that is gone is a STATE, not an error — an unmounted volume comes back.
+    // A folder that is gone is a STATE, not an error — but WHICH state matters, because the
+    // renderer drops 'missing' entries from the registry and keeps 'unreachable' ones.
+    //
+    //   missing     — the volume is here, the folder is not. It was moved or deleted, and it
+    //                 is not coming back on its own.
+    //   unreachable — the volume itself is absent (external disk unplugged, share not
+    //                 mounted). Everything on it would otherwise vanish from the list at once,
+    //                 and remounting must bring it all back.
     const stat = fs.statSync(folderPath, { throwIfNoEntry: false });
     if (!stat || !stat.isDirectory()) {
-      return { folder: folderPath, realPath: null, exists: false, state: 'missing' };
+      const volume = volumeRootOf(folderPath);
+      const mounted = fs.existsSync(volume);
+      return {
+        folder: folderPath, realPath: null, exists: false,
+        state: mounted ? 'missing' : 'unreachable',
+        error: mounted
+          ? undefined
+          : `${volume} is not mounted — reconnect it and this project comes back.`
+      };
     }
 
     const realPath = fs.realpathSync(folderPath);

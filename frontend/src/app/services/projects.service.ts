@@ -34,6 +34,7 @@ export class ProjectsService {
 
   private readonly projectsSubject = new BehaviorSubject<ProjectEntry[]>([]);
   private readonly errorSubject = new BehaviorSubject<string | null>(null);
+  private readonly prunedSubject = new BehaviorSubject<string | null>(null);
 
   /**
    * The list. Sorted most-recently-opened first ONCE per load(); the order then stays
@@ -43,6 +44,8 @@ export class ProjectsService {
   readonly projects$: Observable<ProjectEntry[]> = this.projectsSubject.asObservable();
   /** Non-null when the on-disk registry could not be read; the UI shows it and disables adds. */
   readonly error$: Observable<string | null> = this.errorSubject.asObservable();
+  /** Set when entries were dropped because their folders are gone — shown, then dismissed. */
+  readonly pruned$: Observable<string | null> = this.prunedSubject.asObservable();
 
   /** Latched by a failed registry read. Every write path refuses while it is set. */
   private readOnly = false;
@@ -86,6 +89,46 @@ export class ProjectsService {
     // recency order once, so the first post-migration render matches the next launch.
     this.sortByRecency();
     this.publish();
+
+    await this.pruneMissing();
+  }
+
+  /**
+   * Drop entries whose folder is gone for good. A project is a LINK to a folder: once that
+   * folder has been moved or deleted the link is dead, and the row would only ever be a
+   * dead end. Dropping it costs nothing — dragging the folder back in re-adds it.
+   *
+   * Only state 'missing' is dropped, never 'unreachable': the scanner separates "the volume
+   * is here and the folder is not" from "the volume itself is absent". Without that split,
+   * launching with an external drive unplugged would silently erase every project on it.
+   *
+   * What was removed is REPORTED (`pruned$`), not done quietly — the list changing itself
+   * behind the user's back is exactly the kind of thing that should be said out loud.
+   */
+  private async pruneMissing(): Promise<void> {
+    if (this.readOnly) return;   // never write while the on-disk registry is suspect
+    const dead = this.entries.filter(e => e.scan?.state === 'missing');
+    if (dead.length === 0) return;
+
+    const keep = this.entries.filter(e => e.scan?.state !== 'missing');
+    try {
+      await this.commit(keep);
+    } catch (err: any) {
+      // The registry could not be rewritten; the rows stay. Say so rather than leaving a
+      // list that disagrees with the file it came from.
+      this.prunedSubject.next(
+        `Could not update the projects list: ${err?.message || String(err)}`);
+      return;
+    }
+    const names = dead.map(e => e.name).join(', ');
+    this.prunedSubject.next(dead.length === 1
+      ? `Removed “${names}” — its folder is no longer there. Drag it back in if it returns.`
+      : `Removed ${dead.length} projects whose folders are no longer there (${names}).`);
+  }
+
+  /** Dismiss the "removed N projects" notice. */
+  clearPrunedNotice(): void {
+    this.prunedSubject.next(null);
   }
 
   /**
@@ -155,11 +198,12 @@ export class ProjectsService {
     this.publish();
   }
 
-  /** Re-scan everything in parallel. No registry write. */
+  /** Re-scan everything in parallel, then drop anything whose folder has since gone. */
   async rescanAll(): Promise<void> {
     const scans = await Promise.all(this.entries.map(e => this.scanOrReport(e.path)));
     this.entries = this.entries.map((e, i) => ({ ...e, scan: scans[i] }));
     this.publish();
+    await this.pruneMissing();
   }
 
   // ── Internals ───────────────────────────────────────────────────────────────

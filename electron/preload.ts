@@ -206,7 +206,7 @@ export interface ElectronAPI {
     folder: string;
     realPath: string | null;
     exists: boolean;
-    state: 'missing' | 'unrecognized' | 'raw' | 'processed' | 'edited';
+    state: 'missing' | 'unreachable' | 'unrecognized' | 'raw' | 'processed' | 'edited';
     masterVideo?: string;
     session?: string;
     cleanName?: string;

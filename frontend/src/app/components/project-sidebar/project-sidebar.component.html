@@ -14,6 +14,14 @@
 
 <div class="pp-inline-error" *ngIf="inlineError">{{ inlineError }}</div>
 
+<!-- Entries dropped because their folders are gone. The list changing itself is said out
+     loud rather than done quietly; dismissed with the ×. -->
+<div class="pp-notice" *ngIf="prunedNotice">
+  <span class="pp-notice-text">{{ prunedNotice }}</span>
+  <button class="pp-notice-x" (click)="dismissPrunedNotice()" title="Dismiss"
+          aria-label="Dismiss">✕</button>
+</div>
+
 <div class="pp-list" [class.dragover]="dragOver"
      (dragover)="onDragOver($event)" (dragleave)="onDragLeave($event)" (drop)="onDrop($event)">
 
@@ -34,7 +42,7 @@
         <span class="pp-spinner"></span>
         <span class="pp-pct" *ngIf="busyPercent !== null">{{ busyPercent }}%</span>
       </span>
-      <span class="pp-badge" *ngIf="!isBusy(e)" [attr.data-state]="state(e)">{{ state(e) }}</span>
+      <span class="pp-badge" *ngIf="!isBusy(e)" [attr.data-state]="state(e)">{{ badge(e) }}</span>
     </button>
 
     <button class="pp-remove" (click)="onRemove($event, e)"

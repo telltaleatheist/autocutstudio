@@ -47,6 +47,8 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
   registryError: string | null = null;
   /** Last failed add/remove, shown under the header. Cleared by the next successful action. */
   inlineError: string | null = null;
+  /** "Removed N projects whose folders are gone" — the list never changes itself in silence. */
+  prunedNotice: string | null = null;
   dragOver = false;
 
   private subs: Subscription[] = [];
@@ -66,6 +68,14 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
       this.registryError = err;
       this.cdr.markForCheck();
     }));
+    this.subs.push(this.projectsService.pruned$.subscribe(note => {
+      this.prunedNotice = note;
+      this.cdr.markForCheck();
+    }));
+  }
+
+  dismissPrunedNotice(): void {
+    this.projectsService.clearPrunedNotice();
   }
 
   ngOnDestroy(): void {
@@ -105,10 +115,21 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
   /** Hover text: the verbatim reason for a dead row, otherwise the folder it points at. */
   rowTitle(e: ProjectEntry): string {
     const s = this.state(e);
-    if (s === 'missing') return `${e.path}\nNot available — the folder or its volume is not mounted.`;
+    // 'missing' rows are removed by the service, so a row only reads "gone" in the instant
+    // between a scan and the prune — but it must still say something true if seen.
+    if (s === 'missing') return `${e.path}\nThe folder is no longer there.`;
+    if (s === 'unreachable') {
+      return `${e.path}\n${e.scan?.error || 'Its volume is not mounted.'}\n` +
+             `Kept in the list — it comes back when the volume does.`;
+    }
     if (s === 'unrecognized') return `${e.path}\n${e.scan?.error || 'No master video found in this folder.'}`;
     if (s === 'raw') return `${e.path}\nNot processed yet — click to process.`;
     return e.scan?.zipPath || e.path;
+  }
+
+  /** The badge text; 'unreachable' is too long and says nothing a user cares about. */
+  badge(e: ProjectEntry): string {
+    return this.state(e) === 'unreachable' ? 'offline' : this.state(e);
   }
 
   // ── Actions ─────────────────────────────────────────────────────────────────
